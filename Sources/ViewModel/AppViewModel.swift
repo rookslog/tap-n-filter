@@ -45,7 +45,7 @@ public enum AppError: Error, Equatable {
         case .permissionDenied:
             return "Permission denied. Grant access in System Settings → Privacy & Security."
         case .sourceNotFound(let pid):
-            return "Source not found (PID \(pid)). Is the app producing audio?"
+            return "Source could not be identified (PID \(pid)). Choose the source again, then press Start."
         case .tapCreationFailed(let status):
             return "Tap creation failed (OSStatus \(status))."
         case .aggregateDeviceCreationFailed(let status):
@@ -68,6 +68,8 @@ public enum AppError: Error, Equatable {
 public enum AppViewModelDefaultsKey {
     public static let graph: String = "lastSession.graph"
     public static let sourceBundleID: String = "lastSession.sourceBundleID"
+    /// Additional discriminator for restoring a source; names are not stable identities.
+    public static let sourceDisplayName: String = "lastSession.sourceDisplayName"
     public static let debugPanel: String = "debug.enabled"
     /// Whether the "Preserve Bluetooth quality during capture" mitigation is
     /// active. Stored as a Bool; absent means default ON (ADR-019).
@@ -103,7 +105,13 @@ public final class AppViewModel: ObservableObject {
 
     @Published public private(set) var graph: Graph
 
-    @Published public var currentSource: CaptureSource?
+    @Published public var currentSource: CaptureSource? {
+        didSet {
+            if currentSource != oldValue {
+                sourceSelectionRevision += 1
+            }
+        }
+    }
 
     @Published public private(set) var availableSources: [CaptureSource] = []
 
@@ -330,6 +338,7 @@ public final class AppViewModel: ObservableObject {
     private var configChangeObserver: NSObjectProtocol?
     private var refreshSourcesTask: Task<Void, Never>?
     private var sourceChangeShutdownTask: Task<Void, Never>?
+    private var sourceSelectionRevision: UInt64 = 0
 
     private static let persistenceDebounceInterval: TimeInterval = 0.200
 
@@ -521,9 +530,25 @@ public final class AppViewModel: ObservableObject {
             break
         }
         currentSource = source
-        if source?.bundleIdentifier != previousSource?.bundleIdentifier {
+        if source?.bundleIdentifier != previousSource?.bundleIdentifier
+            || source?.displayName != previousSource?.displayName {
             schedulePersistence()
         }
+    }
+
+    /// A missing name is allowed only for legacy bundle-only session restoration.
+    /// Names narrow the candidates but never make an ambiguous identity safe.
+    private static func uniqueSource(
+        in candidates: [CaptureSource],
+        bundleID: String?,
+        displayName: String?
+    ) -> CaptureSource? {
+        guard let bundleID, !bundleID.isEmpty else { return nil }
+        let matches = candidates.filter { candidate in
+            candidate.bundleIdentifier == bundleID
+                && (displayName == nil || candidate.displayName == displayName)
+        }
+        return matches.count == 1 ? matches.first : nil
     }
 
     // MARK: Power lifecycle
@@ -562,29 +587,33 @@ public final class AppViewModel: ObservableObject {
             )
             return
         }
+        let selectionRevision = sourceSelectionRevision
         lastError = nil
 
-        // Re-resolve the source from the live HAL list. Match by PID
-        // first; bundle ID is a fallback for the relaunch-between-pick-
-        // and-start case.
+        // Prefer the exact live PID. After a relaunch, only a unique bundle
+        // and display-name match is safe enough to use without another pick.
         let resolvedSource: CaptureSource
         do {
             let candidates = try await Task.detached(priority: .userInitiated) { [capture] in
                 try capture.availableSources()
             }.value
-            let matchByPID = candidates.first(where: { $0.pid == source.pid })
-            let matchByBundleID: CaptureSource?
-            if let bundleID = source.bundleIdentifier, !bundleID.isEmpty {
-                matchByBundleID = candidates.first(where: { $0.bundleIdentifier == bundleID })
-            } else {
-                matchByBundleID = nil
-            }
-            guard let match = matchByPID ?? matchByBundleID else {
+            // Any intervening change supersedes Start, including A → B → A.
+            guard sourceSelectionRevision == selectionRevision else { return }
+            let match = candidates.first(where: { $0.pid == source.pid })
+                ?? Self.uniqueSource(
+                    in: candidates,
+                    bundleID: source.bundleIdentifier,
+                    displayName: source.displayName
+                )
+            guard let match else {
+                currentSource = nil
+                writeSourcePersistence()
                 lastError = .capture(.sourceNotFound(source.pid))
                 return
             }
             resolvedSource = match
         } catch {
+            guard sourceSelectionRevision == selectionRevision else { return }
             if let captureError = error as? CaptureError {
                 lastError = .capture(captureError)
             } else {
@@ -596,6 +625,11 @@ public final class AppViewModel: ObservableObject {
         do {
             try capture.start(source: resolvedSource, into: engine)
         } catch let error as CaptureError {
+            guard sourceSelectionRevision == selectionRevision else { return }
+            if case .sourceNotFound = error {
+                currentSource = nil
+                writeSourcePersistence()
+            }
             lastError = .capture(error)
             return
         } catch {
@@ -1059,6 +1093,7 @@ public final class AppViewModel: ObservableObject {
         guard let bundleID = defaults.string(forKey: AppViewModelDefaultsKey.sourceBundleID),
               !bundleID.isEmpty
         else { return }
+        let displayName = defaults.string(forKey: AppViewModelDefaultsKey.sourceDisplayName)
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
@@ -1067,8 +1102,19 @@ public final class AppViewModel: ObservableObject {
                     self.logger.info("Skipping restore for \(bundleID): currentSource already set.")
                     return
                 }
-                if let match = candidates.first(where: { $0.bundleIdentifier == bundleID }) {
-                    self.currentSource = match
+                // A failed Start can clear the saved identity while this
+                // enumeration is in flight. Never reinstate that rejected pick.
+                guard self.defaults.string(forKey: AppViewModelDefaultsKey.sourceBundleID) == bundleID,
+                      self.defaults.string(forKey: AppViewModelDefaultsKey.sourceDisplayName) == displayName
+                else { return }
+                guard let match = Self.uniqueSource(
+                    in: candidates,
+                    bundleID: bundleID,
+                    displayName: displayName
+                ) else { return }
+                self.currentSource = match
+                if displayName == nil {
+                    self.writeSourcePersistence()
                 }
             } catch {
                 self.logger.warning("Source restore failed: \(error.localizedDescription)")
@@ -1102,10 +1148,18 @@ public final class AppViewModel: ObservableObject {
         } catch {
             logger.error("Failed to encode graph for persistence: \(error.localizedDescription)")
         }
-        if let bundleID = currentSource?.bundleIdentifier {
+        writeSourcePersistence()
+    }
+
+    /// Source-only updates must not autosave the graph during legacy restore
+    /// or leave a rejected selection eligible for another Start.
+    private func writeSourcePersistence() {
+        if let source = currentSource, let bundleID = source.bundleIdentifier, !bundleID.isEmpty {
             defaults.set(bundleID, forKey: AppViewModelDefaultsKey.sourceBundleID)
+            defaults.set(source.displayName, forKey: AppViewModelDefaultsKey.sourceDisplayName)
         } else {
             defaults.removeObject(forKey: AppViewModelDefaultsKey.sourceBundleID)
+            defaults.removeObject(forKey: AppViewModelDefaultsKey.sourceDisplayName)
         }
     }
 

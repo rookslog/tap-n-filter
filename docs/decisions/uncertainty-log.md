@@ -149,11 +149,21 @@ Entries are numbered U-001, U-002, etc. Numbers persist. Resolved entries stay i
 
 ## U-010: Source resolution falls back to bundle ID, not PID
 
-**Status**: Resolved — commit `14b240b` on PR #7.
+**Status**: Resolved — commit `14b240b` on PR #7; bundle fallback narrowed by the source-identity update on PR #26 (2026-10-20).
 **Triggered by**: Codex review on PR #7 (`Sources/ViewModel/AppViewModel.swift` `powerOn`).
 **Question**: `AppViewModel.powerOn` originally re-resolved the user's selected source from the live HAL list by `bundleIdentifier`. If two processes with the same bundle ID were running (multiple instances of the same app), the resolver could pick a different PID than the one the picker selection identified, capturing the wrong instance.
 
-**Resolution**: `powerOn` now uses `candidates.first(where: { $0.pid == source.pid }) ?? candidates.first(where: { $0.bundleIdentifier == source.bundleIdentifier })` — PID first, bundle ID only as a fallback for the relaunch-between-pick-and-start case. The original V0.2 deferral was unnecessary; the change was contained to two lines.
+**Historical resolution (PR #7)**: `powerOn` used `candidates.first(where: { $0.pid == source.pid }) ?? candidates.first(where: { $0.bundleIdentifier == source.bundleIdentifier })` — PID first, bundle ID only as a fallback for the relaunch-between-pick-and-start case. The original V0.2 deferral was unnecessary; the change was contained to two lines.
+
+**Source-identity amendment (PR #26, 2026-10-20)**: Exact live PID still wins,
+including for bundle-less sources. When that PID is absent, fallback requires
+a nonempty bundle ID and a unique display-name match; ambiguous or missing
+matches do not start capture and ask the user to choose the source again.
+Session restoration uses the saved bundle ID and display name; legacy bundle-only
+sessions restore only a unique live bundle match. Display names discriminate
+candidates without guaranteeing stable identity. See
+[Source identity and session restoration](../specs/ui.md#source-identity-and-session-restoration).
+Responsible-parent resolution and process-ancestry heuristics remain deferred.
 
 ---
 
