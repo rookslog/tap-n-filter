@@ -2,6 +2,21 @@ import Effects
 import Foundation
 import Graph
 
+/// Recoverable failures when migrating a decoded preset.
+public enum PresetMigrationError: Error, Equatable, LocalizedError {
+    /// The input requires a format newer than this build understands.
+    case unsupportedFormatVersion(Int)
+
+    /// Description suitable for a user-facing load error.
+    public var errorDescription: String? {
+        switch self {
+        case .unsupportedFormatVersion(let version):
+            return "Preset format version \(version) is newer than supported version "
+                + "\(PresetMigrator.currentFormatVersion)."
+        }
+    }
+}
+
 /// Repairs a decoded preset before it becomes a `Graph`.
 ///
 /// Two distinct jobs live here. The first is format-version migration: V1
@@ -47,11 +62,13 @@ public enum PresetMigrator {
     /// yet. The repair below is deliberately not gated on `formatVersion`:
     /// the corruption did not change the schema, so a corrupt file is
     /// indistinguishable from a clean one by version alone.
-    public static func migrate(_ preset: GraphPreset) -> GraphPreset {
-        precondition(
-            preset.formatVersion <= currentFormatVersion,
-            "Preset format version \(preset.formatVersion) is newer than this build supports."
-        )
+    ///
+    /// - Throws: `PresetMigrationError.unsupportedFormatVersion` when the
+    ///   decoded preset targets a newer format. No values are repaired first.
+    public static func migrate(_ preset: GraphPreset) throws -> GraphPreset {
+        guard preset.formatVersion <= currentFormatVersion else {
+            throw PresetMigrationError.unsupportedFormatVersion(preset.formatVersion)
+        }
         return repairCorruptEQQ(preset)
     }
 

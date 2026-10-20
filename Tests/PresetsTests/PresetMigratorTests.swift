@@ -42,8 +42,8 @@ final class PresetMigratorTests: XCTestCase {
         )
     }
 
-    func test_migrate_repairs_corrupt_Q_to_default_not_range_maximum() {
-        let migrated = PresetMigrator.migrate(
+    func test_migrate_repairs_corrupt_Q_to_default_not_range_maximum() throws {
+        let migrated = try PresetMigrator.migrate(
             eqPreset(hpQ: Self.corruptSentinel, lpQ: Self.corruptSentinel)
         )
         let parameters = migrated.nodes[0].parameters
@@ -56,8 +56,8 @@ final class PresetMigratorTests: XCTestCase {
         XCTAssertEqual(parameters["lp.Q"] ?? 0, 0.707, accuracy: 0.001)
     }
 
-    func test_migrate_leaves_frequencies_untouched() {
-        let migrated = PresetMigrator.migrate(
+    func test_migrate_leaves_frequencies_untouched() throws {
+        let migrated = try PresetMigrator.migrate(
             eqPreset(hpQ: Self.corruptSentinel, lpQ: Self.corruptSentinel)
         )
         XCTAssertEqual(migrated.nodes[0].parameters["hp.frequency"], 80.0)
@@ -67,9 +67,9 @@ final class PresetMigratorTests: XCTestCase {
     /// The repair must not touch a Q the user could plausibly have chosen —
     /// including one sitting exactly at the top of the declared range, which
     /// is the value most easily confused with the clamped corruption.
-    func test_migrate_preserves_legitimate_Q_values() {
+    func test_migrate_preserves_legitimate_Q_values() throws {
         for q in [Float(0.5), 0.707, 2.5, 4.0] {
-            let migrated = PresetMigrator.migrate(eqPreset(hpQ: q, lpQ: q))
+            let migrated = try PresetMigrator.migrate(eqPreset(hpQ: q, lpQ: q))
             XCTAssertEqual(
                 migrated.nodes[0].parameters["hp.Q"], q,
                 "Legitimate Q \(q) was modified by the corruption repair."
@@ -77,7 +77,7 @@ final class PresetMigratorTests: XCTestCase {
         }
     }
 
-    func test_migrate_ignores_non_eq_nodes() {
+    func test_migrate_ignores_non_eq_nodes() throws {
         let preset = GraphPreset(
             name: "fixture",
             outputGain: 1.0,
@@ -94,7 +94,7 @@ final class PresetMigratorTests: XCTestCase {
             ]
         )
         XCTAssertEqual(
-            PresetMigrator.migrate(preset).nodes[0].parameters["hp.Q"],
+            try PresetMigrator.migrate(preset).nodes[0].parameters["hp.Q"],
             Self.corruptSentinel,
             "The repair is scoped to tnf.eq and must not reinterpret another type's parameters."
         )
@@ -103,7 +103,7 @@ final class PresetMigratorTests: XCTestCase {
     /// End-to-end: a repaired preset must land on the node as the default,
     /// which is the property that actually protects the user's ears.
     func test_repaired_preset_restores_onto_node_at_default_Q() throws {
-        let migrated = PresetMigrator.migrate(
+        let migrated = try PresetMigrator.migrate(
             eqPreset(hpQ: Self.corruptSentinel, lpQ: Self.corruptSentinel)
         )
         let node = EQNode(id: migrated.nodes[0].id)

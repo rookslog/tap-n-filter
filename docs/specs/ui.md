@@ -198,6 +198,19 @@ On launch, the view model attempts to restore:
 1. The graph from `lastSession.graph`. On failure, falls back to the bundled `distant-engines` preset.
 2. The source from `lastSession.sourceBundleID`. If that bundle ID is running, sets it as `currentSource`. Otherwise leaves source unset.
 
+Session restore reads the integer version header before decoding current-schema
+graph fields. A readable future version, including one whose graph schema has
+changed, displays an `AppError.persistence` warning. Its exact original bytes remain stored
+until a successful explicit edit meaningfully changes the fallback graph.
+Source selection/clearing and automatic writes still persist source state but
+skip graph writes. Dismissing the warning, failed edits, unchanged controls or
+order, and identical factory/file preset loads retain this protection. A changed
+graph releases it; the next debounced write replaces the incompatible session
+and subsequent graph edits autosave normally. Saving a separate preset does not
+release it. See [Future-version session recovery](preset-format.md#future-version-session-recovery)
+for the replacement boundary. Malformed JSON and undetectable versions retain
+the existing generic fallback behavior.
+
 The view model never auto-starts capture. The user always has to click Power.
 
 ## Accessibility

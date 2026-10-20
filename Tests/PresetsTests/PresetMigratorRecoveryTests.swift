@@ -6,8 +6,7 @@ import XCTest
 
 final class PresetMigratorRecoveryTests: XCTestCase {
 
-    // Stage A structural red: PresetMigrationError is the proposed new API.
-    // Do not run future-version fixtures while migrate still preconditions.
+    // Future-version input must be a recoverable error, never a process trap.
     func test_future_format_throws_typed_error_with_offending_version() {
         for version in [PresetMigrator.currentFormatVersion + 1, Int.max] {
             let preset = GraphPreset(formatVersion: version, name: "future", outputGain: 0.25, nodes: [])

@@ -9,7 +9,7 @@ import XCTest
 
 /// Only isolated suite fixtures are read or written. Engines are constructed,
 /// never started; capture/source enumeration is supplied by the existing mock.
-/// Future-session tests must not execute against the Stage A trapping baseline.
+/// Future-session fixtures exercise recoverable fallback and byte preservation.
 @MainActor
 final class AppViewModelSessionRecoveryTests: XCTestCase {
     private var defaults: UserDefaults!
@@ -109,6 +109,42 @@ final class AppViewModelSessionRecoveryTests: XCTestCase {
         )
         try await waitForAutosave()
         XCTAssertEqual(defaults.data(forKey: AppViewModelDefaultsKey.graph), raw)
+    }
+
+    func test_future_header_with_missing_current_schema_preserves_bytes_and_warns() async throws {
+        let version = PresetMigrator.currentFormatVersion + 1
+        let raw = Data("""
+          { "formatVersion": \(version),
+            "futureGraph": { "routing": ["future-only"], "mustSurvive": true } }
+
+        """.utf8)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: raw) as? [String: Any])
+        XCTAssertEqual(object["formatVersion"] as? Int, version)
+        XCTAssertThrowsError(try JSONDecoder().decode(GraphPreset.self, from: raw))
+        defaults.set(raw, forKey: AppViewModelDefaultsKey.graph)
+
+        let capture = MockCaptureController()
+        let model = makeModel(capture: capture)
+        let fallback = try FactoryPresets.load(named: "distant-engines")
+        XCTAssertEqual(model.graph.snapshot().nodes.map(\.typeIdentifier), fallback.nodes.map(\.typeIdentifier))
+        XCTAssertEqual(model.graph.outputGain, fallback.outputGain)
+        XCTAssertEqual(model.captureState, .idle)
+        XCTAssertTrue(capture.startCalls.isEmpty)
+        if case .persistence(let message) = model.lastError {
+            XCTAssertTrue(message.contains(String(version)), "Warning must identify the future version")
+        } else {
+            XCTFail("A readable future header must warn even when the current schema cannot decode")
+        }
+        try await waitForAutosave()
+        XCTAssertEqual(defaults.data(forKey: AppViewModelDefaultsKey.graph), raw)
+        try await assertSourceOnlyWritePreserves(raw, model: model)
+        model.clearError()
+        try await assertSourceOnlyWritePreserves(raw, model: model, sourceIndex: 2)
+        model.setSource(nil)
+        try await waitForAutosave()
+        XCTAssertNil(defaults.string(forKey: AppViewModelDefaultsKey.sourceBundleID))
+        XCTAssertEqual(defaults.data(forKey: AppViewModelDefaultsKey.graph), raw)
+        try await assertSourceOnlyWritePreserves(raw, model: makeModel(), sourceIndex: 3)
     }
 
     func test_source_selection_and_clearing_preserve_exact_future_session_bytes() async throws {

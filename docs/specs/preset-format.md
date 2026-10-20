@@ -70,6 +70,47 @@ A `.tnf` file is a UTF-8 encoded JSON document conforming to the `GraphPreset` s
 
 V1 ships with version 1. Migrations from version 0 are not needed (no prior version exists).
 
+`PresetMigrator.migrate(_:) throws -> GraphPreset` rejects decoded presets with
+`formatVersion > PresetMigrator.currentFormatVersion` by throwing
+`PresetMigrationError.unsupportedFormatVersion(Int)`, carrying the input version.
+This is a recoverable load error, including for raw session JSON; it never
+preconditions on user data. `PresetStore` retains its existing, earlier file
+format guard and throws `PresetStoreError.unsupportedFormatVersion` for future
+files. Callers use `try` and handle load errors at their boundary.
+
+Supported presets still receive the unconditional EQ Q repair: corrupt Q values
+at or above 100 become 0.707, legal Q=4 remains unchanged, and reverb extras are
+preserved. The current format version remains 1. Synthetic version-0 fixtures
+exercise the existing acceptance of lower version numbers, not a historical
+schema migration.
+
+### Future-version session recovery
+
+Session restore first decodes a small private header containing only the integer
+`formatVersion`, before attempting the current `GraphPreset` schema. If this
+header identifies a future version, even with changed or absent graph fields,
+`AppViewModel` uses the bundled `distant-engines` graph and surfaces an
+`AppError.persistence` warning identifying the unsupported version. Capture
+does not auto-start. The original graph bytes stay at the existing defaults key;
+there is no rewritten copy or backup corpus.
+
+Graph autosave remains suppressed during automatic persistence, source selection
+or clearing, power transitions, warning dismissal, failed graph edits, and
+successful no-ops. Source-key persistence continues normally. Unchanged
+parameters, clamped mix writes with no effective change, unchanged bypass or
+node order, and identical factory/file preset loads do not authorize replacement.
+Preset comparisons use runtime-canonical graphs so AU conversions are compared
+on both sides.
+
+The first successful explicit edit that changes node identity/order, an
+effective parameter/mix/bypass value, or the installed preset graph releases
+the guard. The next debounced graph write then replaces the incompatible bytes
+with the edited, current-version graph; later edits autosave normally. Saving a
+separate preset file does not release the session guard. Relaunch before a
+replacement repeats recovery from the original bytes. Malformed JSON or an
+absent, non-integer or otherwise undecodable version retains the existing
+generic fallback behavior; this guard does not introduce corrupt-data backups.
+
 When the format version is bumped:
 - Older presets are migrated on load via a `PresetMigrator`.
 - An ADR documents the change and the migration logic.
