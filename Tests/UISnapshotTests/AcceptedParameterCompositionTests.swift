@@ -70,7 +70,7 @@ final class AcceptedParameterCompositionTests: XCTestCase {
         // must arrive synchronously through the superseded session's result.
         XCTAssertEqual(node.value, 2)
         XCTAssertEqual(editor.value, 2)
-        XCTAssertEqual(editor.text, "2")
+        XCTAssertEqual(editor.text, "2.0")
         XCTAssertFalse(editor.isEditing)
         oldTick()
         model.savePreset(to: fixture.url("superseded-unchanged.tnf"))
@@ -95,7 +95,7 @@ final class AcceptedParameterCompositionTests: XCTestCase {
 
         XCTAssertEqual(node.value, 2)
         XCTAssertEqual(editor.value, 9)
-        XCTAssertEqual(editor.text, "9")
+        XCTAssertEqual(editor.text, "9.0")
         oldTick()
         XCTAssertEqual(node.attempts, [2])
         XCTAssertEqual(scheduler.count, 1)
@@ -119,7 +119,7 @@ final class AcceptedParameterCompositionTests: XCTestCase {
         XCTAssertNotNil(model.lastError)
         XCTAssertEqual(node.value, 2)
         XCTAssertEqual(editor.value, 7)
-        XCTAssertEqual(editor.text, "7")
+        XCTAssertEqual(editor.text, "7.0")
         oldTick()
         XCTAssertEqual(node.attempts, [2])
         node.behavior = .exact
