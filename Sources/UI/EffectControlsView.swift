@@ -117,6 +117,7 @@ public struct EffectControlsView: View {
                         return min(max(current, 0), max(cases.count - 1, 0))
                     },
                     set: { newIndex in
+                        viewModel.objectWillChange.send()
                         viewModel.updateParameter(
                             nodeID: node.id,
                             paramID: parameter.identifier,
