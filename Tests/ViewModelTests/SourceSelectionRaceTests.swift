@@ -46,8 +46,67 @@ final class SourceSelectionRaceTests: XCTestCase {
         await assertStaleStart(outcome: .failure(EnumerationFailure.unexpected), replacement: nil)
     }
 
+    func test_stale_success_is_cancelled_after_returning_to_original_selection() async {
+        await assertStaleStart(outcome: .success([original]), replacement: newer, returnToOriginal: true)
+    }
+
+    func test_stale_error_is_cancelled_after_returning_to_original_selection() async {
+        await assertStaleStart(
+            outcome: .failure(EnumerationFailure.unexpected), replacement: newer, returnToOriginal: true
+        )
+    }
+
+    func test_source_disappearing_at_capture_start_requires_new_pick_before_retry() async {
+        await assertCaptureFailure(error: .sourceNotFound(original.pid), rejectsSelection: true)
+    }
+
+    func test_unrelated_capture_failure_preserves_selection_and_preferences() async {
+        await assertCaptureFailure(error: .tapCreationFailed(-1), rejectsSelection: false)
+    }
+
+    private func assertCaptureFailure(error: CaptureError, rejectsSelection: Bool) async {
+        let suiteName = "tnf.tests.start-failure.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let capture = ControlledEnumerationCapture(initialSources: [original], startError: error)
+        let model = AppViewModel(
+            capture: capture, engine: AVAudioEngine(), registry: EffectNodeRegistry(), defaults: defaults
+        )
+        model.setSource(original)
+        defaults.set(original.bundleIdentifier, forKey: AppViewModelDefaultsKey.sourceBundleID)
+        defaults.set(original.displayName, forKey: AppViewModelDefaultsKey.sourceDisplayName)
+
+        await model.powerOn()
+
+        XCTAssertEqual(capture.startCalls, [original])
+        XCTAssertEqual(model.lastError, .capture(error))
+        let expected: CaptureSource? = rejectsSelection ? nil : original
+        XCTAssertEqual(model.currentSource, expected)
+        XCTAssertEqual(
+            defaults.string(forKey: AppViewModelDefaultsKey.sourceBundleID), expected?.bundleIdentifier
+        )
+        XCTAssertEqual(defaults.string(forKey: AppViewModelDefaultsKey.sourceDisplayName), expected?.displayName)
+        if rejectsSelection {
+            let survivor = CaptureSource(
+                pid: 33, audioProcessID: 43,
+                bundleIdentifier: original.bundleIdentifier, displayName: original.displayName
+            )
+            capture.setAvailableSources([survivor])
+            model.clearError()
+            await model.powerOn()
+            XCTAssertEqual(capture.startCalls, [original], "Retry must not resolve the survivor without a new pick")
+            XCTAssertNil(model.currentSource)
+            XCTAssertNil(defaults.object(forKey: AppViewModelDefaultsKey.sourceBundleID))
+            XCTAssertNil(defaults.object(forKey: AppViewModelDefaultsKey.sourceDisplayName))
+
+            model.setSource(survivor)
+            await model.powerOn()
+            XCTAssertEqual(capture.startCalls, [original, survivor], "An explicit pick permits a new attempt")
+        }
+    }
+
     private func assertStaleStart(
-        outcome: Result<[CaptureSource], Error>, replacement: CaptureSource?
+        outcome: Result<[CaptureSource], Error>, replacement: CaptureSource?, returnToOriginal: Bool = false
     ) async {
         let suiteName = "tnf.tests.source-race.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -73,23 +132,27 @@ final class SourceSelectionRaceTests: XCTestCase {
         await fulfillment(of: [entered], timeout: 1.0)
 
         model.setSource(replacement)
+        if returnToOriginal {
+            model.setSource(original)
+        }
+        let expected = returnToOriginal ? original : replacement
         // Seed already-saved newer preferences; debounce behavior has separate
         // coverage. An obsolete Start must not overwrite these values.
-        defaults.set(replacement?.bundleIdentifier, forKey: AppViewModelDefaultsKey.sourceBundleID)
-        defaults.set(replacement?.displayName, forKey: AppViewModelDefaultsKey.sourceDisplayName)
-        if replacement == nil {
+        defaults.set(expected?.bundleIdentifier, forKey: AppViewModelDefaultsKey.sourceBundleID)
+        defaults.set(expected?.displayName, forKey: AppViewModelDefaultsKey.sourceDisplayName)
+        if expected == nil {
             await model.powerOn() // A newer no-selection error must survive too.
         }
         let newerError = model.lastError
         gate.release()
         await start.value
 
-        XCTAssertEqual(model.currentSource, replacement)
+        XCTAssertEqual(model.currentSource, expected)
         XCTAssertEqual(
-            defaults.string(forKey: AppViewModelDefaultsKey.sourceBundleID), replacement?.bundleIdentifier
+            defaults.string(forKey: AppViewModelDefaultsKey.sourceBundleID), expected?.bundleIdentifier
         )
         XCTAssertEqual(
-            defaults.string(forKey: AppViewModelDefaultsKey.sourceDisplayName), replacement?.displayName
+            defaults.string(forKey: AppViewModelDefaultsKey.sourceDisplayName), expected?.displayName
         )
         XCTAssertEqual(model.lastError, newerError, "Stale Start must not publish an obsolete error")
         XCTAssertEqual(model.captureState, .idle)
@@ -106,12 +169,14 @@ private enum EnumerationFailure: Error {
 /// Start records then throws before touching any node or engine.
 private final class ControlledEnumerationCapture: CaptureControllerProtocol, @unchecked Sendable {
     private let lock = NSLock()
-    private let initialSources: [CaptureSource]
+    private var sources: [CaptureSource]
+    private let startError: CaptureError
     private var nextGate: EnumerationGate?
     private var recordedStarts: [CaptureSource] = []
 
-    init(initialSources: [CaptureSource]) {
-        self.initialSources = initialSources
+    init(initialSources: [CaptureSource], startError: CaptureError = .tapCreationFailed(-1)) {
+        self.sources = initialSources
+        self.startError = startError
     }
 
     var state: CaptureState { .idle }
@@ -122,6 +187,12 @@ private final class ControlledEnumerationCapture: CaptureControllerProtocol, @un
         lock.lock()
         defer { lock.unlock() }
         return recordedStarts
+    }
+
+    func setAvailableSources(_ sources: [CaptureSource]) {
+        lock.lock()
+        self.sources = sources
+        lock.unlock()
     }
 
     func suspendNextEnumeration(
@@ -138,15 +209,19 @@ private final class ControlledEnumerationCapture: CaptureControllerProtocol, @un
         lock.lock()
         let gate = nextGate
         nextGate = nil
+        let snapshot = sources
         lock.unlock()
-        return try gate?.wait() ?? initialSources
+        return try gate?.wait() ?? snapshot
     }
 
     func start(source: CaptureSource, into engine: AVAudioEngine) throws {
         lock.lock()
         recordedStarts.append(source)
         lock.unlock()
-        throw CaptureError.tapCreationFailed(-1)
+        if case .sourceNotFound = startError {
+            throw CaptureError.sourceNotFound(source.pid)
+        }
+        throw startError
     }
 
     func stop() throws {}

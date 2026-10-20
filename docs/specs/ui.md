@@ -102,11 +102,17 @@ Start re-enumerates live sources and prefers the exact selected PID, including
 for bundle-less sources. If selection changes or clears during enumeration,
 the obsolete Start returns without capture or changes to newer selection,
 preferences or error state, including when enumeration throws.
+An internal selection revision tracks actual value changes, so returning to the
+original selection does not revive an obsolete Start. Reassigning an equal value
+does not advance the revision or alter persistence behavior.
 If that PID has gone away, fallback requires a nonempty
 bundle ID and exactly one candidate with the selected display name. Missing or
 ambiguous matches do not start capture and tell the user to choose the source
 again, then press Start. Rejection clears the selection and both saved identity
 fields before returning, retaining the missing-source error's selected PID.
+If a PID disappears after enumeration and capture Start throws `sourceNotFound`,
+the current request likewise clears and source-only-persists the rejected pick,
+preserving the thrown PID context. Other capture errors retain the selection.
 If candidates later become unique, retrying still requires an explicit new pick;
 an in-flight startup restore cannot reinstate the rejected identity.
 Nil or empty bundle IDs never equate unrelated processes.

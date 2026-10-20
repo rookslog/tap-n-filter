@@ -105,7 +105,13 @@ public final class AppViewModel: ObservableObject {
 
     @Published public private(set) var graph: Graph
 
-    @Published public var currentSource: CaptureSource?
+    @Published public var currentSource: CaptureSource? {
+        didSet {
+            if currentSource != oldValue {
+                sourceSelectionRevision += 1
+            }
+        }
+    }
 
     @Published public private(set) var availableSources: [CaptureSource] = []
 
@@ -332,6 +338,7 @@ public final class AppViewModel: ObservableObject {
     private var configChangeObserver: NSObjectProtocol?
     private var refreshSourcesTask: Task<Void, Never>?
     private var sourceChangeShutdownTask: Task<Void, Never>?
+    private var sourceSelectionRevision: UInt64 = 0
 
     private static let persistenceDebounceInterval: TimeInterval = 0.200
 
@@ -580,6 +587,7 @@ public final class AppViewModel: ObservableObject {
             )
             return
         }
+        let selectionRevision = sourceSelectionRevision
         lastError = nil
 
         // Prefer the exact live PID. After a relaunch, only a unique bundle
@@ -589,8 +597,8 @@ public final class AppViewModel: ObservableObject {
             let candidates = try await Task.detached(priority: .userInitiated) { [capture] in
                 try capture.availableSources()
             }.value
-            // A newer pick or clear supersedes this suspended Start.
-            guard currentSource == source else { return }
+            // Any intervening change supersedes Start, including A → B → A.
+            guard sourceSelectionRevision == selectionRevision else { return }
             let match = candidates.first(where: { $0.pid == source.pid })
                 ?? Self.uniqueSource(
                     in: candidates,
@@ -605,7 +613,7 @@ public final class AppViewModel: ObservableObject {
             }
             resolvedSource = match
         } catch {
-            guard currentSource == source else { return }
+            guard sourceSelectionRevision == selectionRevision else { return }
             if let captureError = error as? CaptureError {
                 lastError = .capture(captureError)
             } else {
@@ -617,6 +625,11 @@ public final class AppViewModel: ObservableObject {
         do {
             try capture.start(source: resolvedSource, into: engine)
         } catch let error as CaptureError {
+            guard sourceSelectionRevision == selectionRevision else { return }
+            if case .sourceNotFound = error {
+                currentSource = nil
+                writeSourcePersistence()
+            }
             lastError = .capture(error)
             return
         } catch {
