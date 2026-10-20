@@ -1569,7 +1569,12 @@ extension AcceptedParameterCompositionTests {
             callbacks += 1
             XCTAssertEqual(requested, 4)
             // Genuine external mutation during the VM setter, not a result injection.
-            XCTAssertNoThrow(try node.setParameter("amount", value: 6))
+            do {
+                try node.setParameter("amount", value: 6)
+            } catch {
+                XCTFail("External observation setup must succeed: \(error)")
+                return
+            }
             XCTAssertEqual(node.parameterValue("amount"), 6)
             editor.beginEditing(locale: locale)
             XCTAssertEqual(editor.value, 6)
@@ -1631,7 +1636,12 @@ extension AcceptedParameterCompositionTests {
             node.afterAttempt = nil
             callbacks += 1
             XCTAssertEqual(requested, 4)
-            XCTAssertNoThrow(try node.setParameter("amount", value: 6))
+            do {
+                try node.setParameter("amount", value: 6)
+            } catch {
+                XCTFail("External observation setup must succeed: \(error)")
+                return
+            }
             guard let actual = node.parameterValue("amount") else {
                 return XCTFail("Ordinary observation must read real available state")
             }
@@ -1698,7 +1708,12 @@ extension AcceptedParameterCompositionTests {
             node.afterAttempt = nil
             callbacks += 1
             XCTAssertEqual(requested, 4)
-            XCTAssertNoThrow(try node.setParameter("amount", value: 6))
+            do {
+                try node.setParameter("amount", value: 6)
+            } catch {
+                XCTFail("External observation setup must succeed: \(error)")
+                return
+            }
             XCTAssertEqual(node.parameterValue("amount"), 6)
             editor.beginEditing(locale: locale)
             XCTAssertEqual(editor.value, 6)
