@@ -26,13 +26,13 @@ public struct FooterView: View {
             .accessibilityLabel("Current preset")
             .accessibilityValue("\(viewModel.presetName), \(presetStatus)")
 
-            if !viewModel.presetWarnings.isEmpty {
-                Label(recoveryMessage, systemImage: "exclamationmark.triangle")
+            if let notice = viewModel.presetRecoveryNotice {
+                Label(notice, systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityLabel("Preset partially recovered")
-                    .accessibilityValue(recoveryMessage)
+                    .accessibilityValue(notice)
             }
 
             HStack(spacing: 8) {
@@ -54,12 +54,6 @@ public struct FooterView: View {
         case .unsaved: origin = "Unsaved"
         }
         return viewModel.isPresetModified ? "\(origin) · Modified" : origin
-    }
-
-    private var recoveryMessage: String {
-        let count = viewModel.presetWarnings.count
-        let skipped = count == 1 ? "1 effect was skipped" : "\(count) effects were skipped"
-        return "Preset partially recovered: \(skipped). Use Save As to save this recovered chain."
     }
 
     /// Closes the entire application. MenuBarExtra apps stay alive after the

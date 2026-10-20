@@ -37,9 +37,11 @@ Work toward v0.1.0. Nothing has been tagged or released yet.
   sessions do not inherit an exported-file identity.
 - Explicit Save (Cmd-S) to a known safe file and Save As (Shift-Cmd-S) with the
   current name prefilled. Receipts update only after a successful write.
-- Nonblocking partial-load recovery notices. Recovered chains require explicit
-  Save As before they become a known direct-Save target, protecting the original
-  file from an accidental subset overwrite.
+- Nonblocking import-recovery notices for skipped effects, unsupported imported
+  fields and clamped values. Recovered chains require explicit Save As before
+  they become a known direct-Save target, protecting the original from a lossy
+  overwrite. Same-read decoding reports sanitized field occurrences; supported
+  Q repair/rounding and legacy reverb preset canonicalization remain clean.
 - "Preserve Bluetooth quality during capture" setting (ADR-019, Layer A).
 
 - Release bundler producing a `.app` and a compressed `.dmg`. See the signing

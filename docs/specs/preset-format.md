@@ -154,11 +154,16 @@ The `EffectNode` protocol's `init(from decoder: Decoder)` is not used by the pre
 A preset may reference effects that don't exist (older preset, newer build) or that have new/removed parameters. The loader:
 
 1. **Unknown `typeIdentifier`** — the loader logs a warning and skips the node. The user sees a warning banner: "Preset contained 1 unknown effect that was skipped."
-2. **Unknown parameter identifier** — silently ignored (forward compat).
+2. **Unknown parameter identifier** — ignored by effect restoration (forward
+   compat), with a file-import fidelity notice and Save As requirement if the
+   key is absent from the restored snapshot.
 3. **Missing required parameter** — the effect uses its default value, logs a warning.
 4. **Parameter out of range** — clamped to range, logs a warning.
 
-The loader never throws on a recoverable mismatch. It returns the best-effort graph and a list of warnings. The UI surfaces warnings as a non-blocking notice.
+The loader never throws on a recoverable mismatch. It returns the best-effort
+graph and skipped-node warnings. The UI combines those warnings with independent
+file-import fidelity checks into a nonblocking notice; range clamping need not
+produce a skipped-node warning to require Save As.
 
 ## Bundled presets
 
@@ -186,12 +191,36 @@ Receipt/Modified/provenance state is memory-only and adds no schema fields.
 Restored sessions and factory presets have no known writable file target.
 
 Partial recovery skips unknown or failed effects and keeps a visible nonblocking
-warning. The recovered subset has no safe direct-Save target, even if it matches
+warning. Imports also require recovery when unsupported fields/keys would be
+discarded or supported values require range clamping, even if no effects were
+skipped. Their fidelity notice is separate from skipped-node warnings and does
+not invent a skipped-effect count. The recovered version has no safe direct-Save
+target, even if it matches
 its canonical post-load baseline. Save As is required to establish a new clean
 file receipt; its prefill retains the original basename and normal AppKit
 confirmation applies if the user explicitly chooses to overwrite the original.
 Cancel or failure preserves recovery context. Successful save establishes the
-new baseline and clears warnings. See [UI](ui.md#presetmenu) for receipt behavior.
+new baseline and clears warnings/notices. See [UI](ui.md#presetmenu) for receipt behavior.
+
+### Same-read import fidelity
+
+`PresetStore.loadResult(from:)` reads file data once and returns
+`PresetLoadResult { preset, diagnostics }`. `decodeResult(_:source:)` decodes
+and inspects through the same decoder/input bytes without opening `source`.
+Existing `load` and `decode` remain compatible wrappers returning `.preset`,
+with the existing error mapping. V1 root/node allowlists follow the fields in
+the tables above. `PresetDecodeDiagnostic.path` exposes only schema locations
+and occurrence indices (for example `$.nodes[0].unknownFields[0]`); unknown key
+names and values are not included. Unknown values remain opaque during inspection.
+
+After migration and restoration the VM checks corresponding node occurrences
+for dropped parameter/extras keys and range clamping using runtime parameter
+metadata. It does not use general float snapshot inequality as an import-loss
+test: normal Q roundtrips, intentional corrupt-Q repair and legacy integer
+reverb preset canonicalization remain supported. Actual restored state is the
+clean graph baseline; original-file fidelity is a separate receipt concern.
+No raw-JSON preservation store, persistence fields or schema version change is
+introduced. Original imported bytes remain untouched until an explicit save.
 
 A future version may add an in-app preset library that watches a configured directory.
 

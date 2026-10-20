@@ -82,7 +82,7 @@ public enum PresetOrigin: Equatable {
     case session
     /// A successfully opened or saved file, safe for explicit direct Save.
     case file
-    /// A partial restoration with skipped effects; requires explicit Save As.
+    /// A restoration with skipped effects or unsupported/adjusted imported data.
     case recovered
     /// An empty fallback when neither session nor bundled restoration succeeded.
     case unsaved
@@ -124,6 +124,7 @@ public final class AppViewModel: ObservableObject {
         let fileURL: URL?
         let origin: PresetOrigin
         let warnings: [PresetLoadWarning]
+        let fidelityLoss: Bool
         let baseline: GraphPreset
     }
 
@@ -140,6 +141,23 @@ public final class AppViewModel: ObservableObject {
 
     /// Nonblocking recovery warnings; unaffected by dismissing an error banner.
     public var presetWarnings: [PresetLoadWarning] { presetReceipt.warnings }
+
+    /// Combined nonblocking recovery notice. Fidelity loss is independent of
+    /// skipped-node warnings and never implies that an effect was skipped.
+    public var presetRecoveryNotice: String? {
+        var parts: [String] = []
+        if !presetWarnings.isEmpty {
+            let count = presetWarnings.count
+            let skipped = count == 1 ? "1 effect was skipped" : "\(count) effects were skipped"
+            parts.append("Preset partially recovered: \(skipped).")
+        }
+        if presetReceipt.fidelityLoss {
+            parts.append("Some preset data was unsupported or adjusted.")
+        }
+        guard !parts.isEmpty else { return nil }
+        parts.append("Use Save As to save this version.")
+        return parts.joined(separator: " ")
+    }
 
     /// Suggested Save As filename. This is a label, not a persistent file identity.
     public var suggestedPresetFilename: String { presetName + ".tnf" }
@@ -439,6 +457,7 @@ public final class AppViewModel: ObservableObject {
             fileURL: nil,
             origin: restored.graph.lastLoadWarnings.isEmpty ? restored.origin : .recovered,
             warnings: restored.graph.lastLoadWarnings,
+            fidelityLoss: false,
             baseline: restored.graph.snapshot()
         )
 
@@ -861,7 +880,8 @@ public final class AppViewModel: ObservableObject {
             try PresetStore.save(snapshot, to: url)
             // A failed write must leave the previous receipt and baseline intact.
             presetReceipt = PresetReceipt(
-                name: snapshot.name, fileURL: url, origin: .file, warnings: [], baseline: snapshot
+                name: snapshot.name, fileURL: url, origin: .file, warnings: [], fidelityLoss: false,
+                baseline: snapshot
             )
         } catch {
             lastError = .preset("Save failed: \(error.localizedDescription)")
@@ -870,10 +890,12 @@ public final class AppViewModel: ObservableObject {
 
     public func loadPreset(from url: URL) {
         do {
-            let preset = try PresetStore.load(from: url)
-            try installPreset(PresetMigrator.migrate(preset))
+            let result = try PresetStore.loadResult(from: url)
+            let migrated = PresetMigrator.migrate(result.preset)
+            try installPreset(migrated)
             recordLoadedPreset(
-                name: url.deletingPathExtension().lastPathComponent, fileURL: url, origin: .file
+                name: url.deletingPathExtension().lastPathComponent, fileURL: url, origin: .file,
+                fidelityLoss: !result.diagnostics.isEmpty || Self.hasImportFidelityLoss(migrated, restored: graph)
             )
         } catch {
             lastError = .preset("Load failed: \(error.localizedDescription)")
@@ -896,16 +918,62 @@ public final class AppViewModel: ObservableObject {
 
     // MARK: Internals
 
-    private func recordLoadedPreset(name: String, fileURL: URL?, origin: PresetOrigin) {
+    private func recordLoadedPreset(
+        name: String, fileURL: URL?, origin: PresetOrigin, fidelityLoss: Bool = false
+    ) {
         let warnings = graph.lastLoadWarnings
+        let recovered = !warnings.isEmpty || fidelityLoss
         presetReceipt = PresetReceipt(
             name: name,
-            fileURL: warnings.isEmpty ? fileURL : nil,
-            origin: warnings.isEmpty ? origin : .recovered,
+            fileURL: recovered ? nil : fileURL,
+            origin: recovered ? .recovered : origin,
             warnings: warnings,
+            fidelityLoss: fidelityLoss,
             // Use actual restored values (including Q roundtrips), not raw JSON.
             baseline: graph.snapshot()
         )
+    }
+
+    /// Classify loss against migrated input, not raw float snapshot inequality.
+    /// Q repair/rounding and integer-to-name reverb canonicalization are supported.
+    private static func hasImportFidelityLoss(_ input: GraphPreset, restored: Graph) -> Bool {
+        guard (Float(0)...Float(2)).contains(input.outputGain) else { return true }
+        let actualStates = restored.nodes.map { $0.snapshot() }
+        let completeOrderedMatch = input.nodes.count == actualStates.count
+            && zip(input.nodes, actualStates).allSatisfy { pair in
+                pair.0.id == pair.1.id && pair.0.typeIdentifier == pair.1.typeIdentifier
+            }
+        var inputCursor = 0
+        for (outputIndex, node) in restored.nodes.enumerated() {
+            let actual = actualStates[outputIndex]
+            // UUIDs are untrusted and may repeat. Match ordered occurrences by
+            // ID AND type, never a unique-key dictionary. Ambiguity is unsafe.
+            let index: Int
+            if completeOrderedMatch {
+                // With no missing occurrences, order disambiguates even repeated
+                // ID/type pairs; duplicate UUIDs alone do not imply lost data.
+                index = outputIndex
+            } else {
+                let candidates = input.nodes.indices.filter { index in
+                    index >= inputCursor && input.nodes[index].id == actual.id
+                        && input.nodes[index].typeIdentifier == actual.typeIdentifier
+                }
+                guard candidates.count == 1, let match = candidates.first else { return true }
+                index = match
+            }
+            let original = input.nodes[index]
+            inputCursor = index + 1
+            guard (Float(0)...Float(1)).contains(original.wetDryMix),
+                  Set(original.parameters.keys).isSubset(of: Set(actual.parameters.keys)),
+                  Set(original.extras.keys).isSubset(of: Set(actual.extras.keys))
+            else { return true }
+            for parameter in node.parameters {
+                if let value = original.parameters[parameter.identifier], !parameter.range.contains(value) {
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     /// Apply a mutation closure to the graph. If the engine is running,

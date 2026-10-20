@@ -59,6 +59,7 @@ public final class AppViewModel: ObservableObject {
     var isPresetModified: Bool { get }
     var suggestedPresetFilename: String { get }
     var presetWarnings: [PresetLoadWarning] { get }
+    var presetRecoveryNotice: String? { get }
     
     private let capture: CaptureControllerProtocol
     private let engine: AVAudioEngine
@@ -195,16 +196,32 @@ JSON falling back to the bundled preset retains Factory provenance. If neither
 restoration succeeds, the empty chain is “Untitled” / Unsaved. Initial baselines
 use actual restored graph snapshots, including canonicalized EQ Q values.
 
-A partial load is Recovered and has a persistent, nonblocking footer notice
-with the number of skipped effects. Dismissing an error or closing Diagnostics
-does not hide it. Matching the recovered baseline does not mean the chain is
-identical to the original file. There is no safe direct-Save URL until explicit
+A partial or lossy file import is Recovered and has a persistent, nonblocking
+footer notice. `presetWarnings` continues to describe skipped effects only;
+`presetRecoveryNotice` combines their count with an independent fidelity-loss
+notice when imported data was unsupported or adjusted. With no skipped nodes,
+the notice never claims effects were skipped. Dismissing an error or closing
+Diagnostics does not hide it. Partial session initialization likewise retains
+the “Restored Session” label, skipped-node warnings and Recovered provenance.
+Matching the canonical recovered baseline does not mean the chain is identical
+to the original file. There is no safe direct-Save URL until explicit
 Save As succeeds; prefill retains the original basename. Loading never rewrites
 the original file. Save As may explicitly choose that same path through normal
 AppKit overwrite confirmation. A successful save establishes File provenance,
-the new baseline and safe URL, and clears recovery warnings. Save/write failure
+the new baseline and safe URL, and clears all recovery warnings/notices. Save/write failure
 retains the previous receipt/baseline; failed load retains the graph and receipt.
 The write completes before the VM changes the receipt.
+
+The file-import fidelity classifier uses decode diagnostics from the same bytes
+and compares migrated input to corresponding restored node occurrences by
+ID/type/order. It detects unknown root/node fields, dropped parameter/extras
+keys, output gain outside 0–2, wet/dry outside 0–1 and parameters outside their
+runtime metadata ranges. Duplicate UUIDs are not unique dictionary keys:
+complete ordered occurrences remain supported, while ambiguous partial matches
+are treated conservatively. Normal Q rounding, intentional corrupt-Q migration
+and supported integer-to-name reverb canonicalization do not imply fidelity
+loss. Exact graph dirty comparison remains unchanged; no numeric tolerance or
+editor/save-queue behavior is introduced by this classification.
 
 ## PowerToggle
 
