@@ -13,6 +13,10 @@ Work toward v0.1.0. Nothing has been tagged or released yet.
 
 ### Added
 
+- Dedicated fake-backed offscreen panel evidence workflow: ten native-hosted
+  light/dark PNGs, measured geometry, checkout/toolchain/state metadata, and
+  decoded artifact checks. Images require visual review and do not replace the
+  manual layout gate. See `docs/rendered-evidence.md`.
 - Audio capture from a chosen application via Core Audio process taps, with a
   direct IOProc reader and a single-lock SPSC ring buffer (ADR-018). The
   buffer guards each read and write with an `OSAllocatedUnfairLock` over a
@@ -49,6 +53,9 @@ Work toward v0.1.0. Nothing has been tagged or released yet.
 
 ### Fixed
 
+- Rendered-evidence fixtures wait for exact fake-source enumeration as well as
+  capture state/error; validation rejects missing sources before observation.
+  The dedicated evidence workflow runs both fixture regression classes.
 - Menu panel collapsed on macOS 27, taking the effect list with it. The chain
   editor's `ScrollView` was constrained only by `maxHeight` inside a window
   that sizes to its content's fitting height; height floors now keep the panel
