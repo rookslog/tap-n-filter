@@ -1,3 +1,4 @@
+import AVFoundation
 import Effects
 import Foundation
 import Graph
@@ -388,3 +389,255 @@ final class PresetImportFidelityTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: original), bytes)
     }
 }
+
+extension PresetImportFidelityTests {
+    /// Fake-only classification/file-protection witnesses, not a reproduction of
+    /// U-015's native cause or a real menu/panel interaction.
+    func test_pure_fake_HP_frequency_restore_loss_withholds_direct_save_and_preserves_original_file() throws {
+        try assertR7FrequencyLoss(R7HighPassFrequencyNode.self, identifier: "hp.frequency", restoredValue: 20)
+    }
+
+    func test_pure_fake_LP_frequency_restore_loss_withholds_direct_save_and_preserves_original_file() throws {
+        try assertR7FrequencyLoss(R7LowPassFrequencyNode.self, identifier: "lp.frequency", restoredValue: 200)
+    }
+
+    func test_pure_fake_matching_HP_and_LP_frequencies_retain_file_origin_and_direct_save() throws {
+        try assertR7MatchingFrequencies(R7HighPassFrequencyNode.self)
+        try assertR7MatchingFrequencies(R7LowPassFrequencyNode.self)
+    }
+
+    private func r7FrequencyPreset(highPass: Float = 100, lowPass: Float = 1_200) -> GraphPreset {
+        GraphPreset(name: "Frequency witness", outputGain: 0.75, nodes: [
+            EffectState(typeIdentifier: "tnf.eq", id: UUID(), displayName: "Stored filter name",
+                        bypass: true, wetDryMix: 0.4,
+                        parameters: ["hp.frequency": highPass, "hp.Q": 1,
+                                     "lp.frequency": lowPass, "lp.Q": 1.5], extras: [:]),
+        ])
+    }
+
+    private func makeR7FrequencyModel<Node: R7FrequencyNode>(
+        _ nodeType: Node.Type, initial: GraphPreset
+    ) throws -> (model: AppViewModel, capture: MockCaptureController, engine: AVAudioEngine) {
+        let registry = EffectNodeRegistry()
+        registry.register(nodeType)
+        // Seed the same local fake route for session initialization, avoiding
+        // construction of any native EQ through the bundled fallback preset.
+        fixture.defaults.set(try JSONEncoder().encode(initial), forKey: AppViewModelDefaultsKey.graph)
+        let capture = MockCaptureController()
+        let engine = AVAudioEngine()
+        let model = AppViewModel(capture: capture, engine: engine, registry: registry, defaults: fixture.defaults)
+        return (model, capture, engine)
+    }
+
+    private func assertR7FrequencyLoss<Node: R7FrequencyNode>(
+        _ nodeType: Node.Type, identifier: String, restoredValue: Float
+    ) throws {
+        let input = r7FrequencyPreset()
+        let originalState = try XCTUnwrap(input.nodes.first)
+        let requested = try XCTUnwrap(originalState.parameters[identifier])
+        let parameter = try XCTUnwrap(EQNode.parameterCatalog.first { $0.identifier == identifier })
+        XCTAssertTrue(parameter.range.contains(requested))
+        XCTAssertTrue(parameter.range.contains(restoredValue))
+        XCTAssertNotEqual(requested, restoredValue)
+        XCTAssertEqual(Set(originalState.parameters.keys), Set(EQNode.parameterCatalog.map { $0.identifier }))
+        for catalogParameter in EQNode.parameterCatalog {
+            let value = try XCTUnwrap(originalState.parameters[catalogParameter.identifier])
+            XCTAssertTrue(catalogParameter.range.contains(value), "Every requested catalog value is valid")
+        }
+        XCTAssertEqual(PresetMigrator.migrate(input), input, "No migration loss can explain recovery")
+        let original = try write(input)
+        let bytes = try Data(contentsOf: original)
+        let decoded = try PresetStore.loadResult(from: original)
+        XCTAssertEqual(decoded.preset, input)
+        XCTAssertTrue(decoded.diagnostics.isEmpty, "No unknown raw fields can explain recovery")
+        let (model, capture, engine) = try makeR7FrequencyModel(nodeType, initial: input)
+
+        model.loadPreset(from: original)
+
+        XCTAssertNil(model.lastError, "Nonthrowing frequency loss must not reject the import")
+        let fake = try XCTUnwrap(model.graph.nodes.first as? Node)
+        XCTAssertEqual(model.graph.nodes.count, 1)
+        XCTAssertEqual(fake.parameters.map { $0.identifier }, EQNode.parameterCatalog.map { $0.identifier })
+        XCTAssertEqual(fake.parameterValue(identifier), restoredValue)
+        var expectedParameters = originalState.parameters
+        expectedParameters[identifier] = restoredValue
+        let expectedState = EffectState(
+            typeIdentifier: originalState.typeIdentifier, id: originalState.id,
+            displayName: originalState.displayName, bypass: originalState.bypass,
+            wetDryMix: originalState.wetDryMix, parameters: expectedParameters, extras: originalState.extras
+        )
+        let restored = model.graph.snapshot()
+        XCTAssertEqual(restored, GraphPreset(name: "snapshot", outputGain: input.outputGain, nodes: [expectedState]),
+                       "Only one frequency differs; all other input state and catalog keys survive")
+        XCTAssertTrue(model.graph.lastLoadWarnings.isEmpty)
+        XCTAssertTrue(model.presetWarnings.isEmpty, "Nothing was skipped")
+        XCTAssertEqual(model.presetName, "Imported")
+        XCTAssertEqual(model.suggestedPresetFilename, "Imported.tnf")
+        XCTAssertEqual(model.presetOrigin, .recovered)
+        XCTAssertNil(model.presetFileURL)
+        // Nonthrowing assertions keep the Save/file-protection oracle reachable on baseline.
+        XCTAssertNotNil(model.presetRecoveryNotice)
+        XCTAssertEqual(model.presetRecoveryNotice?.contains("unsupported or adjusted"), true)
+        XCTAssertEqual(model.presetRecoveryNotice?.contains("Save As"), true)
+        XCTAssertEqual(model.presetRecoveryNotice?.contains("skipped"), false)
+        XCTAssertFalse(model.isPresetModified, "Canonical restored values are the clean baseline")
+        XCTAssertEqual(try Data(contentsOf: original), bytes)
+
+        // The existing PresetMenu Save selection, without invoking GUI/panels.
+        // A nil target takes the unaccepted Save As path and therefore writes nothing.
+        if let target = model.presetFileURL { model.savePreset(to: target) }
+
+        XCTAssertNil(model.lastError)
+        XCTAssertEqual(try Data(contentsOf: original), bytes, "Menu Save must not replace the requested frequency")
+        XCTAssertEqual(try PresetStore.load(from: original), input)
+        XCTAssertEqual(try PresetStore.load(from: original).nodes.first?.parameters[identifier], requested)
+        XCTAssertEqual(model.graph.snapshot(), restored)
+        XCTAssertFalse(model.isPresetModified)
+        XCTAssertEqual(model.presetOrigin, .recovered)
+        XCTAssertNil(model.presetFileURL)
+
+        // Explicit different-path Save As remains allowed and exports actual restored state.
+        let target = fixture.url("Recovered \(identifier) Copy.tnf")
+        XCTAssertNotEqual(target, original)
+        model.savePreset(to: target)
+
+        XCTAssertNil(model.lastError)
+        let exported = try PresetStore.load(from: target)
+        XCTAssertEqual(exported, model.graph.snapshot(name: target.deletingPathExtension().lastPathComponent))
+        XCTAssertEqual(exported.nodes, restored.nodes)
+        XCTAssertEqual(exported.nodes.first?.parameters[identifier], restoredValue)
+        XCTAssertEqual(model.presetOrigin, .file)
+        XCTAssertEqual(model.presetFileURL, target)
+        XCTAssertNil(model.presetRecoveryNotice)
+        XCTAssertTrue(model.presetWarnings.isEmpty)
+        XCTAssertFalse(model.isPresetModified)
+        XCTAssertEqual(try Data(contentsOf: original), bytes)
+        XCTAssertEqual(try PresetStore.load(from: original).nodes.first?.parameters[identifier], requested)
+        XCTAssertTrue(capture.startCalls.isEmpty)
+        XCTAssertFalse(engine.isRunning)
+        XCTAssertEqual(fake.attachmentAttempts, 0)
+    }
+
+    private func assertR7MatchingFrequencies<Node: R7FrequencyNode>(_ nodeType: Node.Type) throws {
+        // Same fake implementations and registry path, but neither deterministic
+        // loss trigger is requested. Both frequencies must remain directly saveable.
+        let input = r7FrequencyPreset(highPass: 80, lowPass: 800)
+        let original = try write(input)
+        let bytes = try Data(contentsOf: original)
+        let (model, capture, engine) = try makeR7FrequencyModel(nodeType, initial: input)
+
+        model.loadPreset(from: original)
+
+        XCTAssertNil(model.lastError)
+        let fake = try XCTUnwrap(model.graph.nodes.first as? Node)
+        XCTAssertEqual(model.graph.nodes.count, 1)
+        XCTAssertEqual(Set(fake.parameters.map { $0.identifier }), Set(input.nodes[0].parameters.keys))
+        XCTAssertEqual(model.graph.snapshot().nodes, input.nodes)
+        XCTAssertEqual(fake.parameterValue("hp.frequency"), 80)
+        XCTAssertEqual(fake.parameterValue("lp.frequency"), 800)
+        XCTAssertEqual(model.presetOrigin, .file)
+        XCTAssertEqual(model.presetFileURL, original)
+        XCTAssertNil(model.presetRecoveryNotice)
+        XCTAssertTrue(model.presetWarnings.isEmpty)
+        XCTAssertTrue(model.graph.lastLoadWarnings.isEmpty)
+        XCTAssertFalse(model.isPresetModified)
+        XCTAssertEqual(try Data(contentsOf: original), bytes)
+        model.updateParameter(nodeID: fake.id, paramID: "hp.Q", value: 2)
+        XCTAssertTrue(model.isPresetModified)
+
+        if let target = model.presetFileURL { model.savePreset(to: target) }
+
+        XCTAssertNil(model.lastError)
+        XCTAssertEqual(try PresetStore.load(from: original), model.graph.snapshot(name: "Imported"))
+        XCTAssertEqual(try PresetStore.load(from: original).nodes.first?.parameters["hp.Q"], 2)
+        XCTAssertNotEqual(try Data(contentsOf: original), bytes, "Matching import retains real direct-Save authority")
+        XCTAssertEqual(fake.parameterValue("hp.frequency"), 80)
+        XCTAssertEqual(fake.parameterValue("lp.frequency"), 800)
+        XCTAssertEqual(model.presetOrigin, .file)
+        XCTAssertEqual(model.presetFileURL, original)
+        XCTAssertNil(model.presetRecoveryNotice)
+        XCTAssertFalse(model.isPresetModified)
+        XCTAssertTrue(capture.startCalls.isEmpty)
+        XCTAssertFalse(engine.isRunning)
+        XCTAssertEqual(fake.attachmentAttempts, 0)
+    }
+}
+
+/// Stores pure value state; the mixers satisfy the protocol only. No native EQ
+/// instance, parameter hook, global mutable mode, or audio attachment is used.
+private class R7FrequencyNode: DefaultConstructibleEffectNode {
+    static let typeIdentifier = "tnf.eq"
+    static let showsWetDryByDefault = false
+    var id = UUID()
+    var displayName = "Pure frequency fixture"
+    var bypass = false
+    var wetDryMix: Float = 1
+    let inputBus = AVAudioMixerNode()
+    let outputBus = AVAudioMixerNode()
+    var parameters: [EffectParameter] { EQNode.parameterCatalog }
+    private var values = Dictionary(uniqueKeysWithValues: EQNode.parameterCatalog.map {
+        ($0.identifier, $0.defaultValue)
+    })
+    private var extras: [String: AnyCodableValue] = [:]
+    private(set) var attachmentAttempts = 0
+    var frequencyReplacement: (identifier: String, requested: Float, restored: Float)? { nil }
+
+    required init() {}
+
+    required convenience init(from decoder: Decoder) throws {
+        self.init()
+        try restore(from: EffectState(from: decoder))
+    }
+
+    func setParameter(_ identifier: String, value: Float) throws {
+        guard let parameter = parameters.first(where: { $0.identifier == identifier }) else {
+            throw EffectParameterError.unknownParameter(identifier: identifier)
+        }
+        guard value.isFinite, parameter.range.contains(value) else {
+            throw EffectParameterError.valueOutOfRange(identifier: identifier, value: value, range: parameter.range)
+        }
+        values[identifier] = value
+    }
+
+    func parameterValue(_ identifier: String) -> Float? { values[identifier] }
+
+    func snapshot() -> EffectState {
+        EffectState(typeIdentifier: Self.typeIdentifier, id: id, displayName: displayName,
+                    bypass: bypass, wetDryMix: wetDryMix, parameters: values, extras: extras)
+    }
+
+    func restore(from state: EffectState) {
+        id = state.id
+        displayName = state.displayName
+        bypass = state.bypass
+        wetDryMix = state.wetDryMix
+        values = state.parameters
+        extras = state.extras
+        if let replacement = frequencyReplacement,
+           values[replacement.identifier] == replacement.requested {
+            values[replacement.identifier] = replacement.restored
+        }
+    }
+
+    func attach(to engine: AVAudioEngine) throws {
+        attachmentAttempts += 1
+        XCTFail("Pure frequency fixtures must never attach to an engine")
+        throw R7FrequencyFixtureError.audioLifecycle
+    }
+
+    func detach() {}
+}
+
+private final class R7HighPassFrequencyNode: R7FrequencyNode {
+    override var frequencyReplacement: (identifier: String, requested: Float, restored: Float)? {
+        ("hp.frequency", 100, 20)
+    }
+}
+
+private final class R7LowPassFrequencyNode: R7FrequencyNode {
+    override var frequencyReplacement: (identifier: String, requested: Float, restored: Float)? {
+        ("lp.frequency", 1_200, 200)
+    }
+}
+
+private enum R7FrequencyFixtureError: Error { case audioLifecycle }

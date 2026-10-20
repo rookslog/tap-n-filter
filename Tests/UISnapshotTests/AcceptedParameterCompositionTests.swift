@@ -1552,3 +1552,195 @@ final class AcceptedParameterScheduler {
 }
 
 enum AcceptedParameterSchedulerError: Error { case noScheduledCallback }
+
+extension AcceptedParameterCompositionTests {
+    func test_inflight_public_success_cannot_replace_genuine_draft_observation_when_readback_becomes_nil() throws {
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let editor = fixture.writer(node, model).makeEditor()
+        editor.drag(to: 0.7)
+        let oldTick = try scheduler.takeNext()
+        let locale = fixture.locale
+        var callbacks = 0
+        var validationError: String?
+        node.afterAttempt = { [weak node] requested in
+            guard let node else { return XCTFail("The live target must remain available") }
+            node.afterAttempt = nil
+            callbacks += 1
+            XCTAssertEqual(requested, 4)
+            // Genuine external mutation during the VM setter, not a result injection.
+            XCTAssertNoThrow(try node.setParameter("amount", value: 6))
+            XCTAssertEqual(node.parameterValue("amount"), 6)
+            editor.beginEditing(locale: locale)
+            XCTAssertEqual(editor.value, 6)
+            XCTAssertEqual(editor.text, "6.0")
+            editor.text = "invalid in-flight draft"
+            XCTAssertFalse(editor.commit(locale: locale))
+            validationError = editor.errorMessage
+            XCTAssertNotNil(validationError)
+            node.readbackAvailable = false
+        }
+
+        model.updateParameter(nodeID: node.id, paramID: "amount", value: 4)
+
+        XCTAssertEqual(callbacks, 1)
+        XCTAssertNil(model.lastError)
+        XCTAssertNil(node.parameterValue("amount"))
+        XCTAssertEqual(node.value, 6)
+        XCTAssertEqual(editor.value, 6, "Already-started outer 4 cannot displace observed 6 beneath the draft")
+        XCTAssertEqual(editor.text, "invalid in-flight draft")
+        XCTAssertTrue(editor.isEditing)
+        XCTAssertEqual(editor.errorMessage, validationError)
+        XCTAssertNotNil(editor.errorMessage)
+        XCTAssertEqual(node.attempts, [4, 6])
+        oldTick()
+
+        // No setter rejected: Save is allowed and must ignore the invalid draft.
+        let target = fixture.url("r7-inflight-draft.tnf")
+        model.savePreset(to: target)
+
+        XCTAssertNil(model.lastError)
+        XCTAssertEqual(model.presetFileURL, target)
+        XCTAssertFalse(model.isPresetModified)
+        XCTAssertEqual(try fixture.exportedValue("r7-inflight-draft.tnf"), 6)
+        XCTAssertEqual(node.value, 6)
+        XCTAssertEqual(editor.value, 6)
+        XCTAssertEqual(editor.text, "invalid in-flight draft")
+        XCTAssertTrue(editor.isEditing)
+        XCTAssertEqual(editor.errorMessage, validationError)
+        editor.cancel()
+        XCTAssertEqual(editor.value, 6)
+        XCTAssertEqual(editor.text, "6.0")
+        XCTAssertFalse(editor.isEditing)
+        XCTAssertNil(editor.errorMessage)
+        oldTick()
+        scheduler.runAll()
+        XCTAssertEqual(scheduler.count, 0)
+        XCTAssertEqual(node.attempts, [4, 6], "Save, Cancel and obsolete 7 ticks must never write")
+    }
+
+    func test_inflight_ordinary_model_observation_survives_nil_completion_and_later_real_read_reconciles_draft() throws {
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let editor = fixture.writer(node, model).makeEditor()
+        editor.drag(to: 0.7)
+        let oldTick = try scheduler.takeNext()
+        var callbacks = 0
+        node.afterAttempt = { [weak node] requested in
+            guard let node else { return XCTFail("The live target must remain available") }
+            node.afterAttempt = nil
+            callbacks += 1
+            XCTAssertEqual(requested, 4)
+            XCTAssertNoThrow(try node.setParameter("amount", value: 6))
+            guard let actual = node.parameterValue("amount") else {
+                return XCTFail("Ordinary observation must read real available state")
+            }
+            XCTAssertEqual(actual, 6)
+            editor.receiveModelValue(actual)
+            XCTAssertEqual(editor.value, 6)
+            XCTAssertEqual(editor.text, "6.0")
+            node.readbackAvailable = false
+        }
+
+        model.updateParameter(nodeID: node.id, paramID: "amount", value: 4)
+
+        XCTAssertEqual(callbacks, 1)
+        XCTAssertNil(model.lastError)
+        XCTAssertNil(node.parameterValue("amount"))
+        XCTAssertEqual(node.value, 6)
+        XCTAssertEqual(editor.value, 6)
+        XCTAssertEqual(editor.text, "6.0")
+        XCTAssertFalse(editor.isEditing)
+        editor.beginEditing(locale: fixture.locale)
+        editor.text = "9"
+        editor.cancel()
+        XCTAssertEqual(editor.value, 6)
+        XCTAssertEqual(editor.text, "6.0")
+        XCTAssertFalse(editor.isEditing)
+        XCTAssertNil(editor.errorMessage)
+        oldTick()
+        model.savePreset(to: fixture.url("r7-inflight-ordinary.tnf"))
+        XCTAssertNil(model.lastError)
+        XCTAssertEqual(try fixture.exportedValue("r7-inflight-ordinary.tnf"), 6)
+        XCTAssertFalse(model.isPresetModified)
+        XCTAssertEqual(node.attempts, [4, 6])
+
+        // Nil completion cleared actual authority; fallback 6 is not a cached actual.
+        editor.beginEditing(locale: fixture.locale)
+        editor.text = "invalid later draft"
+        XCTAssertFalse(editor.commit(locale: fixture.locale))
+        XCTAssertNotNil(editor.errorMessage)
+        node.readbackAvailable = true
+        let actual = try XCTUnwrap(node.parameterValue("amount"))
+        XCTAssertEqual(actual, 6)
+        editor.receiveModelValue(actual)
+        XCTAssertEqual(editor.value, 6)
+        XCTAssertEqual(editor.text, "6.0", "Restored genuine read must reconcile even when equal to fallback")
+        XCTAssertTrue(editor.isEditing)
+        XCTAssertNil(editor.errorMessage)
+        oldTick()
+        scheduler.runAll()
+        XCTAssertEqual(node.attempts, [4, 6], "Observations and obsolete ticks cannot invoke a setter")
+        XCTAssertEqual(node.value, 6)
+    }
+
+    func test_invocation_started_after_inflight_observation_can_establish_newer_nil_success_beneath_draft() throws {
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let editor = fixture.writer(node, model).makeEditor()
+        editor.drag(to: 0.7)
+        let oldTick = try scheduler.takeNext()
+        let locale = fixture.locale
+        var callbacks = 0
+        var validationError: String?
+        node.afterAttempt = { [weak node] requested in
+            guard let node else { return XCTFail("The live target must remain available") }
+            node.afterAttempt = nil
+            callbacks += 1
+            XCTAssertEqual(requested, 4)
+            XCTAssertNoThrow(try node.setParameter("amount", value: 6))
+            XCTAssertEqual(node.parameterValue("amount"), 6)
+            editor.beginEditing(locale: locale)
+            XCTAssertEqual(editor.value, 6)
+            editor.text = "invalid draft before newer invocation"
+            XCTAssertFalse(editor.commit(locale: locale))
+            validationError = editor.errorMessage
+            XCTAssertNotNil(validationError)
+            node.readbackAvailable = false
+            // Unlike outer 4, this public invocation genuinely starts AFTER observing 6.
+            model.updateParameter(nodeID: node.id, paramID: "amount", value: 8)
+        }
+
+        model.updateParameter(nodeID: node.id, paramID: "amount", value: 4)
+
+        XCTAssertEqual(callbacks, 1)
+        XCTAssertNil(model.lastError)
+        XCTAssertNil(node.parameterValue("amount"))
+        XCTAssertEqual(node.value, 8)
+        XCTAssertEqual(editor.value, 8, "Later invocation 8 must win over observation 6 and older completion 4")
+        XCTAssertEqual(editor.text, "invalid draft before newer invocation")
+        XCTAssertTrue(editor.isEditing)
+        XCTAssertEqual(editor.errorMessage, validationError)
+        XCTAssertNotNil(editor.errorMessage)
+        XCTAssertEqual(node.attempts, [4, 6, 8])
+        oldTick()
+        let target = fixture.url("r7-inflight-newer-success.tnf")
+        model.savePreset(to: target)
+        XCTAssertNil(model.lastError)
+        XCTAssertEqual(model.presetFileURL, target)
+        XCTAssertFalse(model.isPresetModified)
+        XCTAssertEqual(try fixture.exportedValue("r7-inflight-newer-success.tnf"), 8)
+        XCTAssertEqual(editor.value, 8)
+        XCTAssertEqual(editor.text, "invalid draft before newer invocation")
+        XCTAssertTrue(editor.isEditing)
+        XCTAssertEqual(editor.errorMessage, validationError)
+        editor.cancel()
+        XCTAssertEqual(editor.value, 8)
+        XCTAssertEqual(editor.text, "8.0")
+        XCTAssertFalse(editor.isEditing)
+        XCTAssertNil(editor.errorMessage)
+        oldTick()
+        scheduler.runAll()
+        XCTAssertEqual(node.attempts, [4, 6, 8])
+    }
+}
