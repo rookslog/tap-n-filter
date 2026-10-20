@@ -42,21 +42,41 @@ final class PresetImportFidelityTests: XCTestCase {
     }
 
     @discardableResult
-    private func assertFidelityRecovery(_ url: URL, skipped: Int = 0) throws -> AppViewModel {
+    private func assertFidelityRecovery(
+        _ url: URL, skipped: Int = 0, context: String = "unspecified fidelity fixture"
+    ) throws -> AppViewModel {
         let original = try Data(contentsOf: url)
         let model = fixture.makeModel()
         model.loadPreset(from: url)
+        let snapshotImmediatelyAfterLoad = model.graph.snapshot()
         XCTAssertNil(model.lastError)
         XCTAssertEqual(model.presetName, "Imported")
         XCTAssertEqual(model.presetOrigin, .recovered)
         XCTAssertNil(model.presetFileURL)
         XCTAssertEqual(model.presetWarnings.count, skipped)
-        XCTAssertFalse(model.isPresetModified, "Loss is provenance, not a fabricated graph edit")
+        let snapshotBeforeComparison = model.graph.snapshot()
+        XCTAssertFalse(model.isPresetModified,
+                       "Loss is provenance, not a fabricated graph edit; case=\(context); "
+                       + "afterLoad=\(snapshotDiagnostic(snapshotImmediatelyAfterLoad)); "
+                       + "beforeComparison=\(snapshotDiagnostic(snapshotBeforeComparison)); "
+                       + "afterComparison=\(snapshotDiagnostic(model.graph.snapshot()))")
         let notice = try XCTUnwrap(model.presetRecoveryNotice)
         XCTAssertTrue(notice.contains("unsupported or adjusted"))
         XCTAssertEqual(notice.contains("skipped"), skipped > 0)
         XCTAssertEqual(try Data(contentsOf: url), original)
         return model
+    }
+
+    private func snapshotDiagnostic(_ snapshot: GraphPreset) -> String {
+        func scalar(_ value: Float) -> String { "\(value)[0x\(String(value.bitPattern, radix: 16))]" }
+        let nodes = snapshot.nodes.enumerated().map { index, node in
+            let parameters = node.parameters.keys.sorted().map { key in
+                "\(key)=\(scalar(node.parameters[key]!))"
+            }.joined(separator: ",")
+            return "\(index):\(node.typeIdentifier)/\(node.id) bypass=\(node.bypass) "
+                + "wetDry=\(scalar(node.wetDryMix)) parameters={\(parameters)} extras=\(node.extras)"
+        }.joined(separator: "; ")
+        return "gain=\(scalar(snapshot.outputGain)); nodes=[\(nodes)]"
     }
 
     func test_unknown_raw_root_field_withholds_direct_save_without_claiming_skipped_effects() throws {
@@ -80,7 +100,7 @@ final class PresetImportFidelityTests: XCTestCase {
                     node[key] = fields
                 }
             }
-            try assertFidelityRecovery(url)
+            try assertFidelityRecovery(url, context: "unknown node[0].\(key).future.setting=0.25")
         }
     }
 
@@ -111,7 +131,9 @@ final class PresetImportFidelityTests: XCTestCase {
                     node["parameters"] = parameters
                 }
             }
-            try assertFidelityRecovery(url)
+            try assertFidelityRecovery(
+                url, context: "node[\(index)] \(key)=\(value) bits=0x\(String(value.bitPattern, radix: 16))"
+            )
         }
     }
 
