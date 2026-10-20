@@ -58,7 +58,7 @@ final class UndoRemovalTests: RemovalTestCase {
         model.removeEffect(at: 0)
 
         // An external reference must not alter the recovery snapshot.
-        try removedNode.setParameter("hp.frequency", value: 950)
+        try removedNode.setParameter("hp.frequency", value: 350)
         removedNode.displayName = "Changed after removal"
         removedNode.bypass = true
         removedNode.wetDryMix = 0.11
