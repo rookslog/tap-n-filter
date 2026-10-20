@@ -57,9 +57,16 @@ public struct SourcePickerView: View {
             }
             .labelsHidden()
             .disabled(isInTransition)
+            .help(
+                "Audio is captured per process, not per browser tab. "
+                + "For one site, try Safari's File → Add to Dock and choose its source here."
+            )
             .accessibilityLabel("Audio source")
             .accessibilityValue(viewModel.currentSource?.displayName ?? "None")
-            .accessibilityHint("Pick which app's audio to capture. Changing while running stops capture.")
+            .accessibilityHint(
+                "Pick a process, not a browser tab. For one site, try Safari's File → Add to Dock. "
+                + "Changing while running stops capture."
+            )
         }
     }
 

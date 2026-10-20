@@ -56,6 +56,10 @@ Work toward v0.1.0. Nothing has been tagged or released yet.
 - Interleaved tap buffers were mishandled, corrupting captured audio.
 - Source resolution preferred bundle identifier over pid, so with several
   instances of one app running it could capture the wrong process.
+- Source restoration and relaunch fallback now require a unique match, using
+  the saved display name alongside the bundle ID; ambiguous selections require
+  choosing the source again. Exact live PID selection retains priority. Source
+  picker help explains process-only capture and Safari Add to Dock guidance.
 
 ### Known limitations
 

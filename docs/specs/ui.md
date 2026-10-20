@@ -86,15 +86,37 @@ Picker("Source", selection: $viewModel.currentSource) {
 
 `SourceRow` shows the app icon (from `NSWorkspace.shared.icon(forFile:)` or `NSRunningApplication.icon`) and the display name. The picker is disabled while `captureState` is `.starting` or `.stopping`. Changing source while `.running` triggers `viewModel.powerOff()` followed by re-setting the source, with the user invited to power on again — V1 does not auto-restart on source change, to avoid surprise.
 
+### Source identity and session restoration
+
+The session stores `lastSession.sourceBundleID` and `lastSession.sourceDisplayName`
+together. A display name is an additional discriminator, not a stable process
+identity. Restore selects only a unique live bundle-ID-and-name match. Legacy
+sessions without a saved name restore only a unique bundle-ID match. Missing or
+ambiguous matches leave the picker unselected; list order never decides a restore.
+Changing the name within the same bundle updates persistence. Clearing selection
+or selecting a source without a nonempty bundle ID clears both saved fields.
+
+Start re-enumerates live sources and prefers the exact selected PID, including
+for bundle-less sources. If that PID has gone away, fallback requires a nonempty
+bundle ID and exactly one candidate with the selected display name. Missing or
+ambiguous matches do not start capture and tell the user to choose the source
+again, then press Start. Nil or empty bundle IDs never equate unrelated processes.
+Responsible-parent resolution, process-ancestry heuristics and source-name
+rewriting are deferred; this change does not alter live source enumeration.
+
 ### Targeting granularity and the no-tabs explainer
 
 The picker lists sources at **process granularity** — one capturable OS process per row, which is the finest unit Core Audio process taps address (ADR-020). V0.2 groups these into tiers (System audio / app-group with a process count / single process); V1 shows the flat per-process list.
 
-The picker must not imply a granularity the OS cannot deliver. Where a user looks for per-tab or per-window targeting, the picker surfaces an explainer rather than a control:
+The picker must not imply a granularity the OS cannot deliver. Native hover help
+and an accessibility hint explain the process boundary without adding controls
+or changing layout. Hover help reads:
 
-> macOS captures audio per app. Browser tabs share one process, so they can't be separated. To filter one site on its own, use Safari's **File → Add to Dock** (or launch it as a separate Chrome/Firefox instance) — it then appears here as its own source.
+> Audio is captured per process, not per browser tab. For one site, try Safari's File → Add to Dock and choose its source here.
 
-This is the only honest answer to the reframed "filter one tab" goal: the whole app is filterable, and a site can be carved into its own process by the user, but one tab among many cannot be isolated.
+The accessibility hint adds that changing source while running stops capture.
+Safari Add to Dock is guidance to try, not a guarantee that a site will expose
+a distinct capturable process. The picker offers no per-tab or per-window control.
 
 ## ChainEditorView
 
