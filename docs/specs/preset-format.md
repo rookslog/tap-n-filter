@@ -232,6 +232,13 @@ introduce required numeric keys. It does not use general float snapshot inequali
 as an import-loss test: normal Q roundtrips, intentional corrupt-Q repair and legacy integer
 reverb preset canonicalization remain supported. Actual restored state is the
 clean graph baseline; original-file fidelity is a separate receipt concern.
+For `tnf.reverb`, omission of migrated input `extras.preset` requires Recovered
+provenance, no direct-Save URL and a non-skipped fidelity notice requiring Save As.
+Restoration still succeeds with the default preset and establishes a clean actual
+baseline. This conservative original-file write-authority policy does not make
+the nested key schema-required or reject readable input. Present supported string
+presets and supported legacy integer-to-name canonicalization remain lossless;
+empty extras on unrelated complete-catalog Gain/EQ nodes do not imply fidelity loss.
 For `tnf.eq` specifically, migrated `hp.frequency` and `lp.frequency` must both
 be present and exactly equal their corresponding values in the already-captured
 restored snapshot. A missing or unequal value requires Recovered provenance,

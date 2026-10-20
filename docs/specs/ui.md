@@ -347,7 +347,14 @@ keys, missing required runtime catalog parameter keys, output gain outside 0–2
 wet/dry outside 0–1 and parameters outside their runtime metadata ranges. Missing
 keys restored from defaults require Recovered/Save As and an independent
 fidelity-loss notice, not an invented skipped-effect warning; an empty runtime
-catalog remains valid. FILE imports with duplicate UUIDs are rejected before
+catalog remains valid. For `tnf.reverb`, a missing migrated input `extras.preset`
+requires Recovered provenance, no direct-Save URL, and the non-skipped fidelity
+notice directing the user to Save As. Restoration still succeeds with the default
+preset, and actual restored state remains the clean baseline. This is conservative
+original-file write-authority policy, not schema invalidity or load rejection.
+Present supported string presets and supported legacy integer-to-name
+canonicalization remain lossless; empty extras on unrelated Gain/EQ nodes alone
+do not require recovery. FILE imports with duplicate UUIDs are rejected before
 installation, accepted-edit flushing or generation invalidation, including
 duplicates across types or occurrences that restoration would skip. The existing
 load-error surface reports rejection; the previous graph, receipt, baseline,

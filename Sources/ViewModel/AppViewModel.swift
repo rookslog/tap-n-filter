@@ -1093,6 +1093,9 @@ public final class AppViewModel: ObservableObject {
             }
             let original = input.nodes[index]
             inputCursor = index + 1
+            if original.typeIdentifier == "tnf.reverb", original.extras["preset"] == nil {
+                return true
+            }
             guard (Float(0)...Float(1)).contains(original.wetDryMix),
                   Set(original.parameters.keys).isSubset(of: Set(actual.parameters.keys)),
                   Set(original.extras.keys).isSubset(of: Set(actual.extras.keys))
