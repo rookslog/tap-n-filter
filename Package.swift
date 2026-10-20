@@ -119,7 +119,10 @@ let package = Package(
         ),
         .testTarget(
             name: "UISnapshotTests",
-            dependencies: ["UI", "ViewModel", "Capture", "Graph", "Effects", "Presets"],
+            dependencies: [
+                "UI", "ViewModel", "Capture", "Graph", "Effects", "Presets",
+                "tap-n-filter-render-evidence"
+            ],
             path: "Tests/UISnapshotTests",
             resources: [
                 .copy("__Snapshots__")

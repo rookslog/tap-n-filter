@@ -28,14 +28,14 @@ final class EvidenceFixture {
         "Fake capture cannot start.\nSelect the example source and try again."
     )
 
-    init(state: State) throws {
+    init(state: State, capture: EvidenceFakeCapture = EvidenceFakeCapture()) throws {
         self.state = state
         suiteName = "tnf.rendered-evidence.\(UUID().uuidString)"
         guard let isolated = UserDefaults(suiteName: suiteName) else {
             throw EvidenceError.invalid("Could not create isolated defaults")
         }
         defaults = isolated
-        capture = EvidenceFakeCapture()
+        self.capture = capture
         engine = AVAudioEngine()
         model = AppViewModel(
             capture: capture, engine: engine, registry: EffectNodeRegistry(), defaults: isolated
@@ -111,14 +111,21 @@ final class EvidenceFakeCapture: CaptureControllerProtocol, @unchecked Sendable 
     )
     private let subject = CurrentValueSubject<CaptureState, Never>(.idle)
     private let lock = NSLock()
+    private let enumerationProvider: @Sendable (CaptureSource) throws -> [CaptureSource]
     private var attempted = false
     var operationAttempted: Bool { lock.withLock { attempted } }
     var state: CaptureState { subject.value }
     var statePublisher: AnyPublisher<CaptureState, Never> { subject.eraseToAnyPublisher() }
     var captureSourceNode: AVAudioSourceNode? { nil }
 
+    init(
+        availableSources: @escaping @Sendable (CaptureSource) throws -> [CaptureSource] = { [$0] }
+    ) {
+        enumerationProvider = availableSources
+    }
+
     func publish(_ state: CaptureState) { subject.send(state) }
-    func availableSources() throws -> [CaptureSource] { [source] }
+    func availableSources() throws -> [CaptureSource] { try enumerationProvider(source) }
     func start(source: CaptureSource, into engine: AVAudioEngine) throws { try rejectOperation() }
     func stop() throws { try rejectOperation() }
 
