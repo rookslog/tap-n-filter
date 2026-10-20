@@ -99,7 +99,10 @@ Changing the name within the same bundle updates persistence. Clearing selection
 or selecting a source without a nonempty bundle ID clears both saved fields.
 
 Start re-enumerates live sources and prefers the exact selected PID, including
-for bundle-less sources. If that PID has gone away, fallback requires a nonempty
+for bundle-less sources. If selection changes or clears during enumeration,
+the obsolete Start returns without capture or changes to newer selection,
+preferences or error state, including when enumeration throws.
+If that PID has gone away, fallback requires a nonempty
 bundle ID and exactly one candidate with the selected display name. Missing or
 ambiguous matches do not start capture and tell the user to choose the source
 again, then press Start. Rejection clears the selection and both saved identity

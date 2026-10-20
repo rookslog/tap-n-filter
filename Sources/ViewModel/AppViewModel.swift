@@ -589,6 +589,8 @@ public final class AppViewModel: ObservableObject {
             let candidates = try await Task.detached(priority: .userInitiated) { [capture] in
                 try capture.availableSources()
             }.value
+            // A newer pick or clear supersedes this suspended Start.
+            guard currentSource == source else { return }
             let match = candidates.first(where: { $0.pid == source.pid })
                 ?? Self.uniqueSource(
                     in: candidates,
@@ -603,6 +605,7 @@ public final class AppViewModel: ObservableObject {
             }
             resolvedSource = match
         } catch {
+            guard currentSource == source else { return }
             if let captureError = error as? CaptureError {
                 lastError = .capture(captureError)
             } else {

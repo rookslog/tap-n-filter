@@ -62,6 +62,7 @@ Work toward v0.1.0. Nothing has been tagged or released yet.
   picker help explains process-only capture and Safari Add to Dock guidance.
   Unique legacy restores save their matched name immediately; rejected sources
   clear selection and saved identity so retries require an explicit new pick.
+  Stale Start enumeration results cannot capture or overwrite a newer choice.
 
 ### Known limitations
 
