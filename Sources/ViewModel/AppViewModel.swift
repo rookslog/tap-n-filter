@@ -74,6 +74,20 @@ public enum AppViewModelDefaultsKey {
     public static let preserveBluetoothQuality: String = "settings.preserveBluetoothQuality"
 }
 
+/// Provenance of the current chain, independent of whether it has graph edits.
+public enum PresetOrigin: Equatable {
+    /// A bundled preset, with no writable file target.
+    case factory
+    /// A restored autosave, which is not an exported preset file.
+    case session
+    /// A successfully opened or saved file, safe for explicit direct Save.
+    case file
+    /// A partial restoration with skipped effects; requires explicit Save As.
+    case recovered
+    /// An empty fallback when neither session nor bundled restoration succeeded.
+    case unsaved
+}
+
 /// The single owner of UI state for the menubar window.
 ///
 /// `AppViewModel` mediates between the SwiftUI views and the audio stack
@@ -102,6 +116,41 @@ public final class AppViewModel: ObservableObject {
     // MARK: Published state
 
     @Published public private(set) var graph: Graph
+
+    // One published value keeps name, target, provenance and baseline together.
+    // It is never serialized: restoring an autosave cannot restore file identity.
+    private struct PresetReceipt {
+        let name: String
+        let fileURL: URL?
+        let origin: PresetOrigin
+        let warnings: [PresetLoadWarning]
+        let baseline: GraphPreset
+    }
+
+    @Published private var presetReceipt: PresetReceipt
+
+    /// File basename, factory display label, or an explicit session/unsaved label.
+    public var presetName: String { presetReceipt.name }
+
+    /// Safe target for an explicit Save. Nil means the UI must present Save As.
+    public var presetFileURL: URL? { presetReceipt.fileURL }
+
+    /// How the current chain was established, including partial recovery.
+    public var presetOrigin: PresetOrigin { presetReceipt.origin }
+
+    /// Nonblocking recovery warnings; unaffected by dismissing an error banner.
+    public var presetWarnings: [PresetLoadWarning] { presetReceipt.warnings }
+
+    /// Suggested Save As filename. This is a label, not a persistent file identity.
+    public var suggestedPresetFilename: String { presetName + ".tnf" }
+
+    /// Exact meaningful graph comparison, excluding snapshot title metadata.
+    /// A recovered chain can match this baseline while still requiring Save As.
+    public var isPresetModified: Bool {
+        let current = graph.snapshot()
+        return current.outputGain != presetReceipt.baseline.outputGain
+            || current.nodes != presetReceipt.baseline.nodes
+    }
 
     @Published public var currentSource: CaptureSource?
 
@@ -383,7 +432,15 @@ public final class AppViewModel: ObservableObject {
         self.preserveBluetoothQuality = (storedPreserve as? Bool) ?? true
         self.logger = TnfLogger(source: "AppViewModel", store: debugLog)
         let bootstrapLogger = Logger(subsystem: "tnf.app", category: "AppViewModel.bootstrap")
-        self.graph = AppViewModel.restoreGraph(from: defaults, registry: registry, logger: bootstrapLogger)
+        let restored = AppViewModel.restoreGraph(from: defaults, registry: registry, logger: bootstrapLogger)
+        self.graph = restored.graph
+        self.presetReceipt = PresetReceipt(
+            name: restored.name,
+            fileURL: nil,
+            origin: restored.graph.lastLoadWarnings.isEmpty ? restored.origin : .recovered,
+            warnings: restored.graph.lastLoadWarnings,
+            baseline: restored.graph.snapshot()
+        )
 
         stateCancellable = capture.statePublisher
             .receive(on: DispatchQueue.main)
@@ -732,6 +789,7 @@ public final class AppViewModel: ObservableObject {
         do {
             try node.setParameter(paramID, value: value)
             logger.info("updateParameter: \(type(of: node).typeIdentifier)/\(shortID) \(paramID)=\(value)")
+            objectWillChange.send()
             schedulePersistence()
         } catch {
             logger.error("updateParameter: \(type(of: node).typeIdentifier)/\(shortID) \(paramID)=\(value) failed: \(error.localizedDescription)")
@@ -801,6 +859,10 @@ public final class AppViewModel: ObservableObject {
         let snapshot = graph.snapshot(name: url.deletingPathExtension().lastPathComponent)
         do {
             try PresetStore.save(snapshot, to: url)
+            // A failed write must leave the previous receipt and baseline intact.
+            presetReceipt = PresetReceipt(
+                name: snapshot.name, fileURL: url, origin: .file, warnings: [], baseline: snapshot
+            )
         } catch {
             lastError = .preset("Save failed: \(error.localizedDescription)")
         }
@@ -810,6 +872,9 @@ public final class AppViewModel: ObservableObject {
         do {
             let preset = try PresetStore.load(from: url)
             try installPreset(PresetMigrator.migrate(preset))
+            recordLoadedPreset(
+                name: url.deletingPathExtension().lastPathComponent, fileURL: url, origin: .file
+            )
         } catch {
             lastError = .preset("Load failed: \(error.localizedDescription)")
         }
@@ -819,12 +884,29 @@ public final class AppViewModel: ObservableObject {
         do {
             let preset = try FactoryPresets.load(named: name)
             try installPreset(PresetMigrator.migrate(preset))
+            recordLoadedPreset(
+                name: FactoryPresets.all.first(where: { $0.name == name })?.displayName ?? preset.name,
+                fileURL: nil,
+                origin: .factory
+            )
         } catch {
             lastError = .preset("Factory preset load failed: \(error.localizedDescription)")
         }
     }
 
     // MARK: Internals
+
+    private func recordLoadedPreset(name: String, fileURL: URL?, origin: PresetOrigin) {
+        let warnings = graph.lastLoadWarnings
+        presetReceipt = PresetReceipt(
+            name: name,
+            fileURL: warnings.isEmpty ? fileURL : nil,
+            origin: warnings.isEmpty ? origin : .recovered,
+            warnings: warnings,
+            // Use actual restored values (including Q roundtrips), not raw JSON.
+            baseline: graph.snapshot()
+        )
+    }
 
     /// Apply a mutation closure to the graph. If the engine is running,
     /// detach the graph for the mutation and re-attach via the same path
@@ -1027,12 +1109,12 @@ public final class AppViewModel: ObservableObject {
         from defaults: UserDefaults,
         registry: EffectNodeRegistry,
         logger: Logger
-    ) -> Graph {
+    ) -> (graph: Graph, name: String, origin: PresetOrigin) {
         if let data = defaults.data(forKey: AppViewModelDefaultsKey.graph) {
             do {
                 let preset = try JSONDecoder().decode(GraphPreset.self, from: data)
                 let migrated = PresetMigrator.migrate(preset)
-                return try Graph.restore(from: migrated, using: registry)
+                return (try Graph.restore(from: migrated, using: registry), "Restored Session", .session)
             } catch {
                 logger.warning("Failed to decode lastSession.graph; falling back to distant-engines: \(error.localizedDescription, privacy: .public)")
             }
@@ -1045,13 +1127,13 @@ public final class AppViewModel: ObservableObject {
     private static func restoreDistantEngines(
         registry: EffectNodeRegistry,
         logger: Logger
-    ) -> Graph {
+    ) -> (graph: Graph, name: String, origin: PresetOrigin) {
         do {
             let preset = try FactoryPresets.load(named: "distant-engines")
-            return try Graph.restore(from: preset, using: registry)
+            return (try Graph.restore(from: preset, using: registry), "Distant Engines", .factory)
         } catch {
             logger.error("Failed to load distant-engines fallback; returning empty graph: \(error.localizedDescription, privacy: .public)")
-            return Graph()
+            return (Graph(), "Untitled", .unsaved)
         }
     }
 

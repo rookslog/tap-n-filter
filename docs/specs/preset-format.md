@@ -173,7 +173,25 @@ Factory presets are loaded by reference when the user selects from the "Factory 
 
 ## User presets
 
-Users save and load presets via the File menu's "Save As..." and "Load..." options. These present standard macOS save/open panels filtered to `.tnf`. The app does not maintain a list of "your presets" — presets are just files at user-chosen locations.
+Users save and load presets via the Presets menu's Save, Save As and Open
+options. Save (Cmd-S) writes to a known safe file target; without one it opens
+Save As. Save As (Shift-Cmd-S) and Open present standard macOS panels filtered
+to `.tnf`. The app does not maintain a list of “your presets” — presets are files
+at user-chosen locations.
+
+The UI's current-file name and Save As prefill use the file basename, regardless
+of the internal JSON `name`. Loading leaves that metadata and original file bytes
+untouched. An explicit save writes the chosen basename into `name`, as before.
+Receipt/Modified/provenance state is memory-only and adds no schema fields.
+Restored sessions and factory presets have no known writable file target.
+
+Partial recovery skips unknown or failed effects and keeps a visible nonblocking
+warning. The recovered subset has no safe direct-Save target, even if it matches
+its canonical post-load baseline. Save As is required to establish a new clean
+file receipt; its prefill retains the original basename and normal AppKit
+confirmation applies if the user explicitly chooses to overwrite the original.
+Cancel or failure preserves recovery context. Successful save establishes the
+new baseline and clears warnings. See [UI](ui.md#presetmenu) for receipt behavior.
 
 A future version may add an in-app preset library that watches a configured directory.
 

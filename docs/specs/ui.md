@@ -34,8 +34,9 @@ ControlPanelView
 │  └─ AddEffectButton
 ├─ Divider
 └─ FooterView
-   ├─ PresetMenu
-   └─ PowerToggle
+   ├─ Current preset name and provenance/Modified status
+   ├─ Partial recovery notice (when present)
+   └─ Action row: PresetMenu, PowerToggle, Quit
 ```
 
 ## State management
@@ -51,6 +52,13 @@ public final class AppViewModel: ObservableObject {
     @Published var captureState: CaptureState
     @Published var expandedEffectID: UUID?
     @Published var lastError: AppError?
+
+    var presetName: String { get }
+    var presetFileURL: URL? { get }
+    var presetOrigin: PresetOrigin { get }
+    var isPresetModified: Bool { get }
+    var suggestedPresetFilename: String { get }
+    var presetWarnings: [PresetLoadWarning] { get }
     
     private let capture: CaptureControllerProtocol
     private let engine: AVAudioEngine
@@ -148,8 +156,11 @@ Numeric readouts show the user's value, formatted appropriately (e.g., "800 Hz",
 
 ```swift
 Menu {
-    Button("Save As…") { showSavePanel = true }
-    Button("Open…") { showOpenPanel = true }
+    Button("Save") { savePreset() }
+        .keyboardShortcut("s", modifiers: .command)
+    Button("Save As…") { presentSavePanel() }
+        .keyboardShortcut("s", modifiers: [.command, .shift])
+    Button("Open…") { presentOpenPanel() }
     Divider()
     Menu("Factory Presets") {
         ForEach(FactoryPresets.all, id: \.name) { preset in
@@ -161,7 +172,39 @@ Menu {
 }
 ```
 
-`showSavePanel` and `showOpenPanel` trigger `NSSavePanel` and `NSOpenPanel` presentations. From a `MenuBarExtra` window, the standard `.fileImporter` / `.fileExporter` SwiftUI modifiers may behave unreliably; the orchestrator falls back to direct `NSSavePanel.runModal()` from the AppKit layer if needed, documenting the chosen approach in an ADR.
+Save writes to `presetFileURL` when it is known and safe. Otherwise it presents
+Save As. Save As always presents `NSSavePanel`, prefilled with
+`suggestedPresetFilename`. Open uses `NSOpenPanel`. Both retain ADR-012's AppKit
+sheet/modal presentation and normal overwrite confirmation. Only an accepted
+panel URL calls the VM; cancelling changes no receipt or recovery context.
+
+### Preset identity and Modified state
+
+The footer shows `presetName` and provenance: Factory, Session, File, Recovered,
+or Unsaved. Modified is appended when exact ordered effect snapshots or output
+gain differ from the baseline. Effect parameters, bypass, wet/dry, membership,
+order and extras participate; snapshot title metadata does not. Returning to the
+baseline clears Modified. Source selection, expanded controls, Diagnostics,
+settings drawers and rejected graph/parameter edits do not change this comparison.
+VM parameter updates notify observers in both directions.
+
+File receipts use the filename basename without its final extension, even if
+the JSON `name` differs. Factory receipts use the bundled display label. A
+successfully restored autosave is labelled “Restored Session”; corrupt autosave
+JSON falling back to the bundled preset retains Factory provenance. If neither
+restoration succeeds, the empty chain is “Untitled” / Unsaved. Initial baselines
+use actual restored graph snapshots, including canonicalized EQ Q values.
+
+A partial load is Recovered and has a persistent, nonblocking footer notice
+with the number of skipped effects. Dismissing an error or closing Diagnostics
+does not hide it. Matching the recovered baseline does not mean the chain is
+identical to the original file. There is no safe direct-Save URL until explicit
+Save As succeeds; prefill retains the original basename. Loading never rewrites
+the original file. Save As may explicitly choose that same path through normal
+AppKit overwrite confirmation. A successful save establishes File provenance,
+the new baseline and safe URL, and clears recovery warnings. Save/write failure
+retains the previous receipt/baseline; failed load retains the graph and receipt.
+The write completes before the VM changes the receipt.
 
 ## PowerToggle
 
@@ -191,7 +234,6 @@ The view model serializes its state to `UserDefaults` on:
 
 Serialized blob keys:
 - `lastSession.graph` — `GraphPreset` JSON.
-- `lastSession.sourcePid` — Int (pid of last source).
 - `lastSession.sourceBundleID` — String (preferred for restoration; pids change between launches).
 
 On launch, the view model attempts to restore:
@@ -199,6 +241,10 @@ On launch, the view model attempts to restore:
 2. The source from `lastSession.sourceBundleID`. If that bundle ID is running, sets it as `currentSource`. Otherwise leaves source unset.
 
 The view model never auto-starts capture. The user always has to click Power.
+
+Preset receipts, file URLs and bookmarks are memory-only and are never written
+to defaults. Session restoration is independent of exported-file identity, even
+when the last session was autosaved immediately after an export.
 
 ## Accessibility
 
@@ -208,7 +254,7 @@ Keyboard navigation:
 - Tab cycles through interactive elements.
 - Arrow keys adjust sliders (in increments of 1% of the range).
 - Space toggles `Toggle`s and presses focused `Button`s.
-- Cmd+S saves preset, Cmd+O opens preset (when the menubar window has focus).
+- Cmd+S saves preset, Shift+Cmd+S opens Save As, Cmd+O opens preset (when the menubar window has focus).
 
 VoiceOver audit: the orchestrator runs the app with VoiceOver enabled, reads through every control, and documents any rough edges in `docs/audits/verification/phase-3-accessibility.md`.
 

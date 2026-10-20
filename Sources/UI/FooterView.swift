@@ -2,19 +2,64 @@ import AppKit
 import SwiftUI
 import ViewModel
 
-/// Bottom of the menubar window: presets menu on the left, power toggle in
-/// the middle, quit button on the right.
+/// Preset identity and recovery notice above the bottom action row: presets
+/// menu on the left, power toggle in the middle, quit button on the right.
 public struct FooterView: View {
+
+    @EnvironmentObject private var viewModel: AppViewModel
 
     public init() {}
 
     public var body: some View {
-        HStack(spacing: 8) {
-            PresetMenu()
-                .frame(width: 100, alignment: .leading)
-            PowerToggle()
-            quitButton
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(viewModel.presetName)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(viewModel.presetName)
+                Spacer(minLength: 0)
+                Text(presetStatus)
+                    .foregroundStyle(.secondary)
+            }
+            .font(.caption)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Current preset")
+            .accessibilityValue("\(viewModel.presetName), \(presetStatus)")
+
+            if !viewModel.presetWarnings.isEmpty {
+                Label(recoveryMessage, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel("Preset partially recovered")
+                    .accessibilityValue(recoveryMessage)
+            }
+
+            HStack(spacing: 8) {
+                PresetMenu()
+                    .frame(width: 100, alignment: .leading)
+                PowerToggle()
+                quitButton
+            }
         }
+    }
+
+    private var presetStatus: String {
+        let origin: String
+        switch viewModel.presetOrigin {
+        case .factory: origin = "Factory"
+        case .session: origin = "Session"
+        case .file: origin = "File"
+        case .recovered: origin = "Recovered"
+        case .unsaved: origin = "Unsaved"
+        }
+        return viewModel.isPresetModified ? "\(origin) · Modified" : origin
+    }
+
+    private var recoveryMessage: String {
+        let count = viewModel.presetWarnings.count
+        let skipped = count == 1 ? "1 effect was skipped" : "\(count) effects were skipped"
+        return "Preset partially recovered: \(skipped). Use Save As to save this recovered chain."
     }
 
     /// Closes the entire application. MenuBarExtra apps stay alive after the

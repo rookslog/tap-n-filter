@@ -7,11 +7,9 @@ import Presets
 @testable import ViewModel
 import XCTest
 
-/// Stage A structural red: these minimal UI-facing observables are new API.
-/// presetOrigin cases: factory, session, file, recovered.
+/// Observable preset receipt, provenance, dirty comparison and recovery contracts.
 /// presetFileURL is a SAFE direct-Save target; recovered originals have none.
 /// presetWarnings remains visible independently of the dismissible lastError.
-/// No receipt container, persistence store, or engine lifecycle design is prescribed.
 @MainActor
 final class PresetContinuityReceiptTests: XCTestCase {
     private var fixture: PresetContinuityFixture!
@@ -217,6 +215,19 @@ final class PresetContinuityReceiptTests: XCTestCase {
         XCTAssertEqual(model.presetName, "Dry")
         XCTAssertNil(model.presetFileURL)
         XCTAssertFalse(model.isPresetModified)
+    }
+
+    func test_corrupt_session_fallback_retains_factory_provenance() throws {
+        fixture.defaults.set(Data("not JSON".utf8), forKey: AppViewModelDefaultsKey.graph)
+
+        let model = fixture.makeModel()
+
+        XCTAssertEqual(model.presetOrigin, .factory)
+        XCTAssertEqual(model.presetName, "Distant Engines")
+        XCTAssertNil(model.presetFileURL)
+        XCTAssertFalse(model.isPresetModified)
+        XCTAssertTrue(model.presetWarnings.isEmpty)
+        XCTAssertFalse(model.graph.nodes.isEmpty)
     }
 
     func test_autosaved_session_never_restores_export_URL_or_bookmark() async throws {

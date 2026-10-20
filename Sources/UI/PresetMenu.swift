@@ -16,8 +16,13 @@ public struct PresetMenu: View {
 
     public var body: some View {
         Menu {
-            Button("Save As…") { presentSavePanel() }
+            Button("Save") { savePreset() }
                 .keyboardShortcut("s", modifiers: .command)
+                .accessibilityLabel("Save preset")
+                .accessibilityHint("Save to the current file, or choose a file if needed.")
+
+            Button("Save As…") { presentSavePanel() }
+                .keyboardShortcut("s", modifiers: [.command, .shift])
                 .accessibilityLabel("Save preset as")
                 .accessibilityHint("Write the current effect chain to a .tnf file.")
 
@@ -44,13 +49,21 @@ public struct PresetMenu: View {
         .accessibilityHint("Save, open, or pick a factory preset.")
     }
 
+    private func savePreset() {
+        if let url = viewModel.presetFileURL {
+            viewModel.savePreset(to: url)
+        } else {
+            presentSavePanel()
+        }
+    }
+
     /// Present `NSSavePanel` for the .tnf file type. The panel is run modal
     /// against the menubar window when available, falling back to a detached
     /// modal session otherwise.
     private func presentSavePanel() {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [presetContentType]
-        panel.nameFieldStringValue = "preset.tnf"
+        panel.nameFieldStringValue = viewModel.suggestedPresetFilename
         panel.canCreateDirectories = true
         runModalPanel(panel) { response, url in
             if response == .OK, let url = url {

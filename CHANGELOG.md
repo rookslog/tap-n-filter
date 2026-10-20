@@ -32,6 +32,14 @@ Work toward v0.1.0. Nothing has been tagged or released yet.
   (ADR-013), power toggle, status pill, and a debug log panel.
 - Preset save and load as `.tnf` JSON files, plus the bundled `distant-engines`
   and `dry` factory presets.
+- Current preset name, provenance and snapshot-based Modified state in the
+  footer. Returning to the saved/restored graph clears Modified; restored
+  sessions do not inherit an exported-file identity.
+- Explicit Save (Cmd-S) to a known safe file and Save As (Shift-Cmd-S) with the
+  current name prefilled. Receipts update only after a successful write.
+- Nonblocking partial-load recovery notices. Recovered chains require explicit
+  Save As before they become a known direct-Save target, protecting the original
+  file from an accidental subset overwrite.
 - "Preserve Bluetooth quality during capture" setting (ADR-019, Layer A).
 
 - Release bundler producing a `.app` and a compressed `.dmg`. See the signing

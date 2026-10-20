@@ -8,8 +8,7 @@ import Presets
 @testable import ViewModel
 import XCTest
 
-/// Existing-API regression lane: this file can be published independently of
-/// PresetContinuityReceiptTests, whose new observables are intentionally absent in Stage A.
+/// Regression coverage for preset I/O preservation and VM observation.
 @MainActor
 final class PresetContinuityBaselineTests: XCTestCase {
     private var fixture: PresetContinuityFixture!
