@@ -56,21 +56,11 @@ public struct EffectControlsView: View {
 
     private func continuousSlider(_ parameter: EffectParameter) -> some View {
         ParameterSlider(
-            parameter: parameter,
-            initialValue: currentValue(for: parameter),
-            readValue: { currentValue(for: parameter) }
-        ) { value in
-            // Nodes are reference types, so their parameter setters do not
-            // publish a graph change. Refresh observers and actual AU readback.
-            viewModel.objectWillChange.send()
-            viewModel.updateParameter(
-                nodeID: node.id,
-                paramID: parameter.identifier,
-                value: value
-            )
-        }
-        // Presets may replace the node object while retaining its saved UUID
-        // and values. Its old editor/queued drag must not survive that swap.
+            writer: ParameterNodeWriter(node: node, parameter: parameter, viewModel: viewModel),
+            initialValue: currentValue(for: parameter)
+        )
+        // Reset view state when presets retain a UUID but replace the node.
+        // ParameterNodeWriter also rejects stale delivery before teardown.
         .id(ObjectIdentifier(node))
     }
 
@@ -189,15 +179,10 @@ private struct ParameterSlider: View {
     @FocusState private var inputFocused: Bool
     @StateObject private var editor: ParameterValueEditor
 
-    init(
-        parameter: EffectParameter, initialValue: Float,
-        readValue: @escaping () -> Float, onChange: @escaping (Float) -> Void
-    ) {
-        self.parameter = parameter
+    init(writer: ParameterNodeWriter, initialValue: Float) {
+        self.parameter = writer.parameter
         self.initialValue = initialValue
-        _editor = StateObject(wrappedValue: ParameterValueEditor(
-            parameter: parameter, initialValue: initialValue, onCommit: onChange, readValue: readValue
-        ))
+        _editor = StateObject(wrappedValue: writer.makeEditor())
     }
 
     var body: some View {

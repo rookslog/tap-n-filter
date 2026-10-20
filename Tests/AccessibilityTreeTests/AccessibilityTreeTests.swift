@@ -87,6 +87,20 @@ final class AccessibilityTreeTests: XCTestCase {
         )
     }
 
+    /// Runs against newly generated hosted evidence, not the older committed
+    /// tree. KVC labels are best-effort; full VoiceOver/focus remain manual.
+    func test_fresh_dump_contains_expanded_parameter_fields_and_reset_buttons() throws {
+        guard ProcessInfo.processInfo.environment["TNF_REQUIRE_PARAMETER_A11Y"] == "1" else {
+            throw XCTSkip("Fresh parameter tree check runs after hosted macos-26 regeneration")
+        }
+        let nodes = try loadDump().tree.flattenedNodes()
+        XCTAssertGreaterThanOrEqual(nodes.filter { $0.role == "AXTextField" }.count, 4)
+        let resets = nodes.filter {
+            $0.role == "AXButton" && ($0.label?.hasPrefix("Reset") == true || $0.value == "Reset")
+        }
+        XCTAssertGreaterThanOrEqual(resets.count, 4, "Expanded EQ needs a Reset button for all four parameters")
+    }
+
     // MARK: Source-level label discipline
 
     /// Every `.accessibilityLabel("...")` with a literal string argument in
@@ -247,6 +261,16 @@ private struct TreeNode: Decodable {
     let help: String?
     let identifier: String?
     let children: [TreeNode]
+
+    func flattenedNodes() -> [TreeNode] {
+        var nodes: [TreeNode] = []
+        var stack = [self]
+        while let node = stack.popLast() {
+            nodes.append(node)
+            stack.append(contentsOf: node.children)
+        }
+        return nodes
+    }
 
     /// Returns every non-empty label found anywhere in the subtree.
     func flattenedLabels() -> Set<String> {

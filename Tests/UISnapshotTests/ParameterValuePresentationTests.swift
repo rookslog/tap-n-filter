@@ -3,9 +3,8 @@ import Foundation
 @testable import UI
 import XCTest
 
-/// Stage A contract tests for a new internal UI helper, not a DSP scale change.
-/// Missing `ParameterValuePresentation` is structural red until Stage B;
-/// it is not evidence that a behavioral assertion ran and failed.
+/// UI presentation/math/input contracts; DSP values and scales are unchanged.
+/// These helper tests do not host SwiftUI or exercise keyboard/accessibility.
 final class ParameterValuePresentationTests: XCTestCase {
 
     func test_frequency_endpoints_and_geometric_midpoint_use_logarithmic_position() {

@@ -3,10 +3,10 @@ import Foundation
 @testable import UI
 import XCTest
 
-/// Proposed internal input seam: constructing, editing, and resyncing never
+/// Input helper contracts: constructing, editing, and resyncing never
 /// writes; commit/reset deliver native parameter values via the callback.
-/// New `ParameterValueEditor` symbols are structural red until Stage B.
-/// These tests do not exercise SwiftUI focus or the slider's Combine wiring.
+/// These tests do not host SwiftUI or exercise focus, Space routing, or the
+/// drag scheduler; scheduling and model integration have separate test cases.
 @MainActor
 final class ParameterValueEditingTests: XCTestCase {
 
@@ -150,8 +150,8 @@ final class ParameterValueEditingTests: XCTestCase {
     }
 
     func test_two_quick_submits_keep_the_final_exact_value_without_waiting_for_a_drag_throttle() {
-        // Pure input boundary only. Stage B must additionally check the real
-        // ParameterSlider's pending drag subject cannot overwrite this value.
+        // Pure input callback boundary only. Queued-drag ordering and the
+        // actual UI writer/model path are exercised in their dedicated suites.
         var writes: [Float] = []
         let editor = makeEditor(value: 800) { writes.append($0) }
         editor.beginEditing(locale: posix)

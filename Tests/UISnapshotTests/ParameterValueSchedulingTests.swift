@@ -264,6 +264,88 @@ final class ParameterValueSchedulingTests: XCTestCase {
         XCTAssertEqual(writes, [1_234.5])
     }
 
+    func test_normalized_readback_acknowledgement_preserves_newer_tick_and_final_drag() {
+        for roundsUp in [true, false] {
+            var queued: [() -> Void] = []
+            var writes: [Float] = []
+            var actual: Float = 1
+            let parameter = EQNode.parameterCatalog.first { $0.identifier == "hp.Q" }!
+            let editor = ParameterValueEditor(
+                parameter: parameter, initialValue: actual,
+                onCommit: { value in
+                    writes.append(value)
+                    actual = roundsUp ? value.nextUp : value.nextDown
+                },
+                readValue: { actual }, scheduleDrag: { queued.append($0) }
+            )
+            editor.drag(to: 0.2)
+            let first = editor.value
+            queued[0]()
+            let firstReadback = actual
+            XCTAssertNotEqual(first, firstReadback)
+            XCTAssertEqual(editor.value, firstReadback)
+
+            editor.drag(to: 0.5)
+            let second = editor.value
+            editor.receiveModelValue(firstReadback)
+            XCTAssertEqual(editor.value, second)
+            queued[1]()
+            let secondReadback = actual
+
+            editor.drag(to: 0.8)
+            let final = editor.value
+            editor.receiveModelValue(secondReadback)
+            editor.finishDragging()
+            queued[2]()
+
+            XCTAssertEqual(writes, [first, second, final])
+            XCTAssertEqual(editor.value, roundsUp ? final.nextUp : final.nextDown)
+        }
+    }
+
+    func test_genuine_external_value_after_normalized_acknowledgement_cancels_pending_drag() {
+        var queued: [() -> Void] = []
+        var writes: [Float] = []
+        var actual: Float = 1
+        let editor = ParameterValueEditor(
+            parameter: EQNode.parameterCatalog.first { $0.identifier == "hp.Q" }!,
+            initialValue: actual,
+            onCommit: { writes.append($0); actual = $0.nextDown }, readValue: { actual },
+            scheduleDrag: { queued.append($0) }
+        )
+        editor.drag(to: 0.2)
+        queued[0]()
+        let first = writes[0]
+        editor.drag(to: 0.8)
+
+        actual = 1.75
+        editor.receiveModelValue(actual)
+        queued[1]()
+        editor.finishDragging()
+
+        XCTAssertEqual(writes, [first])
+        XCTAssertEqual(editor.value, actual)
+    }
+
+    func test_one_ulp_outside_endpoint_readback_remains_diagnostic_and_invalid_for_submit() {
+        var writes: [Float] = []
+        let parameter = EQNode.parameterCatalog.first { $0.identifier == "hp.Q" }!
+        let outside = parameter.range.lowerBound.nextDown
+        let editor = ParameterValueEditor(
+            parameter: parameter, initialValue: 1,
+            onCommit: { writes.append($0) }, readValue: { outside }
+        )
+        editor.beginEditing(locale: posix)
+        editor.text = "0.5"
+        XCTAssertTrue(editor.commit(locale: posix))
+        XCTAssertEqual(editor.value, outside)
+        XCTAssertTrue(editor.presentation.displayValue(editor.value).contains("out of range"))
+
+        editor.beginEditing(locale: posix)
+        XCTAssertFalse(editor.commit(locale: posix))
+        XCTAssertEqual(writes, [parameter.range.lowerBound])
+    }
+
     private var posix: Locale { Locale(identifier: "en_US_POSIX") }
 
     private func makeEditor(
