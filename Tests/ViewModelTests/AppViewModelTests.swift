@@ -143,6 +143,37 @@ final class AppViewModelTests: XCTestCase {
         await assertSourceRestore(candidates: [unrelated, saved], expected: saved)
     }
 
+    func test_restore_source_upgrades_legacy_identity_before_failed_start_and_later_restore() async throws {
+        let saved = makeSource(pid: 1, displayName: "Saved site")
+        defaults.set(saved.bundleIdentifier, forKey: AppViewModelDefaultsKey.sourceBundleID)
+        XCTAssertNil(defaults.object(forKey: AppViewModelDefaultsKey.sourceDisplayName))
+        let graphBeforeRestore = defaults.data(forKey: AppViewModelDefaultsKey.graph)
+        let capture = MockCaptureController()
+        capture.availableSourcesResult = [saved]
+        capture.startError = .tapCreationFailed(-1)
+        let model = makeViewModel(capture: capture)
+
+        await waitFor(model: model) { $0.currentSource == saved }
+        XCTAssertEqual(defaults.string(forKey: AppViewModelDefaultsKey.sourceDisplayName), saved.displayName)
+        await model.powerOn()
+        XCTAssertEqual(capture.startCalls.map { $0.0 }, [saved])
+        XCTAssertEqual(model.lastError, .capture(.tapCreationFailed(-1)))
+        XCTAssertEqual(
+            defaults.string(forKey: AppViewModelDefaultsKey.sourceBundleID), saved.bundleIdentifier
+        )
+        XCTAssertEqual(defaults.string(forKey: AppViewModelDefaultsKey.sourceDisplayName), saved.displayName)
+        XCTAssertEqual(
+            defaults.data(forKey: AppViewModelDefaultsKey.graph), graphBeforeRestore,
+            "Restoring a legacy identity must not autosave the graph"
+        )
+
+        // No source or graph edit, and Start failed: the next launch must
+        // still distinguish the restored site from a new same-bundle source.
+        let other = makeSource(pid: 2, displayName: "Other site")
+        let relaunched = makeSource(pid: 3, displayName: saved.displayName)
+        await assertSourceRestore(candidates: [other, relaunched], expected: relaunched)
+    }
+
     func test_restore_source_leaves_missing_saved_name_unselected() async throws {
         let other = makeSource(pid: 1, displayName: "Other site")
         defaults.set(other.bundleIdentifier, forKey: AppViewModelDefaultsKey.sourceBundleID)
@@ -201,6 +232,44 @@ final class AppViewModelTests: XCTestCase {
         await assertSourceResolution(selected: selected, candidates: [first, duplicate], expected: nil)
     }
 
+    func test_powerOn_source_identity_rejection_requires_new_pick_after_ambiguity_clears() async throws {
+        let selected = makeSource(pid: 1, displayName: "Saved site")
+        let first = makeSource(pid: 2, displayName: selected.displayName)
+        let duplicate = makeSource(pid: 3, displayName: selected.displayName)
+        defaults.set(selected.bundleIdentifier, forKey: AppViewModelDefaultsKey.sourceBundleID)
+        defaults.set(selected.displayName, forKey: AppViewModelDefaultsKey.sourceDisplayName)
+        let capture = MockCaptureController()
+        capture.availableSourcesResult = [first, duplicate]
+        capture.startError = .tapCreationFailed(-1)
+        let model = makeViewModel(capture: capture)
+        await waitFor(model: model) { $0.availableSources == [first, duplicate] }
+        model.setSource(selected)
+
+        await model.powerOn()
+
+        XCTAssertEqual(model.lastError, .capture(.sourceNotFound(selected.pid)))
+        XCTAssertNil(model.currentSource)
+        XCTAssertNil(defaults.object(forKey: AppViewModelDefaultsKey.sourceBundleID))
+        XCTAssertNil(defaults.object(forKey: AppViewModelDefaultsKey.sourceDisplayName))
+        XCTAssertTrue(capture.startCalls.isEmpty)
+
+        // One duplicate exits. Clearing the error and trying again must
+        // not turn the rejected pick into consent to capture the survivor.
+        capture.availableSourcesResult = [first]
+        model.refreshAvailableSources()
+        await waitFor(model: model) { $0.availableSources == [first] }
+        model.clearError()
+        await model.powerOn()
+        XCTAssertNil(model.currentSource)
+        XCTAssertNotNil(model.lastError)
+        XCTAssertTrue(capture.startCalls.isEmpty)
+        await assertSourceRestore(candidates: [first], expected: nil)
+
+        model.setSource(first)
+        await model.powerOn()
+        XCTAssertEqual(capture.startCalls.map { $0.0 }, [first], "An explicit new pick permits Start")
+    }
+
     func test_powerOn_source_identity_rejects_bundle_match_with_different_name() async throws {
         let selected = makeSource(pid: 1, displayName: "Saved site")
         let unrelated = makeSource(pid: 2, displayName: "Other site")
@@ -234,6 +303,8 @@ final class AppViewModelTests: XCTestCase {
     /// negative restore assertions a bounded async observation window rather
     /// than treating the initial nil value as a completed restore.
     private func assertSourceRestore(candidates: [CaptureSource], expected: CaptureSource?) async {
+        let savedBundleID = defaults.string(forKey: AppViewModelDefaultsKey.sourceBundleID)
+        let savedDisplayName = defaults.string(forKey: AppViewModelDefaultsKey.sourceDisplayName)
         let capture = MockCaptureController()
         capture.availableSourcesResult = candidates
         let model = makeViewModel(capture: capture)
@@ -252,6 +323,12 @@ final class AppViewModelTests: XCTestCase {
         await fulfillment(of: [enumerated, selected], timeout: 1.0)
         XCTAssertEqual(model.currentSource, expected)
         XCTAssertTrue(capture.startCalls.isEmpty, "Restore must not start capture")
+        if expected == nil {
+            XCTAssertEqual(defaults.string(forKey: AppViewModelDefaultsKey.sourceBundleID), savedBundleID)
+            XCTAssertEqual(
+                defaults.string(forKey: AppViewModelDefaultsKey.sourceDisplayName), savedDisplayName
+            )
+        }
         withExtendedLifetime((sourcesSubscription, selectionSubscription)) {}
     }
 
@@ -272,6 +349,10 @@ final class AppViewModelTests: XCTestCase {
 
         XCTAssertEqual(capture.startCalls.map { $0.0 }, expected.map { [$0] } ?? [])
         if expected == nil {
+            XCTAssertNil(model.currentSource, "A rejected source requires an explicit new pick")
+            XCTAssertNil(defaults.object(forKey: AppViewModelDefaultsKey.sourceBundleID))
+            XCTAssertNil(defaults.object(forKey: AppViewModelDefaultsKey.sourceDisplayName))
+            XCTAssertEqual(model.lastError, .capture(.sourceNotFound(selected.pid)))
             let error = model.lastError
             XCTAssertNotNil(error, "A rejected source must explain how to recover")
             XCTAssertTrue(

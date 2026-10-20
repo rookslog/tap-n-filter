@@ -596,6 +596,8 @@ public final class AppViewModel: ObservableObject {
                     displayName: source.displayName
                 )
             guard let match else {
+                currentSource = nil
+                writeSourcePersistence()
                 lastError = .capture(.sourceNotFound(source.pid))
                 return
             }
@@ -1084,11 +1086,20 @@ public final class AppViewModel: ObservableObject {
                     self.logger.info("Skipping restore for \(bundleID): currentSource already set.")
                     return
                 }
-                self.currentSource = Self.uniqueSource(
+                // A failed Start can clear the saved identity while this
+                // enumeration is in flight. Never reinstate that rejected pick.
+                guard self.defaults.string(forKey: AppViewModelDefaultsKey.sourceBundleID) == bundleID,
+                      self.defaults.string(forKey: AppViewModelDefaultsKey.sourceDisplayName) == displayName
+                else { return }
+                guard let match = Self.uniqueSource(
                     in: candidates,
                     bundleID: bundleID,
                     displayName: displayName
-                )
+                ) else { return }
+                self.currentSource = match
+                if displayName == nil {
+                    self.writeSourcePersistence()
+                }
             } catch {
                 self.logger.warning("Source restore failed: \(error.localizedDescription)")
             }
@@ -1121,6 +1132,12 @@ public final class AppViewModel: ObservableObject {
         } catch {
             logger.error("Failed to encode graph for persistence: \(error.localizedDescription)")
         }
+        writeSourcePersistence()
+    }
+
+    /// Source-only updates must not autosave the graph during legacy restore
+    /// or leave a rejected selection eligible for another Start.
+    private func writeSourcePersistence() {
         if let source = currentSource, let bundleID = source.bundleIdentifier, !bundleID.isEmpty {
             defaults.set(bundleID, forKey: AppViewModelDefaultsKey.sourceBundleID)
             defaults.set(source.displayName, forKey: AppViewModelDefaultsKey.sourceDisplayName)

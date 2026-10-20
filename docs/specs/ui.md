@@ -93,6 +93,8 @@ together. A display name is an additional discriminator, not a stable process
 identity. Restore selects only a unique live bundle-ID-and-name match. Legacy
 sessions without a saved name restore only a unique bundle-ID match. Missing or
 ambiguous matches leave the picker unselected; list order never decides a restore.
+When a unique legacy source restores, its matched name is saved immediately,
+without autosaving the graph or requiring a successful Start or later edit.
 Changing the name within the same bundle updates persistence. Clearing selection
 or selecting a source without a nonempty bundle ID clears both saved fields.
 
@@ -100,7 +102,11 @@ Start re-enumerates live sources and prefers the exact selected PID, including
 for bundle-less sources. If that PID has gone away, fallback requires a nonempty
 bundle ID and exactly one candidate with the selected display name. Missing or
 ambiguous matches do not start capture and tell the user to choose the source
-again, then press Start. Nil or empty bundle IDs never equate unrelated processes.
+again, then press Start. Rejection clears the selection and both saved identity
+fields before returning, retaining the missing-source error's selected PID.
+If candidates later become unique, retrying still requires an explicit new pick;
+an in-flight startup restore cannot reinstate the rejected identity.
+Nil or empty bundle IDs never equate unrelated processes.
 Responsible-parent resolution, process-ancestry heuristics and source-name
 rewriting are deferred; this change does not alter live source enumeration.
 

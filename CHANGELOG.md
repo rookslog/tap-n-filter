@@ -60,6 +60,8 @@ Work toward v0.1.0. Nothing has been tagged or released yet.
   the saved display name alongside the bundle ID; ambiguous selections require
   choosing the source again. Exact live PID selection retains priority. Source
   picker help explains process-only capture and Safari Add to Dock guidance.
+  Unique legacy restores save their matched name immediately; rejected sources
+  clear selection and saved identity so retries require an explicit new pick.
 
 ### Known limitations
 
