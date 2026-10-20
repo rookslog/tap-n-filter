@@ -50,11 +50,11 @@
 
                 ],
                 "role" : "AXValueIndicator",
-                "value" : "1"
+                "value" : "0.05914286151528358"
               }
             ],
             "role" : "AXSlider",
-            "value" : "1"
+            "value" : "0.05914286151528358"
           },
           {
             "children" : [
@@ -76,11 +76,11 @@
 
                 ],
                 "role" : "AXValueIndicator",
-                "value" : "1"
+                "value" : "0.05914286151528358"
               }
             ],
             "role" : "AXSlider",
-            "value" : "1"
+            "value" : "0.05914286151528358"
           },
           {
             "children" : [

@@ -189,3 +189,15 @@ User ran the pass against the debug `.app` at
 - `Tests/AccessibilityTreeTests/AccessibilityTreeTests.swift` — CI gate enforcing the structural + source-level invariants.
 - `Sources/AccessibilityDump/main.swift` — the executable that produces the JSON artifact.
 - Phase 3 spec §3.8 — original gate definition.
+
+## 2026-10-20 PLAN item 11 hosted evidence
+
+Run 39428177157, PR head f0c19c001277e13ac2cd220d4bfa5f75ad60053c, synthetic checkout
+660f1fb45ec9aac472f6c536e29b8b2de9382ae4 produced the tracked KVC tree, SHA-256
+bf2c56d646e19ab45695734987fd6c41730d4a83aa301b9a634226e8609015fa. Root downloaded and read the entire JSON; no labels
+were fabricated. It exposes 19 nodes/11 interactive elements but omits some
+visible controls and metadata; KVC is structural evidence, not native
+VoiceOver/focus or actual menu correctness. The new no-source guidance and Stop policy
+remain subject to actual newest-macOS/manual interaction checks. This refresh
+does not revalidate historical audit conclusions. CI now rejects drift from
+the committed tree after regeneration and structural checks.

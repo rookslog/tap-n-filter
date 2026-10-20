@@ -58,7 +58,9 @@ jobs:
 
       - name: Validate regenerated readiness accessibility evidence
         if: matrix.os == 'macos-26'
-        run: swift test -c debug --skip-build --filter AccessibilityTreeTests
+        run: |
+          swift test -c debug --skip-build --filter AccessibilityTreeTests
+          git diff --exit-code -- test-artifacts/phase-3-accessibility-tree.json
 
       - name: Upload readiness accessibility evidence
         if: ${{ !cancelled() && matrix.os == 'macos-26' && steps.readiness-a11y.outcome == 'success' }}
