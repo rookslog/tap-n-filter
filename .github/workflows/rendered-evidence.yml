@@ -1,0 +1,61 @@
+name: Rendered UI evidence
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rendered-evidence:
+    name: Fake-backed panel evidence
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      TNF_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      TNF_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      TNF_BASE_REF: ${{ github.event.pull_request.base.ref }}
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Record actual checkout and toolchain provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          checkout_sha="$(git rev-parse HEAD)"
+          swift_version="$(swift --version | tr '\n' ' ')"
+          xcode_version="$(xcodebuild -version | tr '\n' ' ')"
+          printf 'TNF_CHECKOUT_SHA=%s\n' "$checkout_sha" >> "$GITHUB_ENV"
+          printf 'TNF_SWIFT_VERSION=%s\n' "$swift_version" >> "$GITHUB_ENV"
+          printf 'TNF_XCODE_VERSION=%s\n' "$xcode_version" >> "$GITHUB_ENV"
+
+      - name: Check fake-state prerequisites
+        run: swift test -c debug --filter RenderedEvidenceStateTests
+
+      - name: Render native offscreen panel evidence without audio
+        id: render
+        run: swift run -c debug tap-n-filter-render-evidence
+
+      - name: Validate expected manifest and decoded PNG content
+        run: python3 -B Tests/RenderedEvidenceTests/test_rendered_evidence.py
+
+      # Retain this attempt for diagnosis even when export/validation fails.
+      # Failed job/partial artifacts are not valid evidence or golden baselines.
+      - name: Upload source-backed images and metadata for visual review
+        if: ${{ !cancelled() && steps.render.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: rendered-panel-macos-15-${{ github.run_id }}-${{ github.run_attempt }}
+          path: test-artifacts/rendered-evidence
+          if-no-files-found: error
+          retention-days: 14

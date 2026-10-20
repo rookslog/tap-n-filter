@@ -2,6 +2,11 @@
 
 The UI is a SwiftUI `MenuBarExtra` window. The user opens it by clicking the menubar icon. It hosts the full control surface: source selection, effect chain, parameter controls, preset I/O, power toggle.
 
+The dedicated fake-backed [rendered CI evidence lane](../rendered-evidence.md)
+exports this source-backed panel in five states and two themes. These are
+review artifacts, not golden tests or actual MenuBarExtra lifecycle coverage;
+the mandatory manual layout gate remains in effect.
+
 This document specifies structure, behavior, and the view-model boundary. Visual styling details (exact colors, fonts, paddings) are left to the implementation, with the constraint that the result reads as a native macOS app, not a port from another platform.
 
 ## Window
