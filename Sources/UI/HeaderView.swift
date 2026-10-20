@@ -19,35 +19,38 @@ public struct HeaderView: View {
                 .accessibilityAddTraits(.isHeader)
             Spacer()
             statusPill
-            settingsToggle
-            debugToggle
+            settingsMenu
         }
     }
 
-    private var settingsToggle: some View {
-        Button {
-            viewModel.toggleSettings()
+    private var settingsMenu: some View {
+        Menu {
+            Button("Settings panel") {
+                viewModel.toggleSettings()
+            }
+            .accessibilityLabel("Settings panel")
+            .accessibilityValue(viewModel.showSettings ? "Shown" : "Hidden")
+            .accessibilityHint("Toggle the settings panel at the bottom of the window.")
+
+            Button("Diagnostics") {
+                viewModel.toggleDebugPanel()
+            }
+            .accessibilityLabel("Diagnostics")
+            .accessibilityValue(viewModel.showDebugPanel ? "Enabled" : "Disabled")
+            .accessibilityHint("Toggle the debug log panel and detailed effect diagnostics.")
         } label: {
-            Image(systemName: viewModel.showSettings ? "gearshape.fill" : "gearshape")
+            Image(systemName: drawersVisible ? "gearshape.fill" : "gearshape")
                 .frame(width: 14, height: 14)
-                .foregroundStyle(viewModel.showSettings ? Color.accentColor : Color.secondary)
+                .foregroundStyle(drawersVisible ? Color.accentColor : Color.secondary)
         }
-        .buttonStyle(.plain)
+        .menuStyle(.borderlessButton)
+        .fixedSize()
         .accessibilityLabel("Settings")
-        .accessibilityHint("Toggle the settings panel at the bottom of the window.")
+        .accessibilityHint("Open Settings panel and Diagnostics actions.")
     }
 
-    private var debugToggle: some View {
-        Button {
-            viewModel.toggleDebugPanel()
-        } label: {
-            Image(systemName: viewModel.showDebugPanel ? "ladybug.fill" : "ladybug")
-                .frame(width: 14, height: 14)
-                .foregroundStyle(viewModel.showDebugPanel ? Color.accentColor : Color.secondary)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(viewModel.showDebugPanel ? "Hide debug log" : "Show debug log")
-        .accessibilityHint("Toggle the debug log panel at the bottom of the window.")
+    private var drawersVisible: Bool {
+        viewModel.showSettings || viewModel.showDebugPanel
     }
 
     private var statusPill: some View {

@@ -24,7 +24,7 @@ The icon in the menubar reflects state:
 
 ```
 ControlPanelView
-├─ HeaderView (project name, settings affordance — V1: just title)
+├─ HeaderView (project name, capture status, Settings menu)
 ├─ SourcePickerView
 ├─ Divider
 ├─ ChainEditorView
@@ -71,6 +71,30 @@ public final class AppViewModel: ObservableObject {
 Views observe the view model via `@ObservedObject` (passed from the app root) or `@EnvironmentObject` (injected at the scene level).
 
 The view model also runs a 5-second timer to refresh `availableSources` via `capture.availableSources()`.
+
+## HeaderView and Diagnostics
+
+The header's gear opens a native **Settings** menu with separate **Settings
+panel** and **Diagnostics** actions. Both actions are ordinary menu buttons,
+available without a modifier gesture. The menu and actions have accessibility
+labels; the actions expose their current state as accessibility values. Keyboard
+users reach the menu through normal focus navigation and activate its actions
+through native menu navigation.
+
+Settings panel visibility is session-only. Diagnostics uses the existing
+`showDebugPanel` preference, persisted as `debug.enabled`, independently of the
+Settings panel. Enabling Diagnostics opens the debug log below the footer and
+enables detailed EXP-031 wet/dry and bypass messages. Disabling it hides the
+panel and skips construction of those messages, including effect-state
+snapshots, before interpolation. Existing log history is retained. Warnings,
+errors, and capture/engine recovery evidence remain enabled regardless of
+panel visibility. This avoids known diagnostic work; it does not promise a
+measured latency or disk-write improvement.
+
+The debug panel retains its log open, copy, and clear actions. The throwaway
+EXP-029 five-second reader-test entry and its view-model action/state have been
+retired. Capture implementation, investigation notebooks, and standalone
+probes remain separate from that removed production affordance.
 
 ## SourcePickerView
 
@@ -208,6 +232,8 @@ Keyboard navigation:
 - Tab cycles through interactive elements.
 - Arrow keys adjust sliders (in increments of 1% of the range).
 - Space toggles `Toggle`s and presses focused `Button`s.
+- The Settings menu exposes Settings panel and Diagnostics as separate native
+  menu actions, without requiring a modifier shortcut.
 - Cmd+S saves preset, Cmd+O opens preset (when the menubar window has focus).
 
 VoiceOver audit: the orchestrator runs the app with VoiceOver enabled, reads through every control, and documents any rough edges in `docs/audits/verification/phase-3-accessibility.md`.
@@ -220,4 +246,15 @@ V1 ships English-only. All user-facing strings live in `Localizable.strings`. No
 
 - **Snapshot tests** under `Tests/UISnapshotTests/`. Capture `ControlPanelView` in three states (idle, running, failed) and compare against pinned baselines. macOS version pinned in CI.
 - **View model unit tests** under `Tests/ViewModelTests/`. Tests for state transitions, persistence round-trip, error propagation. Uses a `MockCaptureController` and a fresh `AVAudioEngine`.
+- **Diagnostics contracts** in `Tests/ViewModelTests/DiagnosticsRestraintTests.swift`
+  count actual effect-state snapshot evaluation with Diagnostics off/on, retain
+  enabled before/after evidence and warnings/errors, and exercise independent
+  Settings/Diagnostics visibility and preference persistence.
+- **Settings-menu gate** before merge: on the maintainer's newest macOS host,
+  open the actual menu, activate both actions with keyboard navigation and
+  VoiceOver, confirm state announcements and independent drawers, and confirm
+  the effect list still renders and scrolls. Model tests and source review do
+  not establish native menu/AX/layout behavior. The committed Phase 3 AX tree
+  remains historical until a genuine regeneration; it must not be hand-edited
+  to represent this menu.
 - **Manual checks** documented in the Phase 3 verification report: source change while running, add/remove/reorder effects with audio flowing, save preset → quit → relaunch → load preset → verify identical graph.

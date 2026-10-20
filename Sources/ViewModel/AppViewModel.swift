@@ -2,7 +2,6 @@ import AVFoundation
 import AppKit
 import Capture
 import Combine
-import CoreAudio
 import Effects
 import Foundation
 import Graph
@@ -138,6 +137,8 @@ public final class AppViewModel: ObservableObject {
 
     public let debugLog: DebugLogStore
 
+    /// Persisted Diagnostics preference: shows the log panel and enables
+    /// detailed wet/dry and bypass snapshots. Warnings and errors stay on.
     @Published public private(set) var showDebugPanel: Bool
 
     public func toggleDebugPanel() {
@@ -145,8 +146,8 @@ public final class AppViewModel: ObservableObject {
         defaults.set(showDebugPanel, forKey: AppViewModelDefaultsKey.debugPanel)
     }
 
-    /// Whether the settings panel is visible. Toggled via the gear button in
-    /// `HeaderView`. Mirrors the `showDebugPanel` pattern exactly.
+    /// Session-only settings visibility, independent of the persisted
+    /// Diagnostics preference. Toggled through the header's Settings menu.
     @Published public private(set) var showSettings: Bool = false
 
     public func toggleSettings() {
@@ -166,154 +167,6 @@ public final class AppViewModel: ObservableObject {
         didSet {
             defaults.set(preserveBluetoothQuality, forKey: AppViewModelDefaultsKey.preserveBluetoothQuality)
         }
-    }
-
-    // MARK: - EXP-029 minimal-reader control (throwaway)
-    //
-    // Debug-panel-driven test that runs a `TapIOProcReader` for 5 s
-    // WITHOUT any `engine.attach(sourceNode)` — i.e., the exact same
-    // tap + aggregate + IOProc path as production, but with NO contact
-    // with the AVAudioEngine. Compare its log block (tagged
-    // `[EXP-029.*]`) to the production Start path's block to identify
-    // which observable signal first diverges between the two paths.
-    // Remove once H10 / H9 / H11 / H12 / H13 is resolved.
-
-    /// Whether the EXP-029 reader test is currently running.
-    @Published public private(set) var isReaderTestRunning: Bool = false
-
-    @MainActor
-    public func runReaderTest() {
-        guard !isReaderTestRunning else { return }
-        guard captureState == .idle else {
-            logger.warning(
-                "runReaderTest: capture is active; stop capture before running "
-                + "the reader test (it would create a second tap on the same "
-                + "process and can fire a configuration change on the live engine)"
-            )
-            return
-        }
-        guard let source = currentSource else {
-            logger.warning("runReaderTest: no source selected; pick one first")
-            return
-        }
-        isReaderTestRunning = true
-        Task { @MainActor in
-            await self.performReaderTest(source: source)
-            self.isReaderTestRunning = false
-        }
-    }
-
-    @MainActor
-    private func performReaderTest(source: CaptureSource) async {
-        let testLogger = TnfLogger(source: "ReaderTest", store: debugLog)
-        testLogger.info("[EXP-029.path] RDRTEST (TapIOProcReader, NO engine.attach)")
-        testLogger.info(
-            "[EXP-029.input.source] pid=\(source.pid) "
-            + "audioProcessID(stored)=\(source.audioProcessID) "
-            + "bundleID=\(source.bundleIdentifier ?? "nil") "
-            + "displayName=\(source.displayName)"
-        )
-
-        let coreAudio = RealCoreAudioInterface()
-        let liveProcessID: AudioObjectID
-        do {
-            liveProcessID = try coreAudio.audioProcessID(forPID: source.pid)
-            testLogger.info(
-                "[EXP-029.input.resolve] OK liveProcessID=\(liveProcessID) "
-                + "(stored was \(source.audioProcessID); "
-                + "match=\(liveProcessID == source.audioProcessID))"
-            )
-        } catch {
-            testLogger.error("[EXP-029.input.resolve] FAIL \(error)")
-            return
-        }
-
-        let reader: TapIOProcReader
-        do {
-            reader = try TapIOProcReader(
-                audioProcessID: liveProcessID,
-                coreAudio: coreAudio,
-                log: { message in testLogger.info(message) }
-            )
-        } catch {
-            testLogger.error("[EXP-029.reader.init] FAIL \(error)")
-            return
-        }
-
-        do {
-            try reader.start()
-            testLogger.info("[EXP-029.rdrtest] start() returned; running 5s")
-        } catch {
-            testLogger.error("[EXP-029.reader.start] FAIL \(error)")
-            reader.stop()
-            return
-        }
-
-        // Drain the ring fully each ~100 ms tick. A single frameBatch read
-        // (4096) under-drains at 48 kHz (~4800 frames per 100 ms window), so
-        // the inner loop reads until the ring is empty to keep totalFrames
-        // accurate and avoid a slow ring overflow. (CodeRabbit PR #10 review.)
-        let ring = reader.ring
-        let channelCount = Int(reader.format.channelCount)
-        let frameBatch = 4096
-        let totalCapacity = frameBatch * channelCount
-        let storage = UnsafeMutablePointer<Float>.allocate(capacity: totalCapacity)
-        defer { storage.deallocate() }
-        var channelPtrs: [UnsafeMutablePointer<Float>] = []
-        channelPtrs.reserveCapacity(channelCount)
-        for c in 0..<channelCount {
-            channelPtrs.append(storage.advanced(by: c * frameBatch))
-        }
-
-        var totalFrames = 0
-        var nonZeroFrames = 0
-        var maxAbs: Float = 0
-        var readCount = 0
-
-        let deadline = Date().addingTimeInterval(5.0)
-        while Date() < deadline {
-            try? await Task.sleep(nanoseconds: 100_000_000)
-            var framesRead = ring.read(into: channelPtrs, frames: frameBatch)
-            while framesRead > 0 {
-                readCount += 1
-                totalFrames += framesRead
-                let ch0 = channelPtrs[0]
-                for i in 0..<framesRead {
-                    let s = ch0[i]
-                    if s != 0 { nonZeroFrames += 1 }
-                    let a = Swift.abs(s)
-                    if a > maxAbs { maxAbs = a }
-                }
-                framesRead = ring.read(into: channelPtrs, frames: frameBatch)
-            }
-        }
-
-        testLogger.info(
-            "[EXP-029.rdrtest.stats] reads=\(readCount) "
-            + "totalFrames=\(totalFrames) nonZeroFrames=\(nonZeroFrames) "
-            + "maxAbs=\(maxAbs)"
-        )
-        if totalFrames == 0 {
-            testLogger.warning(
-                "[EXP-029.rdrtest.result] FAIL_NO_FRAMES — AudioDeviceStart "
-                + "succeeded but IOProc delivered nothing. Cause is downstream "
-                + "of the start (e.g., tap not actually pumping)."
-            )
-        } else if nonZeroFrames == 0 {
-            testLogger.warning(
-                "[EXP-029.rdrtest.result] FAIL_ZEROS_ONLY — frames arrived but all "
-                + "are zero. Suspect macOS 26 zero-buffer bug (forums 825780)."
-            )
-        } else {
-            testLogger.info(
-                "[EXP-029.rdrtest.result] PASS — \(totalFrames) frames, "
-                + "\(nonZeroFrames) non-zero, peak \(maxAbs). Direct-IOProc path "
-                + "works without an engine. If production STILL fails: H10 "
-                + "(engine.attach pre-empts) is the leading candidate."
-            )
-        }
-
-        reader.stop()
     }
 
     // MARK: Collaborators
@@ -548,20 +401,6 @@ public final class AppViewModel: ObservableObject {
         guard captureState == .idle || isFailedState(captureState) else {
             return
         }
-        // The debug reader test owns a tap on this same process for ~5 s, and
-        // it leaves captureState at .idle, so the guard above does not catch
-        // it. Starting production capture concurrently would create a second
-        // tap/aggregate on the process (the overlap runReaderTest's own guard
-        // prevents in the other direction), risking a HAL configuration change
-        // or start failure. Refuse until the test finishes. (Codex PR #10
-        // re-review — symmetric with the runReaderTest idle guard.)
-        guard !isReaderTestRunning else {
-            lastError = .engine(
-                "A diagnostic reader test is running. Wait a few seconds for it "
-                + "to finish, then press Start again."
-            )
-            return
-        }
         lastError = nil
 
         // Re-resolve the source from the live HAL list. Match by PID
@@ -751,13 +590,13 @@ public final class AppViewModel: ObservableObject {
         // before/after diagnostic block here. If the bug is in
         // `applyMixGains` itself, wetDryMix changes will produce the same
         // log signature shape as bypass toggles.
-        logger.info(
+        logDiagnostic(
             "[EXP-031.wetDryMix.before] node=\(shortID) "
             + "type=\(type(of: node).typeIdentifier) "
             + "requested=\(clamped) state={\(node.debugStateDescription())}"
         )
         node.wetDryMix = clamped
-        logger.info(
+        logDiagnostic(
             "[EXP-031.wetDryMix.after] node=\(shortID) "
             + "type=\(type(of: node).typeIdentifier) "
             + "state={\(node.debugStateDescription())} "
@@ -770,7 +609,7 @@ public final class AppViewModel: ObservableObject {
 
     public func setBypass(nodeID: UUID, bypass: Bool) {
         let shortID = String(nodeID.uuidString.prefix(8))
-        logger.info(
+        logDiagnostic(
             "[EXP-031.setBypass.entry] node=\(shortID) requested=\(bypass) "
             + "engineIsRunning=\(engineIsRunning) engine.isRunning=\(engine.isRunning)"
         )
@@ -779,13 +618,13 @@ public final class AppViewModel: ObservableObject {
             lastError = .parameter("Unknown node \(nodeID).")
             return
         }
-        logger.info(
+        logDiagnostic(
             "[EXP-031.setBypass.before] node=\(shortID) "
             + "type=\(type(of: node).typeIdentifier) "
             + "state={\(node.debugStateDescription())}"
         )
         node.bypass = bypass
-        logger.info(
+        logDiagnostic(
             "[EXP-031.setBypass.after] node=\(shortID) "
             + "type=\(type(of: node).typeIdentifier) "
             + "state={\(node.debugStateDescription())} "
@@ -793,6 +632,13 @@ public final class AppViewModel: ObservableObject {
         )
         objectWillChange.send()
         schedulePersistence()
+    }
+
+    /// Check the live preference before evaluating diagnostic interpolation.
+    /// Ordinary logging, warnings, and recovery evidence bypass this gate.
+    private func logDiagnostic(_ message: @autoclosure () -> String) {
+        guard showDebugPanel else { return }
+        logger.info(message())
     }
 
     // MARK: Presets
