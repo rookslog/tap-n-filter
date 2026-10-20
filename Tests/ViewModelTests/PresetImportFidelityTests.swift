@@ -183,7 +183,77 @@ final class PresetImportFidelityTests: XCTestCase {
         }
     }
 
-    func test_duplicate_IDs_across_types_match_occurrences_without_dictionary_traps() throws {
+    /// FILE imports must reject ambiguous runtime identities before replacing
+    /// the graph or invalidating accepted intent, not merely require Save As.
+    private func assertDuplicateImportRejected(_ url: URL) throws {
+        let importedBytes = try Data(contentsOf: url)
+        for recovered in [false, true] {
+            let previousPreset = recovered ? fixture.partialPreset() : GraphPreset(
+                name: "Previous", outputGain: 0.75, nodes: Array(fixture.preset().nodes.prefix(1))
+            )
+            let previousURL = try fixture.write(previousPreset, filename: "Previous.tnf")
+            let previousBytes = try Data(contentsOf: previousURL)
+            let model = fixture.makeModel()
+            model.loadPreset(from: previousURL)
+            XCTAssertNil(model.lastError)
+            XCTAssertEqual(model.presetOrigin, recovered ? .recovered : .file)
+            XCTAssertFalse(model.isPresetModified)
+            let graph = model.graph
+            let node = try XCTUnwrap(graph.nodes.first)
+            let baselineGain = try XCTUnwrap(node.parameterValue("gain"))
+            let identities = graph.nodes.map { ObjectIdentifier($0) }
+            let name = model.presetName
+            let origin = model.presetOrigin
+            let fileURL = model.presetFileURL
+            let suggestedFilename = model.suggestedPresetFilename
+            let warnings = model.presetWarnings
+            let notice = model.presetRecoveryNotice
+            let loadWarnings = graph.lastLoadWarnings
+            model.updateParameter(nodeID: node.id, paramID: "gain", value: -9)
+            XCTAssertTrue(model.isPresetModified)
+            let beforeImport = graph.snapshot()
+            let handle = try XCTUnwrap(model.makeParameterEditHandle(node: node, parameterID: "gain"))
+            XCTAssertTrue(model.acceptParameterValue(-12, for: handle, intentRevision: 1))
+            XCTAssertEqual(model.pendingParameterValue(for: handle), -12)
+            XCTAssertEqual(node.parameterValue("gain"), -9, "Accepted input is still pending")
+
+            model.loadPreset(from: url)
+
+            if case .preset(let message)? = model.lastError {
+                XCTAssertTrue(message.hasPrefix("Load failed:"))
+            } else {
+                XCTFail("Duplicate UUID FILE imports must use the existing load-error surface")
+            }
+            XCTAssertTrue(model.graph === graph)
+            XCTAssertEqual(model.graph.nodes.map { ObjectIdentifier($0) }, identities)
+            XCTAssertEqual(model.graph.snapshot(), beforeImport)
+            XCTAssertEqual(model.graph.lastLoadWarnings, loadWarnings)
+            XCTAssertEqual(model.presetName, name)
+            XCTAssertEqual(model.presetOrigin, origin)
+            XCTAssertEqual(model.presetFileURL, fileURL)
+            XCTAssertEqual(model.suggestedPresetFilename, suggestedFilename)
+            XCTAssertEqual(model.presetWarnings, warnings)
+            XCTAssertEqual(model.presetRecoveryNotice, notice)
+            XCTAssertTrue(model.isPresetModified)
+            XCTAssertEqual(model.pendingParameterValue(for: handle), -12,
+                           "Rejection must precede generation invalidation")
+            XCTAssertEqual(node.parameterValue("gain"), -9, "Rejection must not flush pending input")
+            XCTAssertEqual(try Data(contentsOf: previousURL), previousBytes)
+            XCTAssertEqual(try Data(contentsOf: url), importedBytes)
+
+            XCTAssertTrue(model.finishParameterEditing(handle))
+            XCTAssertEqual(node.parameterValue("gain"), -12)
+            XCTAssertEqual(model.graph.nodes.first?.parameterValue("gain"), -12)
+            XCTAssertNil(model.pendingParameterValue(for: handle))
+            model.updateParameter(nodeID: node.id, paramID: "gain", value: baselineGain)
+            XCTAssertFalse(model.isPresetModified, "Rejected import must not replace the previous baseline")
+            model.retireParameterEditHandle(handle)
+            XCTAssertEqual(try Data(contentsOf: previousURL), previousBytes)
+            XCTAssertEqual(try Data(contentsOf: url), importedBytes)
+        }
+    }
+
+    func test_duplicate_IDs_across_types_are_rejected_preserving_previous_graph_receipt_and_pending_edit() throws {
         let base = fixture.preset()
         let id = base.nodes[0].id
         let nodes = base.nodes.map {
@@ -191,36 +261,27 @@ final class PresetImportFidelityTests: XCTestCase {
                         bypass: $0.bypass, wetDryMix: $0.wetDryMix, parameters: $0.parameters, extras: $0.extras)
         }
         let url = try write(GraphPreset(name: base.name, outputGain: base.outputGain, nodes: nodes))
-        let model = fixture.makeModel()
-        model.loadPreset(from: url)
-        XCTAssertEqual(model.presetFileURL, url)
-        XCTAssertNil(model.presetRecoveryNotice)
-        XCTAssertEqual(model.graph.nodes.count, 3)
+        try assertDuplicateImportRejected(url)
     }
 
-    func test_ambiguous_same_type_ID_with_skipped_occurrence_is_conservatively_recovered() throws {
+    func test_duplicate_same_type_ID_with_skipped_occurrence_is_rejected_before_install() throws {
         let id = UUID()
         let states = ["not-a-reverb", "largeHall"].map {
             EffectState(typeIdentifier: "tnf.reverb", id: id, displayName: "Reverb", bypass: false,
                         wetDryMix: 0.7, parameters: [:], extras: ["preset": .string($0)])
         }
         let url = try write(GraphPreset(name: "Ambiguous", outputGain: 1, nodes: states))
-        try assertFidelityRecovery(url, skipped: 1)
+        try assertDuplicateImportRejected(url)
     }
 
-    func test_duplicate_same_type_IDs_without_skips_preserve_order_and_safe_target() throws {
+    func test_duplicate_same_type_IDs_without_skips_are_rejected_preserving_previous_state() throws {
         let id = UUID()
         let states = [Float(-6), Float(-9)].map {
             EffectState(typeIdentifier: "tnf.gain", id: id, displayName: "Gain", bypass: false,
                         wetDryMix: 1, parameters: ["gain": $0], extras: [:])
         }
         let url = try write(GraphPreset(name: "Repeated ID", outputGain: 1, nodes: states))
-        let model = fixture.makeModel()
-        model.loadPreset(from: url)
-
-        XCTAssertEqual(model.presetFileURL, url)
-        XCTAssertNil(model.presetRecoveryNotice)
-        XCTAssertEqual(model.graph.nodes.map { $0.parameterValue("gain") }, [-6, -9])
+        try assertDuplicateImportRejected(url)
     }
 
     func test_failed_actions_preserve_fidelity_receipt_and_baseline_until_explicit_save_as_succeeds() throws {

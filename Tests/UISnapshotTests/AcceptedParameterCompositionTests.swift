@@ -458,6 +458,43 @@ final class AcceptedParameterCompositionTests: XCTestCase {
         XCTAssertEqual(node.attempts, [5.5])
     }
 
+    func test_changed_external_readback_equal_to_optimistic_value_replaces_stale_draft_before_return_and_save() throws {
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        node.behavior = .roundedDown
+        let editor = fixture.writer(node, model).makeEditor()
+        editor.drag(to: 0.55)
+        editor.beginEditing(locale: fixture.locale)
+        editor.text = "6"
+        try scheduler.runNext()
+        XCTAssertEqual(node.value, 5)
+        XCTAssertEqual(editor.value, 5.5)
+        editor.receiveModelValue(try XCTUnwrap(node.parameterValue("amount")))
+        XCTAssertEqual(editor.text, "6", "Our normalized result must preserve the newer numeric draft")
+        XCTAssertTrue(editor.isEditing)
+        XCTAssertNil(editor.errorMessage)
+        XCTAssertEqual(node.attempts, [5.5])
+
+        node.behavior = .exact
+        model.updateParameter(nodeID: node.id, paramID: "amount", value: 5.5)
+        let actual = try XCTUnwrap(node.parameterValue("amount"))
+        XCTAssertEqual(actual, 5.5)
+        editor.receiveModelValue(actual)
+
+        XCTAssertEqual(editor.value, 5.5)
+        XCTAssertEqual(editor.text, "5.5", "Changed authoritative state must reconcile text, even at equal scalar")
+        XCTAssertNil(editor.errorMessage)
+        XCTAssertEqual(node.attempts, [5.5, 5.5], "Ordinary model reconciliation must not echo a write")
+        XCTAssertTrue(editor.commit(locale: fixture.locale))
+        XCTAssertEqual(node.value, 5.5, "Return must not restore the stale draft 6")
+        XCTAssertEqual(node.attempts, [5.5, 5.5, 5.5])
+        model.savePreset(to: fixture.url("external-equal-optimistic.tnf"))
+        XCTAssertEqual(try fixture.exportedValue("external-equal-optimistic.tnf"), 5.5)
+        scheduler.runAll()
+        XCTAssertEqual(node.value, 5.5)
+        XCTAssertEqual(node.attempts, [5.5, 5.5, 5.5], "Save and obsolete ticks cannot replay the stale draft")
+    }
+
     func test_nan_own_result_echo_is_acknowledged_without_destroying_newer_draft() throws {
         let model = makeModel()
         let node = try fixture.node(in: model)
