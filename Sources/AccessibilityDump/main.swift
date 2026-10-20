@@ -91,9 +91,9 @@ func runDump() {
     // always populate AXDescription on the in-process tree (it lands in
     // various places depending on the underlying control). The KVC tree may
     // omit controls; compare it with the same-view PNG rather than assuming
-    // completeness. The manual VoiceOver pass and a CI XCTest run
-    // (with full Xcode + AXUIElement permission) are the authoritative
-    // checks. See ADR-011 for the broader rationale.
+    // completeness. The manual VoiceOver pass is authoritative for native AX;
+    // CI tests only this partial KVC artifact and source label conventions.
+    // See ADR-011 for the broader rationale.
     hosting.layoutSubtreeIfNeeded()
     hosting.displayIfNeeded()
     let tree = AccessibilityNode.dump(from: hosting)
@@ -140,7 +140,7 @@ func runDump() {
         viewHeightPoints: Double(hosting.bounds.height),
         imagePixelWidth: bitmap.pixelsWide,
         imagePixelHeight: bitmap.pixelsHigh,
-        captureMethod: "Same NSHostingView, AppKit cacheDisplay(in:to:)",
+        captureMethod: "Same NSHostingView, AppKit cacheDisplay(in:to:); RGBA transparency, view over contrasting background",
         treeLimitation: "KVC may omit controls; compare the hosted PNG and tree. VoiceOver remains manual."
     )
     let outURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)

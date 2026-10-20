@@ -1,12 +1,12 @@
 {
   "counts" : {
     "buttons" : 4,
-    "interactiveElements" : 11,
+    "interactiveElements" : 15,
     "nodesWithLabel" : 2,
-    "nodesWithValue" : 15,
+    "nodesWithValue" : 19,
     "popUpButtons" : 1,
     "sliders" : 6,
-    "totalNodes" : 19
+    "totalNodes" : 23
   },
   "environment" : {
     "adrReference" : "docs\/decisions\/ADR-011-no-xcui-in-spm.md",
@@ -37,11 +37,18 @@
 
                 ],
                 "role" : "AXValueIndicator",
-                "value" : "0.125"
+                "value" : "0.4306765580733931"
               }
             ],
             "role" : "AXSlider",
-            "value" : "0.125"
+            "value" : "0.4306765580733931"
+          },
+          {
+            "children" : [
+
+            ],
+            "role" : "AXTextField",
+            "value" : "80.0"
           },
           {
             "children" : [
@@ -50,11 +57,18 @@
 
                 ],
                 "role" : "AXValueIndicator",
-                "value" : "1"
+                "value" : "0.05914286204746792"
               }
             ],
             "role" : "AXSlider",
-            "value" : "1"
+            "value" : "0.05914286204746792"
+          },
+          {
+            "children" : [
+
+            ],
+            "role" : "AXTextField",
+            "value" : "0.707"
           },
           {
             "children" : [
@@ -63,11 +77,18 @@
 
                 ],
                 "role" : "AXValueIndicator",
-                "value" : "0.0337078645825386"
+                "value" : "0.3080784439085271"
               }
             ],
             "role" : "AXSlider",
-            "value" : "0.0337078645825386"
+            "value" : "0.3080784439085271"
+          },
+          {
+            "children" : [
+
+            ],
+            "role" : "AXTextField",
+            "value" : "800.0"
           },
           {
             "children" : [
@@ -76,11 +97,18 @@
 
                 ],
                 "role" : "AXValueIndicator",
-                "value" : "1"
+                "value" : "0.05914286204746792"
               }
             ],
             "role" : "AXSlider",
-            "value" : "1"
+            "value" : "0.05914286204746792"
+          },
+          {
+            "children" : [
+
+            ],
+            "role" : "AXTextField",
+            "value" : "0.707"
           },
           {
             "children" : [
