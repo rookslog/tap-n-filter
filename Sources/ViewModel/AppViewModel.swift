@@ -74,6 +74,20 @@ public enum AppViewModelDefaultsKey {
     public static let preserveBluetoothQuality: String = "settings.preserveBluetoothQuality"
 }
 
+/// Provenance of the current chain, independent of whether it has graph edits.
+public enum PresetOrigin: Equatable {
+    /// A bundled preset, with no writable file target.
+    case factory
+    /// A restored autosave, which is not an exported preset file.
+    case session
+    /// A successfully opened or saved file, safe for explicit direct Save.
+    case file
+    /// A restoration with skipped effects or unsupported/adjusted imported data.
+    case recovered
+    /// An empty fallback when neither session nor bundled restoration succeeded.
+    case unsaved
+}
+
 /// The single owner of UI state for the menubar window.
 ///
 /// `AppViewModel` mediates between the SwiftUI views and the audio stack
@@ -102,6 +116,112 @@ public final class AppViewModel: ObservableObject {
     // MARK: Published state
 
     @Published public private(set) var graph: Graph
+
+    // One published value keeps name, target, provenance and baseline together.
+    // It is never serialized: restoring an autosave cannot restore file identity.
+    private struct PresetReceipt {
+        let name: String
+        let fileURL: URL?
+        let origin: PresetOrigin
+        let warnings: [PresetLoadWarning]
+        let fidelityLoss: Bool
+        let baseline: GraphPreset
+    }
+
+    @Published private var presetReceipt: PresetReceipt
+
+    /// File basename, factory display label, or an explicit session/unsaved label.
+    public var presetName: String { presetReceipt.name }
+
+    /// Safe target for an explicit Save. Nil means the UI must present Save As.
+    public var presetFileURL: URL? { presetReceipt.fileURL }
+
+    /// How the current chain was established, including partial recovery.
+    public var presetOrigin: PresetOrigin { presetReceipt.origin }
+
+    /// Nonblocking recovery warnings; unaffected by dismissing an error banner.
+    public var presetWarnings: [PresetLoadWarning] { presetReceipt.warnings }
+
+    /// Combined nonblocking recovery notice. Fidelity loss is independent of
+    /// skipped-node warnings and never implies that an effect was skipped.
+    public var presetRecoveryNotice: String? {
+        var parts: [String] = []
+        if !presetWarnings.isEmpty {
+            let count = presetWarnings.count
+            let skipped = count == 1 ? "1 effect was skipped" : "\(count) effects were skipped"
+            parts.append("Preset partially recovered: \(skipped).")
+        }
+        if presetReceipt.fidelityLoss {
+            parts.append("Some preset data was unsupported or adjusted.")
+        }
+        guard !parts.isEmpty else { return nil }
+        parts.append("Use Save As to save this version.")
+        return parts.joined(separator: " ")
+    }
+
+    /// Suggested Save As filename. This is a label, not a persistent file identity.
+    public var suggestedPresetFilename: String { presetName + ".tnf" }
+
+    /// Exact meaningful graph comparison, excluding snapshot title metadata.
+    /// A recovered chain can match this baseline while still requiring Save As.
+    public var isPresetModified: Bool {
+        let current = graph.snapshot()
+        return !Self.presetScalarsMatch(current.outputGain, presetReceipt.baseline.outputGain)
+            || !Self.presetNodesMatch(current.nodes, presetReceipt.baseline.nodes)
+    }
+
+    // Dirty-state comparison only: retained diagnostic NaNs are unchanged when
+    // their bits match. This does not normalize state or alter import fidelity.
+    private static func presetScalarsMatch(_ lhs: Float, _ rhs: Float) -> Bool {
+        lhs == rhs || (lhs.isNaN && rhs.isNaN && lhs.bitPattern == rhs.bitPattern)
+    }
+
+    private static func presetScalarsMatch(_ lhs: Double, _ rhs: Double) -> Bool {
+        lhs == rhs || (lhs.isNaN && rhs.isNaN && lhs.bitPattern == rhs.bitPattern)
+    }
+
+    private static func presetNodesMatch(_ lhs: [EffectState], _ rhs: [EffectState]) -> Bool {
+        guard lhs.count == rhs.count else { return false }
+        return zip(lhs, rhs).allSatisfy { presetNodeMatches($0.0, $0.1) }
+    }
+
+    private static func presetNodeMatches(_ lhs: EffectState, _ rhs: EffectState) -> Bool {
+        lhs.typeIdentifier == rhs.typeIdentifier
+            && lhs.id == rhs.id
+            && lhs.displayName == rhs.displayName
+            && lhs.bypass == rhs.bypass
+            && presetScalarsMatch(lhs.wetDryMix, rhs.wetDryMix)
+            && presetParametersMatch(lhs.parameters, rhs.parameters)
+            && presetExtrasMatch(lhs.extras, rhs.extras)
+    }
+
+    private static func presetParametersMatch(_ lhs: [String: Float], _ rhs: [String: Float]) -> Bool {
+        guard lhs.count == rhs.count else { return false }
+        for (key, value) in lhs {
+            guard let other = rhs[key], presetScalarsMatch(value, other) else { return false }
+        }
+        return true
+    }
+
+    private static func presetExtrasMatch(
+        _ lhs: [String: AnyCodableValue], _ rhs: [String: AnyCodableValue]
+    ) -> Bool {
+        guard lhs.count == rhs.count else { return false }
+        for (key, value) in lhs {
+            guard let other = rhs[key], presetExtraMatches(value, other) else { return false }
+        }
+        return true
+    }
+
+    private static func presetExtraMatches(_ lhs: AnyCodableValue, _ rhs: AnyCodableValue) -> Bool {
+        switch (lhs, rhs) {
+        case (.string(let left), .string(let right)): return left == right
+        case (.int(let left), .int(let right)): return left == right
+        case (.double(let left), .double(let right)): return presetScalarsMatch(left, right)
+        case (.bool(let left), .bool(let right)): return left == right
+        default: return false
+        }
+    }
 
     @Published public var currentSource: CaptureSource?
 
@@ -323,6 +443,19 @@ public final class AppViewModel: ObservableObject {
     private let registry: EffectNodeRegistry
     private let defaults: UserDefaults
     private let logger: TnfLogger
+    private let scheduleParameterEdit: (@escaping () -> Void) -> Void
+    private lazy var acceptedParameterEdits = AcceptedParameterEdits(
+        schedule: scheduleParameterEdit,
+        isCurrent: { [weak self] node in
+            self?.graph.nodes.contains {
+                ObjectIdentifier($0) == ObjectIdentifier(node) && $0.id == node.id
+            } ?? false
+        },
+        apply: { [weak self] node, parameter, value in
+            self?.applyParameterValue(node: node, parameterID: parameter, value: value)
+                ?? ParameterApplication(success: false, actual: nil)
+        }
+    )
 
     private var stateCancellable: AnyCancellable?
     private var sourceRefreshTimer: Timer?
@@ -370,20 +503,33 @@ public final class AppViewModel: ObservableObject {
         engine: AVAudioEngine,
         registry: EffectNodeRegistry = .shared,
         defaults: UserDefaults = .standard,
-        debugLog: DebugLogStore = DebugLogStore()
+        debugLog: DebugLogStore = DebugLogStore(),
+        scheduleParameterEdit: @escaping (@escaping () -> Void) -> Void = { action in
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(33)) { action() }
+        }
     ) {
         self.capture = capture
         self.engine = engine
         self.registry = registry
         self.defaults = defaults
         self.debugLog = debugLog
+        self.scheduleParameterEdit = scheduleParameterEdit
         self.showDebugPanel = defaults.bool(forKey: AppViewModelDefaultsKey.debugPanel)
         // Absent key → true (default ON per ADR-019).
         let storedPreserve = defaults.object(forKey: AppViewModelDefaultsKey.preserveBluetoothQuality)
         self.preserveBluetoothQuality = (storedPreserve as? Bool) ?? true
         self.logger = TnfLogger(source: "AppViewModel", store: debugLog)
         let bootstrapLogger = Logger(subsystem: "tnf.app", category: "AppViewModel.bootstrap")
-        self.graph = AppViewModel.restoreGraph(from: defaults, registry: registry, logger: bootstrapLogger)
+        let restored = AppViewModel.restoreGraph(from: defaults, registry: registry, logger: bootstrapLogger)
+        self.graph = restored.graph
+        self.presetReceipt = PresetReceipt(
+            name: restored.name,
+            fileURL: nil,
+            origin: restored.graph.lastLoadWarnings.isEmpty ? restored.origin : .recovered,
+            warnings: restored.graph.lastLoadWarnings,
+            fidelityLoss: false,
+            baseline: restored.graph.snapshot()
+        )
 
         stateCancellable = capture.statePublisher
             .receive(on: DispatchQueue.main)
@@ -729,15 +875,63 @@ public final class AppViewModel: ObservableObject {
             lastError = .parameter("Unknown node \(nodeID).")
             return
         }
+        acceptedParameterEdits.applyImmediate(node: node, parameter: paramID, value: value)
+    }
+
+    private func applyParameterValue(node: any EffectNode, parameterID paramID: String, value: Float)
+        -> ParameterApplication {
+        let shortID = String(node.id.uuidString.prefix(8))
         do {
             try node.setParameter(paramID, value: value)
             logger.info("updateParameter: \(type(of: node).typeIdentifier)/\(shortID) \(paramID)=\(value)")
+            objectWillChange.send()
             schedulePersistence()
+            return ParameterApplication(success: true, actual: node.parameterValue(paramID))
         } catch {
             logger.error("updateParameter: \(type(of: node).typeIdentifier)/\(shortID) \(paramID)=\(value) failed: \(error.localizedDescription)")
             lastError = .parameter(error.localizedDescription)
+            return ParameterApplication(success: false, actual: node.parameterValue(paramID))
         }
     }
+
+    /// Bind accepted edits to this graph generation and concrete node object.
+    public func makeParameterEditHandle(node: any EffectNode, parameterID: String) -> ParameterEditHandle? {
+        acceptedParameterEdits.makeHandle(node: node, parameterID: parameterID)
+    }
+
+    /// Accept slider intent now; coalesce only delivery to the native setter.
+    @discardableResult
+    public func acceptParameterValue(
+        _ value: Float, for handle: ParameterEditHandle, intentRevision: UInt64
+    ) -> Bool {
+        acceptedParameterEdits.accept(value, for: handle, intentRevision: intentRevision)
+    }
+
+    /// Submit an explicit numeric/reset value immediately, superseding older drags.
+    @discardableResult
+    public func commitParameterValue(
+        _ value: Float, for handle: ParameterEditHandle, intentRevision: UInt64
+    ) -> Bool {
+        acceptedParameterEdits.commit(value, for: handle, intentRevision: intentRevision)
+    }
+
+    /// Read the target's latest accepted value, before native delivery if pending.
+    public func pendingParameterValue(for handle: ParameterEditHandle) -> Float? {
+        acceptedParameterEdits.pendingValue(for: handle)
+    }
+
+    /// Flush a control's final drag without retiring its session.
+    @discardableResult
+    public func finishParameterEditing(_ handle: ParameterEditHandle) -> Bool {
+        acceptedParameterEdits.finish(handle)
+    }
+
+    /// Flush accepted intent before retiring a disappearing control session.
+    public func retireParameterEditHandle(_ handle: ParameterEditHandle) {
+        acceptedParameterEdits.retire(handle)
+    }
+
+    private func flushAcceptedParameterEdits() -> Bool { acceptedParameterEdits.flushAll() }
 
     public func updateWetDryMix(nodeID: UUID, value: Float) {
         let shortID = String(nodeID.uuidString.prefix(8))
@@ -798,9 +992,21 @@ public final class AppViewModel: ObservableObject {
     // MARK: Presets
 
     public func savePreset(to url: URL) {
+        guard flushAcceptedParameterEdits() else {
+            lastError = .preset(
+                "Save failed: A parameter change could not be applied. "
+                    + "Adjust or remove the affected effect and try again."
+            )
+            return
+        }
         let snapshot = graph.snapshot(name: url.deletingPathExtension().lastPathComponent)
         do {
             try PresetStore.save(snapshot, to: url)
+            // A failed write must leave the previous receipt and baseline intact.
+            presetReceipt = PresetReceipt(
+                name: snapshot.name, fileURL: url, origin: .file, warnings: [], fidelityLoss: false,
+                baseline: snapshot
+            )
         } catch {
             lastError = .preset("Save failed: \(error.localizedDescription)")
         }
@@ -808,8 +1014,20 @@ public final class AppViewModel: ObservableObject {
 
     public func loadPreset(from url: URL) {
         do {
-            let preset = try PresetStore.load(from: url)
-            try installPreset(PresetMigrator.migrate(preset))
+            let result = try PresetStore.loadResult(from: url)
+            // UUID-only row actions cannot disambiguate occurrences, even if
+            // fidelity matching could preserve all their values and order.
+            // Reject raw FILE input before install, flush or generation change.
+            guard Set(result.preset.nodes.map { $0.id }).count == result.preset.nodes.count else {
+                lastError = .preset("Load failed: Preset contains duplicate effect identifiers.")
+                return
+            }
+            let migrated = PresetMigrator.migrate(result.preset)
+            try installPreset(migrated)
+            recordLoadedPreset(
+                name: url.deletingPathExtension().lastPathComponent, fileURL: url, origin: .file,
+                fidelityLoss: !result.diagnostics.isEmpty || Self.hasImportFidelityLoss(migrated, restored: graph)
+            )
         } catch {
             lastError = .preset("Load failed: \(error.localizedDescription)")
         }
@@ -819,12 +1037,85 @@ public final class AppViewModel: ObservableObject {
         do {
             let preset = try FactoryPresets.load(named: name)
             try installPreset(PresetMigrator.migrate(preset))
+            recordLoadedPreset(
+                name: FactoryPresets.all.first(where: { $0.name == name })?.displayName ?? preset.name,
+                fileURL: nil,
+                origin: .factory
+            )
         } catch {
             lastError = .preset("Factory preset load failed: \(error.localizedDescription)")
         }
     }
 
     // MARK: Internals
+
+    private func recordLoadedPreset(
+        name: String, fileURL: URL?, origin: PresetOrigin, fidelityLoss: Bool = false
+    ) {
+        let warnings = graph.lastLoadWarnings
+        let recovered = !warnings.isEmpty || fidelityLoss
+        presetReceipt = PresetReceipt(
+            name: name,
+            fileURL: recovered ? nil : fileURL,
+            origin: recovered ? .recovered : origin,
+            warnings: warnings,
+            fidelityLoss: fidelityLoss,
+            // Use actual restored values (including Q roundtrips), not raw JSON.
+            baseline: graph.snapshot()
+        )
+    }
+
+    /// Classify loss against migrated input, not raw float snapshot inequality.
+    /// Q repair/rounding and integer-to-name reverb canonicalization are supported.
+    private static func hasImportFidelityLoss(_ input: GraphPreset, restored: Graph) -> Bool {
+        guard (Float(0)...Float(2)).contains(input.outputGain) else { return true }
+        let actualStates = restored.nodes.map { $0.snapshot() }
+        let completeOrderedMatch = input.nodes.count == actualStates.count
+            && zip(input.nodes, actualStates).allSatisfy { pair in
+                pair.0.id == pair.1.id && pair.0.typeIdentifier == pair.1.typeIdentifier
+            }
+        var inputCursor = 0
+        for (outputIndex, node) in restored.nodes.enumerated() {
+            let actual = actualStates[outputIndex]
+            // This is fidelity correspondence only, not runtime identity
+            // validation. FILE UUID uniqueness was checked before installation.
+            let index: Int
+            if completeOrderedMatch {
+                // Fully restored occurrences correspond positionally.
+                index = outputIndex
+            } else {
+                let candidates = input.nodes.indices.filter { index in
+                    index >= inputCursor && input.nodes[index].id == actual.id
+                        && input.nodes[index].typeIdentifier == actual.typeIdentifier
+                }
+                guard candidates.count == 1, let match = candidates.first else { return true }
+                index = match
+            }
+            let original = input.nodes[index]
+            inputCursor = index + 1
+            if original.typeIdentifier == "tnf.reverb", original.extras["preset"] == nil {
+                return true
+            }
+            guard (Float(0)...Float(1)).contains(original.wetDryMix),
+                  Set(original.parameters.keys).isSubset(of: Set(actual.parameters.keys)),
+                  Set(original.extras.keys).isSubset(of: Set(actual.extras.keys))
+            else { return true }
+            for parameter in node.parameters {
+                // Restoration may synthesize defaults for missing required
+                // runtime catalog keys. Preserve recovery/Save As provenance.
+                guard let value = original.parameters[parameter.identifier],
+                      parameter.range.contains(value) else { return true }
+            }
+            if original.typeIdentifier == "tnf.eq" {
+                for identifier in ["hp.frequency", "lp.frequency"] {
+                    guard let requested = original.parameters[identifier],
+                          let restoredValue = actual.parameters[identifier],
+                          requested == restoredValue else { return true }
+                }
+            }
+        }
+        return false
+    }
 
     /// Apply a mutation closure to the graph. If the engine is running,
     /// detach the graph for the mutation and re-attach via the same path
@@ -968,6 +1259,7 @@ public final class AppViewModel: ObservableObject {
             }
             throw error
         }
+        acceptedParameterEdits.invalidateGeneration()
         graph = newGraph
         for warning in newGraph.lastLoadWarnings {
             logger.warning("Preset load warning: \(String(describing: warning))")
@@ -1027,12 +1319,12 @@ public final class AppViewModel: ObservableObject {
         from defaults: UserDefaults,
         registry: EffectNodeRegistry,
         logger: Logger
-    ) -> Graph {
+    ) -> (graph: Graph, name: String, origin: PresetOrigin) {
         if let data = defaults.data(forKey: AppViewModelDefaultsKey.graph) {
             do {
                 let preset = try JSONDecoder().decode(GraphPreset.self, from: data)
                 let migrated = PresetMigrator.migrate(preset)
-                return try Graph.restore(from: migrated, using: registry)
+                return (try Graph.restore(from: migrated, using: registry), "Restored Session", .session)
             } catch {
                 logger.warning("Failed to decode lastSession.graph; falling back to distant-engines: \(error.localizedDescription, privacy: .public)")
             }
@@ -1045,13 +1337,13 @@ public final class AppViewModel: ObservableObject {
     private static func restoreDistantEngines(
         registry: EffectNodeRegistry,
         logger: Logger
-    ) -> Graph {
+    ) -> (graph: Graph, name: String, origin: PresetOrigin) {
         do {
             let preset = try FactoryPresets.load(named: "distant-engines")
-            return try Graph.restore(from: preset, using: registry)
+            return (try Graph.restore(from: preset, using: registry), "Distant Engines", .factory)
         } catch {
             logger.error("Failed to load distant-engines fallback; returning empty graph: \(error.localizedDescription, privacy: .public)")
-            return Graph()
+            return (Graph(), "Untitled", .unsaved)
         }
     }
 

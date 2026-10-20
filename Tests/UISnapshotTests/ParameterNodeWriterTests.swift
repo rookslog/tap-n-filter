@@ -16,9 +16,11 @@ final class ParameterNodeWriterTests: XCTestCase {
     private var suiteName = ""
     private var defaults: UserDefaults!
     private var presetURL: URL!
+    private var queued: [() -> Void] = []
 
     override func setUp() async throws {
         try await super.setUp()
+        queued = []
         suiteName = "tnf.parameter-writer.\(UUID().uuidString)"
         defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         presetURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(suiteName).tnf")
@@ -37,8 +39,7 @@ final class ParameterNodeWriterTests: XCTestCase {
         let (model, capture, engine) = try makeModel()
         let node = try XCTUnwrap(model.graph.nodes.first as? ParameterWriterTestNode)
         let writer = ParameterNodeWriter(node: node, parameter: node.parameters[0], viewModel: model)
-        var queued: [() -> Void] = []
-        let editor = writer.makeEditor(scheduleDrag: { queued.append($0) })
+        let editor = writer.makeEditor()
         var publications = 0
         let subscription = model.objectWillChange.sink { _ in publications += 1 }
 
@@ -59,11 +60,12 @@ final class ParameterNodeWriterTests: XCTestCase {
     func test_same_uuid_preset_replacement_rejects_old_queued_and_final_writes_before_teardown() throws {
         let (model, capture, engine) = try makeModel()
         let oldNode = try XCTUnwrap(model.graph.nodes.first as? ParameterWriterTestNode)
-        let writer = ParameterNodeWriter(node: oldNode, parameter: oldNode.parameters[0], viewModel: model)
-        var queued: [() -> Void] = []
-        let staleEditor = writer.makeEditor(scheduleDrag: { queued.append($0) })
-        staleEditor.drag(to: 0.8)
+        // Construct the replacement fixture before accepting the old drag:
+        // Save now intentionally flushes accepted input (covered separately).
         model.savePreset(to: presetURL)
+        let writer = ParameterNodeWriter(node: oldNode, parameter: oldNode.parameters[0], viewModel: model)
+        let staleEditor = writer.makeEditor()
+        staleEditor.drag(to: 0.8)
         model.loadPreset(from: presetURL)
         XCTAssertNil(model.lastError)
         let replacement = try XCTUnwrap(model.graph.nodes.first as? ParameterWriterTestNode)
@@ -75,7 +77,9 @@ final class ParameterNodeWriterTests: XCTestCase {
         queued[0]()
         staleEditor.drag(to: 0.9)
         staleEditor.finishDragging()
-        queued[1]()
+        // Stale acceptance is rejected before scheduling another tick. Replay
+        // the captured old callback again instead of assuming new queued work.
+        queued[0]()
         XCTAssertEqual(replacement.value, 800)
         XCTAssertTrue(replacement.writes.isEmpty)
         XCTAssertTrue(oldNode.writes.isEmpty)
@@ -125,8 +129,7 @@ final class ParameterNodeWriterTests: XCTestCase {
         let node = try XCTUnwrap(model.graph.nodes.first as? ParameterWriterTestNode)
         node.readbackAvailable = false
         let writer = ParameterNodeWriter(node: node, parameter: node.parameters[0], viewModel: model)
-        var queued: [() -> Void] = []
-        let editor = writer.makeEditor(scheduleDrag: { queued.append($0) })
+        let editor = writer.makeEditor()
 
         editor.drag(to: 0.5)
         let tickValue = editor.value
@@ -158,7 +161,10 @@ final class ParameterNodeWriterTests: XCTestCase {
         defaults.set(try JSONEncoder().encode(preset), forKey: AppViewModelDefaultsKey.graph)
         let capture = ParameterWriterCapture()
         let engine = AVAudioEngine()
-        let model = AppViewModel(capture: capture, engine: engine, registry: registry, defaults: defaults)
+        let model = AppViewModel(
+            capture: capture, engine: engine, registry: registry, defaults: defaults,
+            scheduleParameterEdit: { [weak self] action in self?.queued.append(action) }
+        )
         return (model, capture, engine)
     }
 }

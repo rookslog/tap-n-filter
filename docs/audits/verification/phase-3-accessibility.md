@@ -204,3 +204,25 @@ Original PNG bytes were retained; white compositing was analysis only and does
 not establish native material fidelity. Historical audit conclusions above are
 not revalidated by this refresh. Native VoiceOver, numeric-field focus/Space,
 menu opening and newest-macOS layout remain required manual evidence.
+
+
+## 2026-10-20 PLAN item 10 hosted evidence
+
+Run 39428168248, PR head 0dd5ee7a5bd5024acce1639ea60f63ea66d94248, synthetic checkout
+4e186e262836fb2b0b52afdbcadcc27d36f2bb46 produced the tracked KVC tree, SHA-256
+bf2c56d646e19ab45695734987fd6c41730d4a83aa301b9a634226e8609015fa. Root downloaded and read the entire JSON; no labels
+were fabricated. It exposes 19 nodes/11 interactive elements but omits some
+visible controls and metadata; KVC is structural evidence, not native
+VoiceOver/focus or actual menu correctness. The new preset receipt/footer and file-panel behavior
+remain subject to actual newest-macOS/manual interaction checks. This refresh
+does not revalidate historical audit conclusions. CI now rejects drift from
+the committed tree after regeneration and structural checks.
+
+## Explicit item5 + item10 stack: evidence pending
+
+Both refresh notes above are historical evidence for their named heads. The
+stack initially carries item5's genuine four-field tree bytes, not an invented
+combined dump. Hosted CI regenerates this composed source, checks structure and
+tracked drift, and uploads the actual tree/PNG for root inspection; any changed
+output must be downloaded and committed before clearance. No composed visual,
+native VoiceOver or manual newest-macOS menu/layout claim yet.

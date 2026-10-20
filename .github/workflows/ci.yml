@@ -48,7 +48,7 @@ jobs:
 
       # Existing idle capture stub + isolated defaults, offscreen hosted UI.
       # This produces structural evidence, not a VoiceOver/focus/runtime gate.
-      - name: Generate parameter accessibility evidence
+      - name: Generate preset and parameter accessibility evidence
         id: parameter-a11y
         if: matrix.os == 'macos-26'
         run: |
@@ -67,11 +67,11 @@ jobs:
 
       # Retain evidence even if fresh structural assertions fail, so root can
       # inspect what actually materialized. Never upload an old/absent dump.
-      - name: Upload parameter accessibility evidence
+      - name: Upload preset and parameter accessibility evidence
         if: ${{ !cancelled() && matrix.os == 'macos-26' && steps.parameter-a11y.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
-          name: parameter-accessibility-${{ github.sha }}
+          name: preset-accessibility-${{ github.sha }}
           path: |
             test-artifacts/phase-3-accessibility-tree.json
             test-artifacts/phase-3-accessibility-diagnostics.json

@@ -36,6 +36,20 @@ Work toward v0.1.0. Nothing has been tagged or released yet.
   (ADR-013), power toggle, status pill, and a debug log panel.
 - Preset save and load as `.tnf` JSON files, plus the bundled `distant-engines`
   and `dry` factory presets.
+- Current preset name, provenance and snapshot-based Modified state in the
+  footer. Returning to the saved/restored graph clears Modified; restored
+  sessions do not inherit an exported-file identity.
+- Explicit Save (Cmd-S) to a known safe file and Save As (Shift-Cmd-S) with the
+  current name prefilled. Receipts update only after a successful write.
+- Save synchronously includes the latest accepted slider edits through one
+  VM-owned delivery coalescer. Versioned readback acknowledgements preserve newer
+  drags and numeric drafts; unsubmitted text is never exported. Setter rejection
+  blocks export until the affected target is successfully edited or removed.
+- Nonblocking import-recovery notices for skipped effects, unsupported imported
+  fields and clamped values. Recovered chains require explicit Save As before
+  they become a known direct-Save target, protecting the original from a lossy
+  overwrite. Same-read decoding reports sanitized field occurrences; supported
+  Q repair/rounding and legacy reverb preset canonicalization remain clean.
 - "Preserve Bluetooth quality during capture" setting (ADR-019, Layer A).
 
 - Release bundler producing a `.app` and a compressed `.dmg`. See the signing
@@ -53,6 +67,12 @@ Work toward v0.1.0. Nothing has been tagged or released yet.
 
 ### Fixed
 
+- Duplicate-UUID preset FILE imports are rejected before replacing the graph or
+  invalidating pending edits; prior preset context and original files are retained.
+- Retained continuous controls renew their editor sessions on reappearance,
+  keeping retired editors inert and observing the new editor directly.
+- Genuine external parameter changes reconcile numeric draft text even when the
+  readback equals the optimistic slider value; own-result draft protections remain.
 - Menu panel collapsed on macOS 27, taking the effect list with it. The chain
   editor's `ScrollView` was constrained only by `maxHeight` inside a window
   that sizes to its content's fitting height; height floors now keep the panel

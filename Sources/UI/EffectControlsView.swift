@@ -10,8 +10,8 @@ import ViewModel
 /// - `.integer` → `Stepper`.
 /// - `.enumValue(cases:)` → `Picker`.
 ///
-/// Slider drags are coalesced at 30 Hz before calling `viewModel.updateParameter`.
-/// Exact numeric commits, reset, and the final drag value bypass that delay.
+/// Slider intent enters the VM synchronously; only native delivery is coalesced
+/// at 30 Hz. Exact numeric commits, reset, final drag and Save bypass the delay.
 public struct EffectControlsView: View {
 
     @EnvironmentObject public var viewModel: AppViewModel
@@ -173,17 +173,38 @@ public struct EffectControlsView: View {
 /// Native continuous slider with a discoverable exact-value field and reset.
 private struct ParameterSlider: View {
 
-    let parameter: EffectParameter
     let initialValue: Float
-    @Environment(\.locale) private var locale
-    @FocusState private var inputFocused: Bool
-    @StateObject private var editor: ParameterValueEditor
+    @StateObject private var session: ParameterEditorSession
 
     init(writer: ParameterNodeWriter, initialValue: Float) {
-        self.parameter = writer.parameter
         self.initialValue = initialValue
-        _editor = StateObject(wrappedValue: writer.makeEditor())
+        // StateObject's deferred initializer must not retain the strong writer.
+        let session = ParameterEditorSession(writer: writer)
+        _session = StateObject(wrappedValue: session)
     }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let editor = session.editor {
+                ParameterSliderContent(initialValue: initialValue, editor: editor)
+                    .id(ObjectIdentifier(editor))
+            }
+        }
+        .onAppear { session.appear() }
+        .onDisappear { session.disappear() }
+    }
+}
+
+/// Observe the current editor directly. Publishing a replacement on the host
+/// does not forward the new editor's nested value/text/error publications.
+private struct ParameterSliderContent: View {
+
+    let initialValue: Float
+    @ObservedObject var editor: ParameterValueEditor
+    @Environment(\.locale) private var locale
+    @FocusState private var inputFocused: Bool
+
+    private var parameter: EffectParameter { editor.presentation.parameter }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -245,10 +266,7 @@ private struct ParameterSlider: View {
             }
         }
         .onAppear {
-            editor.resync(value: initialValue)
-        }
-        .onDisappear {
-            editor.stop()
+            editor.receiveModelValue(initialValue)
         }
         .onChange(of: inputFocused) { _, focused in
             if focused {
@@ -257,8 +275,9 @@ private struct ParameterSlider: View {
                 editor.cancel()
             }
         }
-        // The parent reads the node again after object/preset updates. Keep
-        // that readback authoritative without echoing it into the audio unit.
+        // The editor resolves pending accepted intent before this ordinary
+        // native readback and acknowledges its versioned application echoes.
+        // Truly unrelated readback remains authoritative without echo writes.
         // Unchanged NaN must not look like new model data during a recovery drag.
         .onChange(of: initialValue.isNaN ? nil : initialValue) { _, _ in
             editor.receiveModelValue(initialValue)

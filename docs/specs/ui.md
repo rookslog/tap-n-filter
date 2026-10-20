@@ -34,8 +34,9 @@ ControlPanelView
 │  └─ AddEffectButton
 ├─ Divider
 └─ FooterView
-   ├─ PresetMenu
-   └─ PowerToggle
+   ├─ Current preset name and provenance/Modified status
+   ├─ Partial recovery notice (when present)
+   └─ Action row: PresetMenu, PowerToggle, Quit
 ```
 
 ## State management
@@ -51,6 +52,14 @@ public final class AppViewModel: ObservableObject {
     @Published var captureState: CaptureState
     @Published var expandedEffectID: UUID?
     @Published var lastError: AppError?
+
+    var presetName: String { get }
+    var presetFileURL: URL? { get }
+    var presetOrigin: PresetOrigin { get }
+    var isPresetModified: Bool { get }
+    var suggestedPresetFilename: String { get }
+    var presetWarnings: [PresetLoadWarning] { get }
+    var presetRecoveryNotice: String? { get }
     
     private let capture: CaptureControllerProtocol
     private let engine: AVAudioEngine
@@ -140,17 +149,121 @@ For each `EffectParameter` in the node's `parameters`:
 - `ParameterUnit.integer` → `Stepper` with the range.
 - `ParameterUnit.enumValue(cases: [String])` → `Picker`.
 
-Drag changes are coalesced to the latest value every 33 ms on the main queue to avoid overwhelming the underlying `AVAudioUnit`'s parameter setter. The final drag value is delivered immediately when editing ends. Exact numeric commits and reset are immediate; queued drag callbacks carry a generation check and cannot overwrite a later commit, reset, model resync, or disappearing control.
+Production drag intent enters the VM synchronously. One VM-owned coalescer
+delivers the latest accepted value per node-object/parameter every 33 ms on the
+main queue; the UI does not run a second production timer. Final drag, exact
+numeric commits, reset and Save flush without waiting for that timer. Finishing
+a drag leaves its control session usable for another drag. Disappearance flushes
+accepted input before retirement, then cancels any numeric draft.
+A retained slider owns a UI lifecycle host: reappearance creates a fresh default
+editor/handle for the still-current concrete node and graph generation. The old
+editor stays terminal. The host holds its VM/node weakly; it cannot renew against
+a same-UUID replacement. The slider observes host editor replacement and its
+content observes the current editor directly for value, text and error changes.
 
 Frequency readouts use Hz below 1000 Hz and readable kHz at and above it (e.g., "800 Hz", "1 kHz", "1.5 kHz"). Other continuous readouts keep their unit conventions. Nonfinite readback is diagnosed as invalid; out-of-range readback retains its actual value with a warning. Only the thumb is constrained to the legal range; the readout never silently substitutes an endpoint.
 
 Each continuous parameter's expanded controls expose an **Exact value** field with a visible unit and a **Reset** button. The field seeds the full native Float precision rather than the rounded readout. Frequency entry is numeric Hz only; unit suffixes/group separators are rejected. The current locale's decimal separator is used for both seeding and parsing. Percent entry uses 0…100 display units and converts back to native 0…1 values. Inputs must be finite, wholly numeric, and within the declared range before Float rounding. Return applies; Escape or focus loss discards a draft; invalid submit shows an inline message and leaves the draft available for correction without writing. Reset writes the catalog default.
 
-Programmatic/preset updates resync the thumb, draft, and readout without echo writes. Replacing a node object, even with the same saved UUID, creates a new editor and retires the old queued drag. An acknowledgement of the control's own write does not cancel a newer pending drag. Each continuous-control write notifies view-model observers, uses the existing `updateParameter` callback, and checks actual node readback even if a refused write leaves the previous value unchanged; no persistence or DSP contract changes are introduced.
+Programmatic/preset updates resync the thumb, draft, and readout without echo
+writes. Replacing a node object, even with the same saved UUID, invalidates its
+old control generation before publishing the new graph. Removal discards stale
+targets; reorder preserves them and failed load preserves current accepted input.
+Each actual write uses the VM's shared immediate apply routine, notifies its
+observers and reads actual `Float?` state, without substituting a default for nil.
+The public immediate `updateParameter` API remains supported; successful writes
+supersede older queued input for the same target. The cancelled pending session
+receives that successful write's actual optional readback under its superseded
+intent revision, even when native old→old cannot produce an ordinary model echo.
+The result's request is the actual immediate setter request, not the cancelled
+drag value. Newer reentrant drag/draft revisions remain protected. If any
+same-target setter invocation begun in the direct-write scope succeeds, including
+a nested success before outer rejection, the captured session is reconciled via
+that truthful outer result and separate successful-presentation history. Otherwise
+a rejected immediate write preserves unattempted pending delivery.
 
-The UI writer also checks the graph's current node object identity at actual delivery, so an old editor cannot write to a same-UUID preset replacement before SwiftUI teardown. When an audio unit normalizes a write, its actual readback is retained as the acknowledgement; a later parent echo does not discard a newer pending drag. Strict catalog validity is unchanged: even a one-ulp out-of-range readback remains a diagnostic, and cannot be submitted as valid input.
+The VM checks graph generation, UUID, object identity and parameter at actual
+delivery. Scheduling tickets are invalidated before draining, so already-delivered
+old closures cannot drain newer edits. Latest accepted intent wins across handles
+for the same target. Save keeps unattempted batch entries in the same pending
+dictionary so an immediate write reentered by another target's setter can still
+supersede and acknowledge their live sessions. It replaces all batch tickets
+before the first setter and drains only still-matching captured orders; newer
+reentrant input stays queued for a later ordered batch.
+Strict catalog validity is unchanged: even a one-ulp
+out-of-range readback remains a diagnostic and cannot be submitted as valid input.
 
-Repeated identical invalid readback, including NaN, does not republish diagnostic state or overwrite a correctable draft. Starting an exact edit discards a still-pending drag and rereads the actual parameter value; Cancel/focus loss restores actual readback without writing. When a slider takes over text editing, a delayed field focus-loss callback does not cancel that slider movement.
+Repeated identical invalid readback, including NaN, does not republish diagnostic
+state or overwrite a correctable draft. Starting/cancelling a production numeric
+draft does not discard already accepted VM drag intent. Save never parses or
+submits text; only valid explicit Return/reset crosses that boundary. Cancel
+restores current pending accepted intent, available native readback, or scoped
+fallback presentation without writing. Fallback is not measured actual or a
+guarantee of native rollback after a throwing setter.
+When a slider takes over text editing, delayed field focus loss does not cancel
+that slider movement.
+
+One per-handle application-result handler reports session identity, caller intent
+revision, monotonic application serial, request, actual optional readback and
+setter outcome synchronously. It covers timer, immediate commit, finish, Save
+flush and retirement, even if native old→old readback cannot trigger onChange.
+The handler captures its editor weakly. Draft-start and submission revisions are
+recorded before callbacks; a result updates authoritative readback independently
+of visible text/focus/validation and never cancels the VM queue. Newer optimistic
+drag intent survives older results. The ordinary model echo adapter prefers
+accepted pending intent, then reads current optional native state rather than
+trusting a potentially stale or default-substituted parent Float. Nil remains
+unknown. NaN-aware equality with the latest authoritative readback preserves a
+newer draft after its own application result; genuinely changed native state
+resyncs text even when it equals the optimistic scalar or matches an older own
+write. No historical float backlog
+suppresses unrelated model changes.
+
+The VM separately retains weak, per-live-target successful presentation and the
+greatest completed setter-outcome order. Setter-invocation order is allocated
+before application, independent of queue admission, editor revision and callback
+serial. An older outer success may supply fallback after newer rejection, but
+cannot replace a newer inner success or clear its newer rejection block. The
+read-only `ParameterEditHandle.successfulPresentation` exposes operation order
+and actual-if-available, otherwise successful request; it validates the live
+session/owner/generation/concrete target and performs no native read. Existing
+live-target checks exclude/prune removed history; generation replacement clears it.
+The same weak target record tracks the greatest started invocation separately
+from completed success/outcome. `ParameterEditHandle.latestStartedOperationOrder`
+exposes that read-only order before application begins: zero for a valid target
+with no invocation, nil for an invalid/retired session. It uses the same live-target
+guards and pruning and performs no native read; completion never rolls the order back.
+
+The editor tracks fallback as catalog seed, genuine observation, or successful
+presentation, separately from optimistic value and authoritative actual. Factory
+initialization preserves the pending-first short circuit: it does not read native
+state merely to seed fallback when input is already pending, and initial pending
+input is never successful history. Otherwise its existing actual observation,
+known successful history, or catalog seed supplies fallback. A genuine observation
+raises the incorporation floor to the greatest already-started invocation order,
+not just completed success. This includes genuine actual initialization, nonnil
+application readback, ordinary model reads and draft-start/Cancel native reads.
+An observation inside an in-flight setter excludes that setter's later fallback
+publication; a genuinely later invocation can still supply successful fallback
+only when its order is strictly greater than the floor. Pending intent, submission,
+nil readback, a draft start without actual readback, or callback receipt alone
+never raises this floor. Fallback remains historical presentation, not native
+authority or a guarantee of setter rollback.
+
+Every nil result, applied or rejected, clears authoritative actual state. Before
+presentation guards, the editor incorporates newer successful history and settles
+only a matching submitted revision. Presentation prefers live pending input,
+protects a newer awaiting submission, then uses fallback after settlement, never
+the rejected request. During a numeric draft only backing value changes,
+preserving exact text, editing intent and validation error. Later available
+native readback remains authoritative and reconciles text even when equal to
+fallback, a prior observation, or a successful request. Standalone and nonnil
+result/draft protections remain unchanged.
+
+Standalone `ParameterValueEditor` clients without these production hooks retain
+their local coalescer and cancellation semantics: locally queued, not-yet-accepted
+drag input is discarded on exact-edit start, resync or stop. Standalone scheduling
+tests do not substitute for real default-factory/VM/Save composition tests.
 
 Sliders retain native arrow-key adjustment and accessibility values. Exact-value fields and Reset buttons have parameter-specific accessible labels. A focused numeric field publishes a UI-only focused value that removes Power's unmodified-Space shortcut for the duration of text focus, without changing Start/Retry readiness or mouse/button behavior. Runtime focus, VoiceOver, and current-macOS layout checks remain manual pre-merge gates alongside full-Xcode tests.
 
@@ -158,8 +271,11 @@ Sliders retain native arrow-key adjustment and accessibility values. Exact-value
 
 ```swift
 Menu {
-    Button("Save As…") { showSavePanel = true }
-    Button("Open…") { showOpenPanel = true }
+    Button("Save") { savePreset() }
+        .keyboardShortcut("s", modifiers: .command)
+    Button("Save As…") { presentSavePanel() }
+        .keyboardShortcut("s", modifiers: [.command, .shift])
+    Button("Open…") { presentOpenPanel() }
     Divider()
     Menu("Factory Presets") {
         ForEach(FactoryPresets.all, id: \.name) { preset in
@@ -171,7 +287,89 @@ Menu {
 }
 ```
 
-`showSavePanel` and `showOpenPanel` trigger `NSSavePanel` and `NSOpenPanel` presentations. From a `MenuBarExtra` window, the standard `.fileImporter` / `.fileExporter` SwiftUI modifiers may behave unreliably; the orchestrator falls back to direct `NSSavePanel.runModal()` from the AppKit layer if needed, documenting the chosen approach in an ADR.
+Save writes to `presetFileURL` when it is known and safe. Otherwise it presents
+Save As. Save As always presents `NSSavePanel`, prefilled with
+`suggestedPresetFilename`. Open uses `NSOpenPanel`. Both retain ADR-012's AppKit
+sheet/modal presentation and normal overwrite confirmation. Only an accepted
+panel URL calls the VM; cancelling changes no receipt or recovery context.
+
+### Preset identity and Modified state
+
+The footer shows `presetName` and provenance: Factory, Session, File, Recovered,
+or Unsaved. Modified uses a private comparison of output gain and ordered effect
+snapshots against the baseline. Membership, order and every effect field participate:
+type identifier, UUID, display name, bypass, wet/dry, parameter keys/values and
+extras keys/cases/values. Different extras cases never coerce to the same value.
+Float values and Double extras match under `==` or when both are NaN with identical
+bit patterns; different NaN payloads/signs and finite-versus-NaN remain different.
+Infinity and signed zero retain `==` semantics; strings, integers and booleans
+retain exact equality. Snapshot title and format metadata are excluded. This is
+diagnostic-state comparison only, not serialization normalization or a native-cause
+repair. Returning to the baseline clears Modified. Source selection, expanded controls, Diagnostics,
+settings drawers and rejected graph/parameter edits do not change this comparison.
+VM parameter updates notify observers in both directions.
+
+File receipts use the filename basename without its final extension, even if
+the JSON `name` differs. Factory receipts use the bundled display label. A
+successfully restored autosave is labelled “Restored Session”; corrupt autosave
+JSON falling back to the bundled preset retains Factory provenance. If neither
+restoration succeeds, the empty chain is “Untitled” / Unsaved. Initial baselines
+use actual restored graph snapshots, including canonicalized EQ Q values.
+
+A partial or lossy file import is Recovered and has a persistent, nonblocking
+footer notice. `presetWarnings` continues to describe skipped effects only;
+`presetRecoveryNotice` combines their count with an independent fidelity-loss
+notice when imported data was unsupported or adjusted. With no skipped nodes,
+the notice never claims effects were skipped. Dismissing an error or closing
+Diagnostics does not hide it. Partial session initialization likewise retains
+the “Restored Session” label, skipped-node warnings and Recovered provenance.
+Matching the canonical recovered baseline does not mean the chain is identical
+to the original file. There is no safe direct-Save URL until explicit
+Save As succeeds; prefill retains the original basename. Loading never rewrites
+the original file. Save As may explicitly choose that same path through normal
+AppKit overwrite confirmation. A successful save establishes File provenance,
+the new baseline and safe URL, and clears all recovery warnings/notices. Save/write failure
+retains the previous receipt/baseline; failed load retains the graph and receipt.
+The write completes before the VM changes the receipt.
+
+Before any save snapshot or disk write, the VM synchronously drains valid accepted
+parameter edits. Throwing setter rejection is retained per live target, even after
+its control disappears, and aborts Save until a newer accepted application succeeds
+or that target is removed/replaced. Attempted queue entries are consumed once,
+without retry timers. Nonthrowing normalization/alteration is authoritative actual
+state, not proof of refusal. Failed disk writes retain the previous receipt and
+baseline without rolling back already applied graph edits.
+
+The file-import fidelity classifier uses decode diagnostics from the same bytes
+and compares migrated input to corresponding restored node occurrences by
+ID/type/order. It detects unknown root/node fields, dropped parameter/extras
+keys, missing required runtime catalog parameter keys, output gain outside 0–2,
+wet/dry outside 0–1 and parameters outside their runtime metadata ranges. Missing
+keys restored from defaults require Recovered/Save As and an independent
+fidelity-loss notice, not an invented skipped-effect warning; an empty runtime
+catalog remains valid. For `tnf.reverb`, a missing migrated input `extras.preset`
+requires Recovered provenance, no direct-Save URL, and the non-skipped fidelity
+notice directing the user to Save As. Restoration still succeeds with the default
+preset, and actual restored state remains the clean baseline. This is conservative
+original-file write-authority policy, not schema invalidity or load rejection.
+Present supported string presets and supported legacy integer-to-name
+canonicalization remain lossless; empty extras on unrelated Gain/EQ nodes alone
+do not require recovery. FILE imports with duplicate UUIDs are rejected before
+installation, accepted-edit flushing or generation invalidation, including
+duplicates across types or occurrences that restoration would skip. The existing
+load-error surface reports rejection; the previous graph, receipt, baseline,
+pending accepted input and both original files remain unchanged. Fidelity
+correspondence alone does not establish safe runtime identity. Normal Q rounding,
+intentional corrupt-Q migration
+and supported integer-to-name reverb canonicalization do not imply fidelity
+loss. For `tnf.eq` only, migrated `hp.frequency` and `lp.frequency` must each
+exist and exactly equal their already-captured restored snapshot values. Missing
+or different frequency values require Recovered/Save As with a fidelity notice,
+not an invented skipped-node warning. This conservative file-protection policy
+can require Save As even for small frequency normalization; it neither diagnoses
+native causes/audio accuracy nor adds native reads, retries or tolerances.
+Graph dirty comparison uses the separate private Modified-state policy above;
+this frequency classification introduces no numeric tolerance or editor/save-queue change.
 
 ## PowerToggle
 
@@ -201,7 +399,6 @@ The view model serializes its state to `UserDefaults` on:
 
 Serialized blob keys:
 - `lastSession.graph` — `GraphPreset` JSON.
-- `lastSession.sourcePid` — Int (pid of last source).
 - `lastSession.sourceBundleID` — String (preferred for restoration; pids change between launches).
 
 On launch, the view model attempts to restore:
@@ -209,6 +406,10 @@ On launch, the view model attempts to restore:
 2. The source from `lastSession.sourceBundleID`. If that bundle ID is running, sets it as `currentSource`. Otherwise leaves source unset.
 
 The view model never auto-starts capture. The user always has to click Power.
+
+Preset receipts, file URLs and bookmarks are memory-only and are never written
+to defaults. Session restoration is independent of exported-file identity, even
+when the last session was autosaved immediately after an export.
 
 ## Accessibility
 
@@ -218,7 +419,7 @@ Keyboard navigation:
 - Tab cycles through interactive elements.
 - Arrow keys adjust sliders (in increments of 1% of the range).
 - Space toggles `Toggle`s and presses focused `Button`s.
-- Cmd+S saves preset, Cmd+O opens preset (when the menubar window has focus).
+- Cmd+S saves preset, Shift+Cmd+S opens Save As, Cmd+O opens preset (when the menubar window has focus).
 
 VoiceOver audit: the orchestrator runs the app with VoiceOver enabled, reads through every control, and documents any rough edges in `docs/audits/verification/phase-3-accessibility.md`.
 
