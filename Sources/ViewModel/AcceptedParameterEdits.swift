@@ -27,6 +27,15 @@ public struct ParameterApplicationResult {
     public let outcome: ParameterApplicationOutcome
 }
 
+/// Presentation history from a successful setter invocation, not current
+/// measured state or a guarantee that a throwing setter rolled back.
+public struct ParameterSuccessfulPresentation {
+    /// Setter-invocation order, independent of intent and callback order.
+    public let operationOrder: UInt64
+    /// Returned actual when available, otherwise the successful request.
+    public let value: Float
+}
+
 /// A control session bound to a graph generation and one concrete node object.
 /// The owner and node are weak; keeping a control alive cannot keep the VM alive.
 @MainActor
@@ -53,6 +62,12 @@ public final class ParameterEditHandle {
     /// editor weakly. Retired/obsolete sessions never receive new applications.
     public func setApplicationResultHandler(_ handler: @escaping (ParameterApplicationResult) -> Void) {
         self.handler = handler
+    }
+
+    /// Latest successful presentation for this live session's concrete target.
+    /// Validates ownership/generation/session without reading native state.
+    public var successfulPresentation: ParameterSuccessfulPresentation? {
+        owner?.successfulPresentation(for: self)
     }
 }
 
@@ -81,6 +96,13 @@ final class AcceptedParameterEdits {
         let nodeID: UUID
         init(_ node: any EffectNode) { self.node = node; self.nodeID = node.id }
     }
+    private final class Completed {
+        weak var node: (any EffectNode)?
+        let nodeID: UUID
+        var success: ParameterSuccessfulPresentation?
+        var outcomeOrder: UInt64 = 0
+        init(_ node: any EffectNode) { self.node = node; self.nodeID = node.id }
+    }
 
     fileprivate private(set) var generation: UInt64 = 0
     private let schedule: (@escaping () -> Void) -> Void
@@ -88,7 +110,7 @@ final class AcceptedParameterEdits {
     private let apply: (any EffectNode, String, Float) -> ParameterApplication
     private var pending: [Target: Pending] = [:]
     private var failures: [Target: Failure] = [:]
-    private var attempts: [Target: UInt64] = [:]
+    private var completed: [Target: Completed] = [:]
     private var latestOrders: [Target: UInt64] = [:]
     private var nextTicket: UInt64 = 0
     private var nextOrder: UInt64 = 0
@@ -104,6 +126,7 @@ final class AcceptedParameterEdits {
     }
 
     func makeHandle(node: any EffectNode, parameterID: String) -> ParameterEditHandle? {
+        discardStale()
         guard isCurrent(node), node.parameters.contains(where: { $0.identifier == parameterID }) else {
             return nil
         }
@@ -143,6 +166,13 @@ final class AcceptedParameterEdits {
         return pending[key(node, handle.parameterID)]?.value
     }
 
+    fileprivate func successfulPresentation(for handle: ParameterEditHandle) -> ParameterSuccessfulPresentation? {
+        discardStale()
+        guard let node = liveNode(handle), let record = completed[key(node, handle.parameterID)],
+              record.node === node, record.nodeID == node.id else { return nil }
+        return record.success
+    }
+
     func finish(_ handle: ParameterEditHandle) -> Bool {
         guard let node = liveNode(handle) else { return false }
         let target = key(node, handle.parameterID)
@@ -165,17 +195,19 @@ final class AcceptedParameterEdits {
         let attemptedGeneration = generation
         let unattempted = pending[target]
         invalidate(target)
+        let scopeStart = nextAttempt
         let result = attempt(node, parameter: parameter, value: value)
         guard generation == attemptedGeneration, isCurrent(node) else { return }
-        // Only success supersedes legacy pending input. Reentrant newer intent
-        // remains queued even if it was accepted inside the setter itself.
-        if result.success {
+        // Any successful invocation begun in this scope supersedes captured
+        // input, including inner success followed by outer rejection. Queue
+        // admission order still protects genuinely newer pending intent.
+        if let success = completed[target]?.success, success.operationOrder > scopeStart {
             if (latestOrders[target] ?? 0) <= cutoff { latestOrders[target] = cutoff }
             if let queued = pending[target], queued.order <= cutoff { invalidate(target) }
             // A direct write can leave the native scalar unchanged, so no model
             // echo will reconcile the cancelled optimistic drag. Acknowledge
-            // its revision with THIS write's actual readback; newer input and
-            // numeric drafts remain protected by the consumer's revision guard.
+            // its revision with THIS write's truthful outcome/readback. The
+            // handle's separate success history reconciles nested operations.
             if let unattempted {
                 acknowledge(unattempted.handle, intentRevision: unattempted.intentRevision,
                             requestedValue: value, result: result)
@@ -217,7 +249,7 @@ final class AcceptedParameterEdits {
         nextTicket &+= 1
         pending.removeAll()
         failures.removeAll()
-        attempts.removeAll()
+        completed.removeAll()
         latestOrders.removeAll()
     }
 
@@ -270,17 +302,32 @@ final class AcceptedParameterEdits {
 
     private func attempt(_ node: any EffectNode, parameter: String, value: Float,
                          handle: ParameterEditHandle? = nil, intentRevision: UInt64 = 0) -> ParameterApplication {
+        discardStale()
         let target = key(node, parameter)
         let attemptedGeneration = generation
+        let nodeID = node.id
         nextAttempt &+= 1
         let attemptID = nextAttempt
-        attempts[target] = attemptID
         let result = apply(node, parameter, value)
-        if generation == attemptedGeneration, isCurrent(node), attempts[target] == attemptID {
-            if result.success { failures.removeValue(forKey: target) }
-            else { failures[target] = Failure(node) }
+        if generation == attemptedGeneration, node.id == nodeID, isCurrent(node),
+           node.parameters.contains(where: { $0.identifier == parameter }) {
+            let record = completed[target] ?? Completed(node)
+            completed[target] = record
+            // An older outer success is useful after newer rejection, but
+            // must never replace a newer successful inner operation.
+            if result.success, attemptID > (record.success?.operationOrder ?? 0) {
+                record.success = ParameterSuccessfulPresentation(
+                    operationOrder: attemptID, value: result.actual ?? value
+                )
+            }
+            // Completed outcome order, not unwind/callback order, owns the
+            // persistent target failure independently of successful history.
+            if attemptID > record.outcomeOrder {
+                record.outcomeOrder = attemptID
+                if result.success { failures.removeValue(forKey: target) }
+                else { failures[target] = Failure(node) }
+            }
         }
-        if attempts[target] == attemptID { attempts.removeValue(forKey: target) }
         if let handle {
             acknowledge(handle, intentRevision: intentRevision, requestedValue: value, result: result)
         }
@@ -300,6 +347,10 @@ final class AcceptedParameterEdits {
 
     private func discardStale() {
         pending = pending.filter { liveNode($0.value.handle) != nil }
+        completed = completed.filter { target, record in
+            guard let node = record.node, node.id == record.nodeID, isCurrent(node) else { return false }
+            return node.parameters.contains { $0.identifier == target.parameter }
+        }
         failures = failures.filter { target, failure in
             guard let node = failure.node, node.id == failure.nodeID, isCurrent(node) else { return false }
             return node.parameters.contains { $0.identifier == target.parameter }

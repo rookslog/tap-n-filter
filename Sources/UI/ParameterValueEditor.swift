@@ -7,6 +7,19 @@ import ViewModel
 /// the production factory accepts intent synchronously into the VM coalescer.
 @MainActor
 final class ParameterValueEditor: ObservableObject {
+    private enum Fallback {
+        case seed(Float)
+        case observed(Float)
+        case successful(ParameterSuccessfulPresentation)
+
+        var value: Float {
+            switch self {
+            case .seed(let value), .observed(let value): return value
+            case .successful(let basis): return basis.value
+            }
+        }
+    }
+
     let presentation: ParameterValuePresentation
     @Published private(set) var value: Float
     @Published var text: String {
@@ -31,6 +44,10 @@ final class ParameterValueEditor: ObservableObject {
     private let stopAcceptedEditing: (() -> Void)?
     private let pendingAcceptedValue: (() -> Float?)?
     private let applicationSessionID: UUID?
+    private let successfulPresentation: (() -> ParameterSuccessfulPresentation?)?
+    private var fallback: Fallback
+    private var incorporatedSuccessOrder: UInt64 = 0
+    private var awaitingSubmission = false
     private var interactionRevision: UInt64 = 0
     private var latestSubmittedRevision: UInt64 = 0
     private var latestApplicationSerial: UInt64 = 0
@@ -51,7 +68,9 @@ final class ParameterValueEditor: ObservableObject {
         finishAcceptedDrag: (() -> Void)? = nil,
         stopAcceptedEditing: (() -> Void)? = nil,
         pendingAcceptedValue: (() -> Float?)? = nil,
-        applicationSessionID: UUID? = nil
+        applicationSessionID: UUID? = nil,
+        initialActual: Float? = nil,
+        successfulPresentation: (() -> ParameterSuccessfulPresentation?)? = nil
     ) {
         let presentation = ParameterValuePresentation(parameter: parameter)
         self.presentation = presentation
@@ -66,6 +85,13 @@ final class ParameterValueEditor: ObservableObject {
         self.stopAcceptedEditing = stopAcceptedEditing
         self.pendingAcceptedValue = pendingAcceptedValue
         self.applicationSessionID = applicationSessionID
+        self.successfulPresentation = successfulPresentation
+        // Optimistic initial pending input is not successful history. Only an
+        // actual observation, scoped success, or original catalog seed may be
+        // used after a settled rejection.
+        self.fallback = .seed(parameter.defaultValue)
+        if let initialActual { observe(initialActual) }
+        else { incorporateSuccessfulPresentation() }
     }
 
     func beginEditing(locale: Locale) {
@@ -78,7 +104,9 @@ final class ParameterValueEditor: ObservableObject {
             invalidateDrag()
             if let current = readValue?() {
                 present(current)
-                if pendingAcceptedValue?() == nil { authoritativeActual = current }
+                if pendingAcceptedValue?() == nil { observe(current) }
+            } else {
+                authoritativeActual = nil
             }
         } else if let actual = readValue?() {
             resync(value: actual)
@@ -112,8 +140,12 @@ final class ParameterValueEditor: ObservableObject {
         if usesAcceptedEdits {
             invalidateDrag()
             if let pending = pendingAcceptedValue?() { present(pending) }
-            else if let actual = readValue?() { authoritativeActual = actual; present(actual) }
-            else if let actual = authoritativeActual { present(actual) }
+            else if let actual = readValue?() { observe(actual); present(actual) }
+            else {
+                authoritativeActual = nil
+                incorporateSuccessfulPresentation()
+                present(fallback.value)
+            }
             endEditing()
             return
         }
@@ -138,7 +170,8 @@ final class ParameterValueEditor: ObservableObject {
     func resync(value: Float) {
         invalidateDrag()
         lastWritten = nil
-        authoritativeActual = value
+        if usesAcceptedEdits { observe(value) }
+        else { authoritativeActual = value }
         // NaN is unequal to itself, but repeated NaN readback represents the
         // same diagnostic state. Avoid republishing it (or resetting a draft)
         // when SwiftUI reevaluates onChange for that unchanged invalid value.
@@ -159,15 +192,18 @@ final class ParameterValueEditor: ObservableObject {
                 return
             }
             guard let actual = readValue?() else { return }
+            let previousActual = authoritativeActual
+            // Even an equal ordinary observation watermarks completed success
+            // history; it must not later be displaced by an unnotified write.
+            observe(actual)
             // The result already reconciled this actual without erasing a
             // newer draft. No historical float backlog can hide a later change.
-            if let authoritativeActual, sameValue(authoritativeActual, actual) { return }
+            if let previousActual, sameValue(previousActual, actual) { return }
             // A genuine authoritative transition must reconcile text even if
             // its scalar equals our optimistic value. Standalone resync keeps
             // its unchanged-value/NaN draft suppression semantics.
             invalidateDrag()
             lastWritten = nil
-            authoritativeActual = actual
             present(actual)
             return
         }
@@ -183,13 +219,18 @@ final class ParameterValueEditor: ObservableObject {
         guard !stopped, let applicationSessionID, result.sessionID == applicationSessionID,
               result.applicationSerial > latestApplicationSerial else { return }
         latestApplicationSerial = result.applicationSerial
+        // Success order is independent of callback serial and editor revision.
+        // An older outer callback may establish fallback after a newer reject.
+        incorporateSuccessfulPresentation()
+        if result.intentRevision == latestSubmittedRevision { awaitingSubmission = false }
         authoritativeActual = result.actualValue
         guard let actual = result.actualValue else {
-            guard result.outcome == .applied,
-                  result.intentRevision >= latestSubmittedRevision else { return }
-            // Accepted presentation is not measured actual. Repair cancelled
-            // intent without changing a newer draft or its validation error.
-            let accepted = pendingAcceptedValue?() ?? result.requestedValue
+            let accepted: Float
+            if let pending = pendingAcceptedValue?() { accepted = pending }
+            else if awaitingSubmission, result.intentRevision < latestSubmittedRevision { return }
+            else { accepted = fallback.value }
+            // Fallback never repopulates authoritativeActual. Preserve exact
+            // text/editing/error while repairing the backing value of a draft.
             if isEditing {
                 if !sameValue(value, accepted) { value = accepted }
             } else {
@@ -197,6 +238,7 @@ final class ParameterValueEditor: ObservableObject {
             }
             return
         }
+        observe(actual)
         if !isEditing, result.intentRevision >= latestSubmittedRevision { present(actual) }
     }
 
@@ -210,6 +252,7 @@ final class ParameterValueEditor: ObservableObject {
         if let onDragAccepted {
             interactionRevision &+= 1
             latestSubmittedRevision = interactionRevision
+            awaitingSubmission = true
             onDragAccepted(value, interactionRevision)
             return
         }
@@ -260,6 +303,7 @@ final class ParameterValueEditor: ObservableObject {
         if let onCommitIntent {
             interactionRevision &+= 1
             latestSubmittedRevision = interactionRevision
+            awaitingSubmission = true
             onCommitIntent(value, interactionRevision)
             return
         }
@@ -277,6 +321,21 @@ final class ParameterValueEditor: ObservableObject {
 
     private func sameValue(_ lhs: Float, _ rhs: Float) -> Bool {
         lhs == rhs || (lhs.isNaN && rhs.isNaN)
+    }
+
+    private func observe(_ actual: Float) {
+        authoritativeActual = actual
+        fallback = .observed(actual)
+        incorporatedSuccessOrder = max(
+            incorporatedSuccessOrder, successfulPresentation?()?.operationOrder ?? 0
+        )
+    }
+
+    private func incorporateSuccessfulPresentation() {
+        guard let basis = successfulPresentation?(),
+              basis.operationOrder > incorporatedSuccessOrder else { return }
+        incorporatedSuccessOrder = basis.operationOrder
+        fallback = .successful(basis)
     }
 
     private func present(_ actual: Float) {

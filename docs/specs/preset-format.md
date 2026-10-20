@@ -157,7 +157,10 @@ A preset may reference effects that don't exist (older preset, newer build) or t
 2. **Unknown parameter identifier** — ignored by effect restoration (forward
    compat), with a file-import fidelity notice and Save As requirement if the
    key is absent from the restored snapshot.
-3. **Missing required parameter** — the effect uses its default value, logs a warning.
+3. **Missing required parameter** — the effect restores its default. After
+   migration, a missing runtime catalog key requires Recovered/Save As and an
+   independent fidelity-loss notice, even when no effects were skipped. This
+   does not imply a skipped-node warning; an empty runtime catalog is valid.
 4. **Parameter out of range** — clamped to range, logs a warning.
 
 The loader never throws on a recoverable mismatch. It returns the best-effort
@@ -200,9 +203,10 @@ already applied during the drain. No queue state is added to the file schema.
 
 Partial recovery skips unknown or failed effects and keeps a visible nonblocking
 warning. Imports also require recovery when unsupported fields/keys would be
-discarded or supported values require range clamping, even if no effects were
-skipped. Their fidelity notice is separate from skipped-node warnings and does
-not invent a skipped-effect count. The recovered version has no safe direct-Save
+discarded, required runtime catalog keys are restored from defaults, or supported
+values require range clamping, even if no effects were skipped. Their fidelity
+notice is separate from skipped-node warnings and does not invent a skipped-effect
+count. The recovered version has no safe direct-Save
 target, even if it matches
 its canonical post-load baseline. Save As is required to establish a new clean
 file receipt; its prefill retains the original basename and normal AppKit
@@ -222,9 +226,10 @@ and occurrence indices (for example `$.nodes[0].unknownFields[0]`); unknown key
 names and values are not included. Unknown values remain opaque during inspection.
 
 After migration and restoration the VM checks corresponding node occurrences
-for dropped parameter/extras keys and range clamping using runtime parameter
-metadata. It does not use general float snapshot inequality as an import-loss
-test: normal Q roundtrips, intentional corrupt-Q repair and legacy integer
+for dropped parameter/extras keys, missing required catalog parameter keys and
+range clamping using runtime parameter metadata. Reverb's empty catalog does not
+introduce required numeric keys. It does not use general float snapshot inequality
+as an import-loss test: normal Q roundtrips, intentional corrupt-Q repair and legacy integer
 reverb preset canonicalization remain supported. Actual restored state is the
 clean graph baseline; original-file fidelity is a separate receipt concern.
 No raw-JSON preservation store, persistence fields or schema version change is

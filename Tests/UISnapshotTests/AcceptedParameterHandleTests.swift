@@ -1,3 +1,5 @@
+import AVFoundation
+import Effects
 import Foundation
 @testable import UI
 @testable import ViewModel
@@ -262,4 +264,263 @@ final class AcceptedParameterHandleTests: XCTestCase {
         XCTAssertNil(edits.pendingValue(for: handle))
         XCTAssertTrue(edits.flushAll())
     }
+
+    // New-API coverage added AFTER implementation under GREEN-GO. These
+    // methods are not part of the pre-fix behavioral-red claim.
+    func test_successful_presentation_orders_actual_or_successful_request_but_never_pending_or_rejected_input() throws {
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let handle = try XCTUnwrap(model.makeParameterEditHandle(node: node, parameterID: "amount"))
+        XCTAssertNil(handle.successfulPresentation)
+        XCTAssertTrue(model.acceptParameterValue(7, for: handle, intentRevision: 1))
+        XCTAssertNil(handle.successfulPresentation, "Queue admission is not setter success")
+        var callbackBasis: ParameterSuccessfulPresentation?
+        handle.setApplicationResultHandler { [weak handle] _ in callbackBasis = handle?.successfulPresentation }
+        try scheduler.runNext()
+        let first = try XCTUnwrap(handle.successfulPresentation)
+        XCTAssertEqual(first.value, 7)
+        XCTAssertGreaterThan(first.operationOrder, 0)
+        XCTAssertEqual(callbackBasis?.operationOrder, first.operationOrder, "Publish success before callback")
+        node.behavior = .roundedDown
+        XCTAssertTrue(model.commitParameterValue(5.5, for: handle, intentRevision: 2))
+        let normalized = try XCTUnwrap(handle.successfulPresentation)
+        XCTAssertEqual(normalized.value, 5, "Available actual, not requested 5.5, supplies history")
+        XCTAssertGreaterThan(normalized.operationOrder, first.operationOrder)
+        node.behavior = .exact
+        node.readbackAvailable = false
+        XCTAssertTrue(model.commitParameterValue(4, for: handle, intentRevision: 3))
+        let requested = try XCTUnwrap(handle.successfulPresentation)
+        XCTAssertEqual(requested.value, 4, "Successful nil application supplies presentation, not actual")
+        XCTAssertGreaterThan(requested.operationOrder, normalized.operationOrder)
+        node.behavior = .rejected
+        XCTAssertFalse(model.commitParameterValue(8, for: handle, intentRevision: 4))
+        XCTAssertEqual(handle.successfulPresentation?.operationOrder, requested.operationOrder)
+        XCTAssertEqual(handle.successfulPresentation?.value, 4)
+        XCTAssertEqual(callbackBasis?.operationOrder, requested.operationOrder)
+        XCTAssertEqual(node.attempts, [7, 5.5, 4, 8])
+        handle.setApplicationResultHandler { _ in }
+    }
+
+    func test_successful_presentation_nested_public_success_order_survives_later_outer_callback_serial() throws {
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let handle = try XCTUnwrap(model.makeParameterEditHandle(node: node, parameterID: "amount"))
+        node.readbackAvailable = false
+        XCTAssertTrue(model.acceptParameterValue(7, for: handle, intentRevision: 1))
+        let oldTick = try scheduler.takeNext()
+        var innerOrder: UInt64?
+        node.afterAttempt = { [weak node] _ in
+            guard let node else { return XCTFail("Expected live node") }
+            node.afterAttempt = nil
+            model.updateParameter(nodeID: node.id, paramID: "amount", value: 8)
+            innerOrder = handle.successfulPresentation?.operationOrder
+            XCTAssertEqual(handle.successfulPresentation?.value, 8)
+        }
+        var result: ParameterApplicationResult?
+        var callbackBasis: ParameterSuccessfulPresentation?
+        handle.setApplicationResultHandler { [weak handle] in
+            result = $0
+            callbackBasis = handle?.successfulPresentation
+        }
+
+        model.updateParameter(nodeID: node.id, paramID: "amount", value: 4)
+
+        let order = try XCTUnwrap(innerOrder)
+        XCTAssertEqual(handle.successfulPresentation?.operationOrder, order)
+        XCTAssertEqual(handle.successfulPresentation?.value, 8)
+        XCTAssertEqual(callbackBasis?.operationOrder, order)
+        XCTAssertEqual(callbackBasis?.value, 8)
+        XCTAssertEqual(result?.requestedValue, 4, "Getter must not repurpose the outer result")
+        XCTAssertNil(result?.actualValue)
+        XCTAssertEqual(result?.outcome, .applied)
+        oldTick()
+        XCTAssertEqual(node.attempts, [4, 8])
+        handle.setApplicationResultHandler { _ in }
+    }
+
+    func test_successful_presentation_older_outer_success_survives_newer_rejection_without_clearing_failure() throws {
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let handle = try XCTUnwrap(model.makeParameterEditHandle(node: node, parameterID: "amount"))
+        node.readbackAvailable = false
+        node.afterAttempt = { [weak node] _ in
+            guard let node else { return XCTFail("Expected live node") }
+            node.afterAttempt = nil
+            node.behavior = .rejected
+            model.updateParameter(nodeID: node.id, paramID: "amount", value: 8)
+            XCTAssertNil(handle.successfulPresentation, "Outer invocation has not completed yet")
+            node.behavior = .exact
+        }
+
+        model.updateParameter(nodeID: node.id, paramID: "amount", value: 4)
+
+        let outer = try XCTUnwrap(handle.successfulPresentation)
+        XCTAssertEqual(outer.value, 4)
+        XCTAssertFalse(model.finishParameterEditing(handle), "History is separate from latest completed failure")
+        XCTAssertTrue(model.commitParameterValue(9, for: handle, intentRevision: 1))
+        XCTAssertGreaterThan(try XCTUnwrap(handle.successfulPresentation).operationOrder, outer.operationOrder)
+        XCTAssertEqual(handle.successfulPresentation?.value, 9)
+        XCTAssertTrue(model.finishParameterEditing(handle))
+        XCTAssertEqual(node.attempts, [4, 8, 9])
+    }
+
+    func test_successful_presentation_checks_owner_retirement_and_generation_while_failed_load_preserves_it() throws {
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let handle = try XCTUnwrap(model.makeParameterEditHandle(node: node, parameterID: "amount"))
+        XCTAssertTrue(model.commitParameterValue(4, for: handle, intentRevision: 1))
+        let order = try XCTUnwrap(handle.successfulPresentation).operationOrder
+        let foreignModel = makeModel()
+        XCTAssertFalse(foreignModel.commitParameterValue(8, for: handle, intentRevision: 2))
+        XCTAssertEqual(handle.successfulPresentation?.operationOrder, order)
+        model.loadPreset(from: fixture.url("getter-missing.tnf"))
+        XCTAssertEqual(handle.successfulPresentation?.value, 4)
+        model.retireParameterEditHandle(handle)
+        XCTAssertNil(handle.successfulPresentation)
+        let fresh = try XCTUnwrap(model.makeParameterEditHandle(node: node, parameterID: "amount"))
+        XCTAssertEqual(fresh.successfulPresentation?.operationOrder, order, "History belongs to live target, not session")
+        model.savePreset(to: fixture.url("getter-replacement.tnf"))
+        model.loadPreset(from: fixture.url("getter-replacement.tnf"))
+        XCTAssertNil(fresh.successfulPresentation, "Retained old object/session is invalid after generation change")
+        let replacement = try fixture.node(in: model)
+        XCTAssertEqual(replacement.id, node.id)
+        XCTAssertFalse(replacement === node)
+        let renewed = try XCTUnwrap(model.makeParameterEditHandle(node: replacement, parameterID: "amount"))
+        XCTAssertNil(renewed.successfulPresentation, "Restored actual is not an invoked success in this generation")
+    }
+
+    func test_successful_presentation_rejects_changed_concrete_identity_and_prunes_removed_targets() throws {
+        let node = AcceptedParameterNode()
+        var current = true
+        let edits = AcceptedParameterEdits(
+            schedule: scheduler.schedule, isCurrent: { candidate in current && candidate === node },
+            apply: { target, parameter, value in
+                do {
+                    try target.setParameter(parameter, value: value)
+                    return ParameterApplication(success: true, actual: target.parameterValue(parameter))
+                } catch {
+                    return ParameterApplication(success: false, actual: target.parameterValue(parameter))
+                }
+            }
+        )
+        let handle = try XCTUnwrap(edits.makeHandle(node: node, parameterID: "amount"))
+        XCTAssertTrue(edits.commit(4, for: handle, intentRevision: 1))
+        let id = node.id
+        node.id = UUID()
+        XCTAssertNil(handle.successfulPresentation)
+        node.id = id
+        XCTAssertNil(handle.successfulPresentation, "Invalid concrete identity history was pruned")
+        XCTAssertTrue(edits.commit(6, for: handle, intentRevision: 2))
+        XCTAssertEqual(handle.successfulPresentation?.value, 6)
+        current = false
+        XCTAssertNil(handle.successfulPresentation)
+        XCTAssertTrue(edits.flushAll())
+        current = true
+        let renewed = try XCTUnwrap(edits.makeHandle(node: node, parameterID: "amount"))
+        XCTAssertNil(renewed.successfulPresentation, "Removed history cannot reappear on a later handle")
+        XCTAssertEqual(node.attempts, [4, 6])
+    }
+
+    func test_successful_presentation_records_and_retained_handle_do_not_retain_node_or_owner() throws {
+        var node: AcceptedParameterNode? = AcceptedParameterNode()
+        weak var weakNode = node
+        var edits: AcceptedParameterEdits? = AcceptedParameterEdits(
+            schedule: scheduler.schedule, isCurrent: { [weak node] candidate in candidate === node },
+            apply: { target, parameter, value in
+                do {
+                    try target.setParameter(parameter, value: value)
+                    return ParameterApplication(success: true, actual: target.parameterValue(parameter))
+                } catch {
+                    return ParameterApplication(success: false, actual: target.parameterValue(parameter))
+                }
+            }
+        )
+        weak var weakOwner = edits
+        let handle = try XCTUnwrap(edits?.makeHandle(node: XCTUnwrap(node), parameterID: "amount"))
+        XCTAssertTrue(try XCTUnwrap(edits).commit(4, for: handle, intentRevision: 1))
+        XCTAssertEqual(handle.successfulPresentation?.value, 4)
+        node = nil
+        XCTAssertNil(weakNode, "Completed-success records and handle must own the node weakly")
+        XCTAssertNil(handle.successfulPresentation)
+        edits = nil
+        XCTAssertNil(weakOwner)
+        XCTAssertNil(handle.successfulPresentation)
+    }
+
+    func test_successful_presentation_getter_never_performs_native_reads() throws {
+        let node = R6ReadCountingParameterNode()
+        let identity = ObjectIdentifier(node)
+        let edits = AcceptedParameterEdits(
+            schedule: scheduler.schedule, isCurrent: { ObjectIdentifier($0) == identity },
+            apply: { target, parameter, value in
+                do {
+                    try target.setParameter(parameter, value: value)
+                    return ParameterApplication(success: true, actual: target.parameterValue(parameter))
+                } catch {
+                    return ParameterApplication(success: false, actual: target.parameterValue(parameter))
+                }
+            }
+        )
+        let handle = try XCTUnwrap(edits.makeHandle(node: node, parameterID: "amount"))
+        XCTAssertNil(handle.successfulPresentation)
+        XCTAssertEqual(node.nativeReads, 0)
+        XCTAssertTrue(edits.commit(4, for: handle, intentRevision: 1))
+        XCTAssertEqual(node.nativeReads, 1, "Only the application harness reads native state")
+        let first = try XCTUnwrap(handle.successfulPresentation)
+        for _ in 0..<3 {
+            XCTAssertEqual(handle.successfulPresentation?.operationOrder, first.operationOrder)
+            XCTAssertEqual(handle.successfulPresentation?.value, 4)
+        }
+        XCTAssertEqual(node.nativeReads, 1)
+        XCTAssertTrue(edits.accept(7, for: handle, intentRevision: 2))
+        XCTAssertEqual(handle.successfulPresentation?.value, 4)
+        XCTAssertEqual(node.nativeReads, 1)
+        node.base.readbackAvailable = false
+        XCTAssertTrue(edits.commit(8, for: handle, intentRevision: 3))
+        XCTAssertEqual(handle.successfulPresentation?.value, 8)
+        XCTAssertGreaterThan(try XCTUnwrap(handle.successfulPresentation).operationOrder, first.operationOrder)
+        XCTAssertEqual(node.nativeReads, 2)
+        node.base.behavior = .rejected
+        XCTAssertFalse(edits.commit(9, for: handle, intentRevision: 4))
+        XCTAssertEqual(handle.successfulPresentation?.value, 8)
+        XCTAssertEqual(node.nativeReads, 3)
+        edits.retire(handle)
+        XCTAssertNil(handle.successfulPresentation)
+        scheduler.runAll()
+        XCTAssertEqual(node.nativeReads, 3, "Retired getter and obsolete ticks cannot read native state")
+        XCTAssertEqual(node.base.attempts, [4, 8, 9])
+    }
+}
+
+/// Test-local forwarder solely for the getter's no-native-read assertion.
+/// Shared fixtures and production protocols/setters remain untouched.
+private final class R6ReadCountingParameterNode: EffectNode {
+    static let typeIdentifier = AcceptedParameterNode.typeIdentifier
+    let base = AcceptedParameterNode()
+    private(set) var nativeReads = 0
+    var id: UUID { base.id }
+    var displayName: String {
+        get { base.displayName }
+        set { base.displayName = newValue }
+    }
+    var bypass: Bool {
+        get { base.bypass }
+        set { base.bypass = newValue }
+    }
+    var wetDryMix: Float {
+        get { base.wetDryMix }
+        set { base.wetDryMix = newValue }
+    }
+    var parameters: [EffectParameter] { base.parameters }
+    var inputBus: AVAudioMixerNode { base.inputBus }
+    var outputBus: AVAudioMixerNode { base.outputBus }
+    func setParameter(_ identifier: String, value: Float) throws { try base.setParameter(identifier, value: value) }
+    func parameterValue(_ identifier: String) -> Float? {
+        nativeReads += 1
+        return base.parameterValue(identifier)
+    }
+    func attach(to engine: AVAudioEngine) throws { try base.attach(to: engine) }
+    func detach() { base.detach() }
+    func snapshot() -> EffectState { base.snapshot() }
+    func restore(from state: EffectState) throws { try base.restore(from: state) }
 }

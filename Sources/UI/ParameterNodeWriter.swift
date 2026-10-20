@@ -17,8 +17,12 @@ struct ParameterNodeWriter {
             guard let model, let handle else { return nil }
             return model.pendingParameterValue(for: handle)
         }
-        // Defaults seed presentation only. Native nil remains nil on results.
-        let initial = pending() ?? target.parameterValue(parameter.identifier) ?? parameter.defaultValue
+        let successful: () -> ParameterSuccessfulPresentation? = { handle?.successfulPresentation }
+        // Preserve the pending-first short circuit: do not read native state
+        // just to seed fallback while accepted input already supplies display.
+        let initialPending = pending()
+        let initialActual = initialPending == nil ? target.parameterValue(parameter.identifier) : nil
+        let initial = initialPending ?? initialActual ?? successful()?.value ?? parameter.defaultValue
         let parameterID = parameter.identifier
         let editor = ParameterValueEditor(
             parameter: parameter, initialValue: initial,
@@ -40,7 +44,9 @@ struct ParameterNodeWriter {
                 model.retireParameterEditHandle(handle)
             },
             pendingAcceptedValue: pending,
-            applicationSessionID: handle?.sessionID
+            applicationSessionID: handle?.sessionID,
+            initialActual: initialActual,
+            successfulPresentation: successful
         )
         handle?.setApplicationResultHandler { [weak editor] result in editor?.receiveApplicationResult(result) }
         return editor

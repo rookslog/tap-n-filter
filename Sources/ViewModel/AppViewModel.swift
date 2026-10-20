@@ -1045,9 +1045,10 @@ public final class AppViewModel: ObservableObject {
                   Set(original.extras.keys).isSubset(of: Set(actual.extras.keys))
             else { return true }
             for parameter in node.parameters {
-                if let value = original.parameters[parameter.identifier], !parameter.range.contains(value) {
-                    return true
-                }
+                // Restoration may synthesize defaults for missing required
+                // runtime catalog keys. Preserve recovery/Save As provenance.
+                guard let value = original.parameters[parameter.identifier],
+                      parameter.range.contains(value) else { return true }
             }
         }
         return false

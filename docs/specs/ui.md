@@ -176,8 +176,11 @@ supersede older queued input for the same target. The cancelled pending session
 receives that successful write's actual optional readback under its superseded
 intent revision, even when native old→old cannot produce an ordinary model echo.
 The result's request is the actual immediate setter request, not the cancelled
-drag value. Newer reentrant drag/draft revisions remain protected. A rejected
-immediate write does not acknowledge cancellation and preserves pending delivery.
+drag value. Newer reentrant drag/draft revisions remain protected. If any
+same-target setter invocation begun in the direct-write scope succeeds, including
+a nested success before outer rejection, the captured session is reconciled via
+that truthful outer result and separate successful-presentation history. Otherwise
+a rejected immediate write preserves unattempted pending delivery.
 
 The VM checks graph generation, UUID, object identity and parameter at actual
 delivery. Scheduling tickets are invalidated before draining, so already-delivered
@@ -194,7 +197,9 @@ Repeated identical invalid readback, including NaN, does not republish diagnosti
 state or overwrite a correctable draft. Starting/cancelling a production numeric
 draft does not discard already accepted VM drag intent. Save never parses or
 submits text; only valid explicit Return/reset crosses that boundary. Cancel
-restores current accepted intent or authoritative native readback without writing.
+restores current pending accepted intent, available native readback, or scoped
+fallback presentation without writing. Fallback is not measured actual or a
+guarantee of native rollback after a throwing setter.
 When a slider takes over text editing, delayed field focus loss does not cancel
 that slider movement.
 
@@ -214,14 +219,34 @@ resyncs text even when it equals the optimistic scalar or matches an older own
 write. No historical float backlog
 suppresses unrelated model changes.
 
-An applied result with nil readback clears authoritative actual state, but may
-reconcile presentation to current pending accepted input or otherwise its request,
-provided its intent revision is not older than the latest submission. This is
-optimistic accepted presentation, not measured actual or a snapshot guarantee.
-During a numeric draft only the backing value changes, preserving text, editing
-intent and validation error so Cancel can restore the accepted value without a
-write. Rejected nil results do not supply this fallback. Later available native
-readback remains authoritative, even when equal to a prior observation or request.
+The VM separately retains weak, per-live-target successful presentation and the
+greatest completed setter-outcome order. Setter-invocation order is allocated
+before application, independent of queue admission, editor revision and callback
+serial. An older outer success may supply fallback after newer rejection, but
+cannot replace a newer inner success or clear its newer rejection block. The
+read-only `ParameterEditHandle.successfulPresentation` exposes operation order
+and actual-if-available, otherwise successful request; it validates the live
+session/owner/generation/concrete target and performs no native read. Existing
+live-target checks exclude/prune removed history; generation replacement clears it.
+
+The editor tracks fallback as catalog seed, genuine observation, or successful
+presentation, separately from optimistic value and authoritative actual. Factory
+initialization preserves the pending-first short circuit: it does not read native
+state merely to seed fallback when input is already pending, and initial pending
+input is never successful history. Otherwise its existing actual observation,
+known successful history, or catalog seed supplies fallback. A genuine observation
+watermarks completed success order so an older unnotified success cannot replace
+a newer observed scalar.
+
+Every nil result, applied or rejected, clears authoritative actual state. Before
+presentation guards, the editor incorporates newer successful history and settles
+only a matching submitted revision. Presentation prefers live pending input,
+protects a newer awaiting submission, then uses fallback after settlement, never
+the rejected request. During a numeric draft only backing value changes,
+preserving exact text, editing intent and validation error. Later available
+native readback remains authoritative and reconciles text even when equal to
+fallback, a prior observation, or a successful request. Standalone and nonnil
+result/draft protections remain unchanged.
 
 Standalone `ParameterValueEditor` clients without these production hooks retain
 their local coalescer and cancellation semantics: locally queued, not-yet-accepted
@@ -300,8 +325,11 @@ baseline without rolling back already applied graph edits.
 The file-import fidelity classifier uses decode diagnostics from the same bytes
 and compares migrated input to corresponding restored node occurrences by
 ID/type/order. It detects unknown root/node fields, dropped parameter/extras
-keys, output gain outside 0–2, wet/dry outside 0–1 and parameters outside their
-runtime metadata ranges. FILE imports with duplicate UUIDs are rejected before
+keys, missing required runtime catalog parameter keys, output gain outside 0–2,
+wet/dry outside 0–1 and parameters outside their runtime metadata ranges. Missing
+keys restored from defaults require Recovered/Save As and an independent
+fidelity-loss notice, not an invented skipped-effect warning; an empty runtime
+catalog remains valid. FILE imports with duplicate UUIDs are rejected before
 installation, accepted-edit flushing or generation invalidation, including
 duplicates across types or occurrences that restoration would skip. The existing
 load-error surface reports rejection; the previous graph, receipt, baseline,
