@@ -1196,6 +1196,340 @@ final class AcceptedParameterCompositionTests: XCTestCase {
         XCTAssertEqual(node.attempts, [4, 8, 9])
         XCTAssertFalse(FileManager.default.fileExists(atPath: blocked.path))
     }
+
+    func test_nil_rejected_numeric_commit_restores_observed_presentation_and_cancel_without_retry() throws {
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let editor = fixture.writer(node, model).makeEditor()
+        editor.receiveModelValue(try XCTUnwrap(node.parameterValue("amount")))
+        XCTAssertEqual(editor.value, 2)
+        node.readbackAvailable = false
+        node.behavior = .rejected
+        editor.beginEditing(locale: fixture.locale)
+        editor.text = "8"
+
+        XCTAssertTrue(editor.commit(locale: fixture.locale), "Valid text submits even when application rejects")
+
+        XCTAssertNil(node.parameterValue("amount"))
+        XCTAssertEqual(editor.value, 2, "Previous observation is fallback presentation, not current measured actual")
+        XCTAssertEqual(editor.text, "2.0")
+        XCTAssertFalse(editor.isEditing)
+        editor.beginEditing(locale: fixture.locale)
+        editor.text = "6"
+        editor.cancel()
+        XCTAssertEqual(editor.value, 2)
+        XCTAssertEqual(editor.text, "2.0")
+        XCTAssertFalse(editor.isEditing)
+        assertR6RejectedSave(model, node: node, attempts: [8], name: "r6-rejected-commit.tnf")
+    }
+
+    func test_nil_rejected_reset_restores_observed_four_not_failed_catalog_default() throws {
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        model.updateParameter(nodeID: node.id, paramID: "amount", value: 4)
+        let editor = fixture.writer(node, model).makeEditor()
+        editor.receiveModelValue(try XCTUnwrap(node.parameterValue("amount")))
+        XCTAssertEqual(editor.value, 4)
+        node.readbackAvailable = false
+        node.behavior = .rejected
+
+        editor.reset()
+
+        XCTAssertNil(node.parameterValue("amount"))
+        XCTAssertEqual(editor.value, 4)
+        XCTAssertEqual(editor.text, "4.0", "Rejected default 2 is not successful presentation")
+        editor.beginEditing(locale: fixture.locale)
+        editor.text = "6"
+        editor.cancel()
+        XCTAssertEqual(editor.value, 4)
+        XCTAssertEqual(editor.text, "4.0")
+        XCTAssertFalse(editor.isEditing)
+        assertR6RejectedSave(model, node: node, attempts: [4, 2], name: "r6-rejected-reset.tnf")
+    }
+
+    func test_nil_rejected_scheduled_drag_keeps_pending_eight_then_restores_observed_two() throws {
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let editor = fixture.writer(node, model).makeEditor()
+        editor.receiveModelValue(try XCTUnwrap(node.parameterValue("amount")))
+        node.readbackAvailable = false
+        editor.drag(to: 0.8)
+        let tick = try scheduler.takeNext()
+        XCTAssertEqual(editor.value, 8)
+        XCTAssertEqual(editor.text, "8.0")
+        XCTAssertTrue(node.attempts.isEmpty)
+        editor.receiveModelValue(2)
+        XCTAssertEqual(editor.value, 8, "Pending input remains visible until actually attempted")
+        node.behavior = .rejected
+
+        tick()
+
+        XCTAssertNil(node.parameterValue("amount"))
+        XCTAssertEqual(editor.value, 2)
+        XCTAssertEqual(editor.text, "2.0")
+        tick()
+        editor.beginEditing(locale: fixture.locale)
+        editor.text = "6"
+        editor.cancel()
+        XCTAssertEqual(editor.value, 2)
+        XCTAssertEqual(editor.text, "2.0")
+        XCTAssertFalse(editor.isEditing)
+        assertR6RejectedSave(model, node: node, attempts: [8], name: "r6-rejected-delivery.tnf")
+        tick()
+        XCTAssertEqual(node.attempts, [8])
+    }
+
+    func test_nil_rejection_restores_prior_successful_explicit_request_not_older_observation() throws {
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let editor = fixture.writer(node, model).makeEditor()
+        editor.receiveModelValue(try XCTUnwrap(node.parameterValue("amount")))
+        XCTAssertEqual(editor.value, 2)
+        node.readbackAvailable = false
+        editor.beginEditing(locale: fixture.locale)
+        editor.text = "4"
+        XCTAssertTrue(editor.commit(locale: fixture.locale))
+        XCTAssertEqual(editor.value, 4)
+        XCTAssertEqual(editor.text, "4.0")
+        node.behavior = .rejected
+        editor.beginEditing(locale: fixture.locale)
+        editor.text = "8"
+
+        XCTAssertTrue(editor.commit(locale: fixture.locale))
+
+        XCTAssertNil(node.parameterValue("amount"))
+        XCTAssertEqual(editor.value, 4)
+        XCTAssertEqual(editor.text, "4.0")
+        editor.beginEditing(locale: fixture.locale)
+        editor.text = "6"
+        editor.cancel()
+        XCTAssertEqual(editor.value, 4)
+        XCTAssertEqual(editor.text, "4.0")
+        XCTAssertFalse(editor.isEditing)
+        assertR6RejectedSave(model, node: node, attempts: [4, 8], name: "r6-success-before-rejection.tnf")
+    }
+
+    func test_nil_initial_factory_seed_survives_rejection_without_claiming_current_actual() throws {
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        node.readbackAvailable = false
+        let editor = fixture.writer(node, model).makeEditor()
+        XCTAssertEqual(editor.value, 2, "Catalog seed is presentation only; no native observation exists")
+        XCTAssertEqual(editor.text, "2.0")
+        XCTAssertTrue(node.attempts.isEmpty)
+        node.behavior = .rejected
+        editor.beginEditing(locale: fixture.locale)
+        editor.text = "8"
+
+        XCTAssertTrue(editor.commit(locale: fixture.locale))
+
+        XCTAssertNil(node.parameterValue("amount"))
+        XCTAssertEqual(editor.value, 2, "Neither failed 8 nor an invented actual may replace seed presentation")
+        XCTAssertEqual(editor.text, "2.0")
+        editor.beginEditing(locale: fixture.locale)
+        editor.text = "6"
+        editor.cancel()
+        XCTAssertEqual(editor.value, 2)
+        XCTAssertEqual(editor.text, "2.0")
+        XCTAssertFalse(editor.isEditing)
+        assertR6RejectedSave(model, node: node, attempts: [8], name: "r6-seed-rejection.tnf")
+    }
+
+    func test_nil_factory_initial_pending_is_not_success_history_after_new_editor_rejection() throws {
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let existing = try XCTUnwrap(model.makeParameterEditHandle(node: node, parameterID: "amount"))
+        node.readbackAvailable = false
+        XCTAssertTrue(model.acceptParameterValue(7, for: existing, intentRevision: 1))
+        let oldTick = try scheduler.takeNext()
+        let editor = fixture.writer(node, model).makeEditor()
+        XCTAssertEqual(editor.value, 7)
+        XCTAssertEqual(editor.text, "7.0")
+        XCTAssertTrue(node.attempts.isEmpty)
+        node.behavior = .rejected
+        editor.beginEditing(locale: fixture.locale)
+        editor.text = "8"
+
+        XCTAssertTrue(editor.commit(locale: fixture.locale))
+
+        XCTAssertNil(model.pendingParameterValue(for: existing))
+        XCTAssertNil(node.parameterValue("amount"))
+        XCTAssertEqual(editor.value, 2, "Unattempted initial 7 is not fallback success; use catalog seed only")
+        XCTAssertEqual(editor.text, "2.0")
+        oldTick()
+        editor.beginEditing(locale: fixture.locale)
+        editor.text = "6"
+        editor.cancel()
+        XCTAssertEqual(editor.value, 2)
+        XCTAssertEqual(editor.text, "2.0")
+        XCTAssertFalse(editor.isEditing)
+        assertR6RejectedSave(model, node: node, attempts: [8], name: "r6-initial-pending-rejection.tnf")
+        oldTick()
+        XCTAssertEqual(node.attempts, [8], "Cancelled 7 must never be delivered or retried")
+    }
+
+    func test_nil_newer_pending_drag_survives_outer_success_then_rejection_restores_that_success() throws {
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let editor = fixture.writer(node, model).makeEditor()
+        editor.receiveModelValue(try XCTUnwrap(node.parameterValue("amount")))
+        editor.drag(to: 0.7)
+        let oldTick = try scheduler.takeNext()
+        node.readbackAvailable = false
+        var callbacks = 0
+        node.afterAttempt = { [weak node] requested in
+            node?.afterAttempt = nil
+            callbacks += 1
+            XCTAssertEqual(requested, 4)
+            editor.drag(to: 0.9)
+        }
+
+        model.updateParameter(nodeID: node.id, paramID: "amount", value: 4)
+
+        XCTAssertEqual(callbacks, 1)
+        XCTAssertEqual(editor.value, 9)
+        XCTAssertEqual(editor.text, "9.0")
+        XCTAssertEqual(node.attempts, [4])
+        XCTAssertEqual(scheduler.count, 1)
+        oldTick()
+        XCTAssertEqual(node.attempts, [4], "Cancelled 7 ticket cannot drain newer 9 early")
+        let newerTick = try scheduler.takeNext()
+        node.behavior = .rejected
+        newerTick()
+        XCTAssertNil(node.parameterValue("amount"))
+        XCTAssertEqual(editor.value, 4, "Successful outer 4 must be retained beneath pending 9")
+        XCTAssertEqual(editor.text, "4.0")
+        editor.beginEditing(locale: fixture.locale)
+        editor.text = "6"
+        editor.cancel()
+        XCTAssertEqual(editor.value, 4)
+        XCTAssertEqual(editor.text, "4.0")
+        XCTAssertFalse(editor.isEditing)
+        oldTick()
+        newerTick()
+        assertR6RejectedSave(model, node: node, attempts: [4, 9], name: "r6-newer-drag-rejection.tnf")
+        oldTick()
+        newerTick()
+        XCTAssertEqual(node.attempts, [4, 9])
+    }
+
+    func test_nil_late_outer_success_repairs_fallback_beneath_settled_newer_rejection_and_invalid_draft() throws {
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let editor = fixture.writer(node, model).makeEditor()
+        editor.receiveModelValue(try XCTUnwrap(node.parameterValue("amount")))
+        editor.drag(to: 0.7)
+        let oldTick = try scheduler.takeNext()
+        node.readbackAvailable = false
+        let locale = fixture.locale
+        var callbacks = 0
+        var validationError: String?
+        node.afterAttempt = { [weak node] requested in
+            guard let node else { return XCTFail("The live target must remain available") }
+            node.afterAttempt = nil
+            callbacks += 1
+            XCTAssertEqual(requested, 4)
+            node.behavior = .rejected
+            editor.beginEditing(locale: locale)
+            editor.text = "8"
+            XCTAssertTrue(editor.commit(locale: locale))
+            node.behavior = .exact
+            editor.beginEditing(locale: locale)
+            editor.text = "invalid newer draft"
+            XCTAssertFalse(editor.commit(locale: locale))
+            validationError = editor.errorMessage
+            XCTAssertNotNil(validationError)
+        }
+
+        model.updateParameter(nodeID: node.id, paramID: "amount", value: 4)
+
+        let error = try XCTUnwrap(validationError)
+        XCTAssertEqual(callbacks, 1)
+        XCTAssertNil(node.parameterValue("amount"))
+        XCTAssertEqual(editor.value, 4, "Late successful basis repairs backing even after newer submission settled")
+        XCTAssertEqual(editor.text, "invalid newer draft")
+        XCTAssertTrue(editor.isEditing)
+        XCTAssertEqual(editor.errorMessage, error)
+        oldTick()
+        assertR6RejectedSave(model, node: node, attempts: [4, 8], name: "r6-late-success-draft.tnf")
+        XCTAssertEqual(editor.value, 4)
+        XCTAssertEqual(editor.text, "invalid newer draft", "Save never submits this draft")
+        XCTAssertTrue(editor.isEditing)
+        XCTAssertEqual(editor.errorMessage, error)
+        editor.cancel()
+        XCTAssertEqual(editor.value, 4)
+        XCTAssertEqual(editor.text, "4.0")
+        XCTAssertFalse(editor.isEditing)
+        XCTAssertNil(editor.errorMessage)
+        oldTick()
+        XCTAssertEqual(node.attempts, [4, 8])
+    }
+
+    func test_nil_rejection_preserves_fresher_external_observation_over_unnotified_public_success() throws {
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let editor = fixture.writer(node, model).makeEditor()
+        editor.receiveModelValue(try XCTUnwrap(node.parameterValue("amount")))
+        // No pending session: this public success has no editor result callback.
+        model.updateParameter(nodeID: node.id, paramID: "amount", value: 4)
+        XCTAssertEqual(editor.value, 2)
+        // Intentional external node update, not a simulated nil acknowledgement.
+        try node.setParameter("amount", value: 6)
+        let observed = try XCTUnwrap(node.parameterValue("amount"))
+        XCTAssertEqual(observed, 6)
+        editor.receiveModelValue(observed)
+        XCTAssertEqual(editor.value, 6)
+        XCTAssertEqual(editor.text, "6.0")
+        node.readbackAvailable = false
+        node.behavior = .rejected
+        editor.beginEditing(locale: fixture.locale)
+        editor.text = "8"
+
+        XCTAssertTrue(editor.commit(locale: fixture.locale))
+
+        XCTAssertNil(node.parameterValue("amount"))
+        XCTAssertEqual(editor.value, 6, "Old successful 4 must not overwrite more recent native observation 6")
+        XCTAssertEqual(editor.text, "6.0")
+        editor.beginEditing(locale: fixture.locale)
+        editor.text = "9"
+        editor.cancel()
+        XCTAssertEqual(editor.value, 6)
+        XCTAssertEqual(editor.text, "6.0")
+        XCTAssertFalse(editor.isEditing)
+        assertR6RejectedSave(model, node: node, attempts: [4, 6, 8], name: "r6-observation-watermark.tnf")
+        editor.beginEditing(locale: fixture.locale)
+        editor.text = "9"
+        node.readbackAvailable = true
+        let restoredActual = try XCTUnwrap(node.parameterValue("amount"))
+        XCTAssertEqual(restoredActual, 6)
+        editor.receiveModelValue(restoredActual)
+        XCTAssertEqual(editor.value, 6)
+        XCTAssertEqual(editor.text, "6.0", "Fallback 6 must not masquerade as current actual and suppress reconciliation")
+        XCTAssertTrue(editor.isEditing)
+        XCTAssertNil(editor.errorMessage)
+        XCTAssertEqual(node.attempts, [4, 6, 8], "Restored actual must reconcile without a setter")
+        assertR6RejectedSave(model, node: node, attempts: [4, 6, 8], name: "r6-watermark-still-blocked.tnf")
+    }
+
+    private func assertR6RejectedSave(
+        _ model: AppViewModel, node: AcceptedParameterNode, attempts: [Float], name: String,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        let target = fixture.url(name)
+        XCTAssertEqual(node.attempts, attempts, file: file, line: line)
+        model.savePreset(to: target)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.path), file: file, line: line)
+        XCTAssertNotNil(model.lastError, file: file, line: line)
+        XCTAssertNil(model.presetFileURL, file: file, line: line)
+        scheduler.runAll()
+        XCTAssertEqual(scheduler.count, 0, "No automatic retry scheduled", file: file, line: line)
+        model.clearError()
+        model.savePreset(to: target)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.path), file: file, line: line)
+        XCTAssertNotNil(model.lastError, "Clearing the banner cannot clear target failure", file: file, line: line)
+        XCTAssertNil(model.presetFileURL, file: file, line: line)
+        XCTAssertEqual(node.attempts, attempts, "Save/ticks must never retry a consumed rejection", file: file, line: line)
+    }
 }
 
 /// Captures callbacks even after delivery so tests can replay obsolete work.

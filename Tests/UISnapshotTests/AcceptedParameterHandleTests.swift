@@ -204,4 +204,62 @@ final class AcceptedParameterHandleTests: XCTestCase {
         XCTAssertEqual(try fixture.exportedValue("new-session.tnf"), 8)
         XCTAssertEqual(results.count, 1)
     }
+
+    func test_coalescer_outer_rejected_outcome_after_nested_success_reconciles_captured_session_and_drains() throws {
+        // Lower-level apply-outcome harness only. The unchanged factory fake
+        // throws BEFORE afterAttempt; this is not factory late-throw coverage.
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        node.readbackAvailable = false
+        var edits: AcceptedParameterEdits!
+        edits = AcceptedParameterEdits(
+            schedule: scheduler.schedule,
+            isCurrent: { ObjectIdentifier($0) == ObjectIdentifier(node) },
+            apply: { target, parameter, value in
+                do {
+                    try target.setParameter(parameter, value: value)
+                } catch {
+                    XCTFail("Harness fake exact setter unexpectedly threw: \(error)")
+                    return ParameterApplication(success: false, actual: target.parameterValue(parameter))
+                }
+                if value == 4 {
+                    edits.applyImmediate(node: target, parameter: parameter, value: 8)
+                    // Deliberately control the OUTCOME after nested success;
+                    // do not pretend the fixture's setter threw after callback.
+                    return ParameterApplication(success: false, actual: nil)
+                }
+                return ParameterApplication(success: true, actual: target.parameterValue(parameter))
+            }
+        )
+        defer { edits = nil }
+        let handle = try XCTUnwrap(edits.makeHandle(node: node, parameterID: "amount"))
+        var results: [ParameterApplicationResult] = []
+        handle.setApplicationResultHandler { results.append($0) }
+        XCTAssertTrue(edits.accept(7, for: handle, intentRevision: 41))
+        let oldTick = try scheduler.takeNext()
+
+        edits.applyImmediate(node: node, parameter: "amount", value: 4)
+
+        XCTAssertEqual(results.count, 1, "Captured live session requires reconciliation despite outer rejection")
+        XCTAssertEqual(results.first?.sessionID, handle.sessionID)
+        XCTAssertEqual(results.first?.intentRevision, 41)
+        XCTAssertEqual(results.first?.requestedValue, 4, "Acknowledgement must retain the actual outer request")
+        XCTAssertNil(results.first?.actualValue)
+        XCTAssertEqual(results.first?.outcome, .rejected, "Nested success cannot repurpose the outer outcome")
+        XCTAssertGreaterThan(results.first?.applicationSerial ?? 0, 0)
+        XCTAssertNil(edits.pendingValue(for: handle), "Nested success supersedes original unattempted 7")
+        XCTAssertNil(node.parameterValue("amount"))
+        XCTAssertEqual(node.value, 8, "Fake storage only; no current native readback is claimed")
+        XCTAssertEqual(node.attempts, [4, 8])
+        XCTAssertTrue(edits.finish(handle), "Older outer rejection cannot reinstate failure after newer success 8")
+        XCTAssertTrue(edits.flushAll(), "The coalescer drain used by Save must succeed; not a factory export test")
+        oldTick()
+        scheduler.runAll()
+        oldTick()
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(node.attempts, [4, 8], "Original pending 7 cannot return, and outcomes must not retry")
+        XCTAssertEqual(node.value, 8)
+        XCTAssertNil(edits.pendingValue(for: handle))
+        XCTAssertTrue(edits.flushAll())
+    }
 }
