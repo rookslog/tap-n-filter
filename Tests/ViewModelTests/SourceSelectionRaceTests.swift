@@ -3,6 +3,7 @@ import Capture
 import Combine
 import Effects
 import Foundation
+import Graph
 import ViewModel
 import XCTest
 
