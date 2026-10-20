@@ -600,6 +600,222 @@ final class AcceptedParameterCompositionTests: XCTestCase {
         scheduler.runAll()
         XCTAssertTrue(node.attempts.isEmpty)
     }
+
+    func test_save_batch_immediate_supersession_reconciles_unattempted_editor_and_invalidates_all_old_ticks() throws {
+        // Bug: detaching B from pending before A's setter hides B's session
+        // from immediate supersession. Falsifier: Save reconciles B to 2 with
+        // only a B=2 attempt, even when A replays B's old tick before writing.
+        let model = makeModel()
+        let nodeA = try fixture.node(in: model)
+        let nodeB = try fixture.node(in: model, at: 1)
+        let editorA = fixture.writer(nodeA, model).makeEditor()
+        let editorB = fixture.writer(nodeB, model).makeEditor()
+        editorA.drag(to: 0.4)
+        editorB.drag(to: 0.7)
+        XCTAssertEqual(scheduler.count, 2)
+        let oldA = try scheduler.takeNext()
+        let oldB = try scheduler.takeNext()
+        XCTAssertEqual(nodeB.value, 2)
+        XCTAssertEqual(editorB.value, 7)
+        var callbacks = 0
+        nodeA.afterAttempt = { [weak nodeA] _ in
+            nodeA?.afterAttempt = nil
+            callbacks += 1
+            oldA()
+            oldB()
+            XCTAssertTrue(nodeB.attempts.isEmpty, "All batch tickets must be inert before the first setter")
+            model.updateParameter(nodeID: nodeB.id, paramID: "amount", value: 2)
+        }
+
+        model.savePreset(to: fixture.url("batch-superseded-unchanged.tnf"))
+
+        XCTAssertEqual(callbacks, 1)
+        XCTAssertEqual(nodeA.value, 4)
+        XCTAssertEqual(editorA.value, 4)
+        XCTAssertEqual(nodeA.attempts, [4])
+        XCTAssertEqual(try fixture.exportedValue("batch-superseded-unchanged.tnf"), 4)
+        XCTAssertEqual(nodeB.value, 2)
+        XCTAssertEqual(editorB.value, 2, "Native 2→2 cannot supply a scalar model echo")
+        XCTAssertEqual(editorB.text, "2.0")
+        XCTAssertFalse(editorB.isEditing)
+        XCTAssertEqual(try fixture.exportedValue("batch-superseded-unchanged.tnf", at: 1), 2)
+        XCTAssertEqual(nodeB.attempts, [2])
+        XCTAssertFalse(model.isPresetModified)
+        oldA()
+        oldB()
+        scheduler.runAll()
+        XCTAssertEqual(nodeA.attempts, [4])
+        XCTAssertEqual(nodeB.attempts, [2])
+        XCTAssertEqual(editorB.value, 2, "Obsolete ticks cannot be needed to repair the editor")
+    }
+
+    func test_save_batch_superseding_result_preserves_newer_drag_accepted_inside_immediate_setter() throws {
+        // Bug guard: acknowledging superseded B=7 must not overwrite a newer
+        // B=9 revision. Falsifier: B remains 9 after B=2 returns, then Save
+        // applies and exports 9 exactly once without replaying B=7.
+        let model = makeModel()
+        let nodeA = try fixture.node(in: model)
+        let nodeB = try fixture.node(in: model, at: 1)
+        let editorA = fixture.writer(nodeA, model).makeEditor()
+        let editorB = fixture.writer(nodeB, model).makeEditor()
+        editorA.drag(to: 0.4)
+        editorB.drag(to: 0.7)
+        let oldA = try scheduler.takeNext()
+        let oldB = try scheduler.takeNext()
+        var callbacks = 0
+        nodeB.afterAttempt = { [weak nodeB] requested in
+            nodeB?.afterAttempt = nil
+            XCTAssertEqual(requested, 2)
+            editorB.drag(to: 0.9)
+        }
+        nodeA.afterAttempt = { [weak nodeA] _ in
+            nodeA?.afterAttempt = nil
+            callbacks += 1
+            oldB()
+            XCTAssertTrue(nodeB.attempts.isEmpty)
+            model.updateParameter(nodeID: nodeB.id, paramID: "amount", value: 2)
+            XCTAssertEqual(nodeB.value, 2)
+            XCTAssertEqual(nodeB.attempts, [2])
+            XCTAssertEqual(editorB.value, 9, "The older cancellation acknowledgement must preserve newer input")
+            XCTAssertEqual(editorB.text, "9.0")
+            oldA()
+            oldB()
+            XCTAssertEqual(nodeB.attempts, [2], "Old tickets cannot deliver the newly accepted B=9")
+        }
+
+        model.savePreset(to: fixture.url("batch-newer-than-immediate.tnf"))
+
+        XCTAssertEqual(callbacks, 1)
+        XCTAssertEqual(try fixture.exportedValue("batch-newer-than-immediate.tnf"), 4)
+        XCTAssertEqual(nodeA.attempts, [4])
+        XCTAssertEqual(try fixture.exportedValue("batch-newer-than-immediate.tnf", at: 1), 9)
+        XCTAssertEqual(nodeB.value, 9)
+        XCTAssertEqual(editorB.value, 9)
+        XCTAssertEqual(editorB.text, "9.0")
+        XCTAssertEqual(nodeB.attempts, [2, 9])
+        XCTAssertFalse(model.isPresetModified)
+        oldA()
+        oldB()
+        scheduler.runAll()
+        XCTAssertEqual(nodeA.attempts, [4])
+        XCTAssertEqual(nodeB.attempts, [2, 9])
+        XCTAssertEqual(editorB.value, 9)
+    }
+
+    func test_save_batch_rejected_immediate_preserves_unattempted_drag_until_accepted_delivery_clears_block() throws {
+        // Bug guard: rejected B=2 must preserve accepted B=7, whose later
+        // successful application must clear the target's Save block. Falsifier:
+        // B stays optimistic 7 through rejection, then Save applies/exports 7.
+        let model = makeModel()
+        let nodeA = try fixture.node(in: model)
+        let nodeB = try fixture.node(in: model, at: 1)
+        let editorA = fixture.writer(nodeA, model).makeEditor()
+        let editorB = fixture.writer(nodeB, model).makeEditor()
+        let target = fixture.url("batch-rejected-immediate.tnf")
+        editorA.drag(to: 0.4)
+        editorB.drag(to: 0.7)
+        let oldA = try scheduler.takeNext()
+        let oldB = try scheduler.takeNext()
+        var callbacks = 0
+        nodeA.afterAttempt = { [weak nodeA] _ in
+            nodeA?.afterAttempt = nil
+            callbacks += 1
+            oldB()
+            XCTAssertTrue(nodeB.attempts.isEmpty)
+            nodeB.behavior = .rejected
+            model.updateParameter(nodeID: nodeB.id, paramID: "amount", value: 2)
+            XCTAssertNotNil(model.lastError)
+            XCTAssertEqual(nodeB.value, 2)
+            XCTAssertEqual(nodeB.attempts, [2])
+            XCTAssertEqual(editorB.value, 7)
+            XCTAssertEqual(editorB.text, "7.0")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: target.path))
+            nodeB.behavior = .exact
+            oldA()
+            oldB()
+            XCTAssertEqual(nodeB.attempts, [2], "The accepted B=7 belongs to Save, not an obsolete tick")
+        }
+        nodeB.afterAttempt = { [weak nodeB] requested in
+            nodeB?.afterAttempt = nil
+            XCTAssertEqual(requested, 7, "Only accepted B=7 can recover the rejected target")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: target.path))
+        }
+
+        model.savePreset(to: target)
+
+        XCTAssertEqual(callbacks, 1)
+        XCTAssertEqual(try fixture.exportedValue("batch-rejected-immediate.tnf"), 4)
+        XCTAssertEqual(nodeA.attempts, [4])
+        XCTAssertEqual(try fixture.exportedValue("batch-rejected-immediate.tnf", at: 1), 7)
+        XCTAssertEqual(model.presetFileURL, target, "Accepted B=7 must clear the target's Save block")
+        XCTAssertEqual(nodeB.value, 7)
+        XCTAssertEqual(editorB.value, 7)
+        XCTAssertEqual(editorB.text, "7.0")
+        XCTAssertEqual(nodeB.attempts, [2, 7])
+        XCTAssertFalse(model.isPresetModified)
+        oldA()
+        oldB()
+        scheduler.runAll()
+        model.savePreset(to: fixture.url("batch-rejected-immediate-copy.tnf"))
+        XCTAssertEqual(try fixture.exportedValue("batch-rejected-immediate-copy.tnf", at: 1), 7)
+        XCTAssertEqual(nodeA.attempts, [4])
+        XCTAssertEqual(nodeB.attempts, [2, 7], "Save must not retry the rejected immediate request")
+    }
+
+    func test_save_batch_supersession_preserves_newer_numeric_draft_without_submitting_it() throws {
+        // Bug guard: the older B=7 acknowledgement cannot erase a numeric
+        // draft opened inside B=2. Falsifier: Save exports actual 2 while
+        // retaining text/focus intent; cancelling restores 2 without a write.
+        let model = makeModel()
+        let nodeA = try fixture.node(in: model)
+        let nodeB = try fixture.node(in: model, at: 1)
+        let editorA = fixture.writer(nodeA, model).makeEditor()
+        let editorB = fixture.writer(nodeB, model).makeEditor()
+        let locale = fixture.locale
+        editorA.drag(to: 0.4)
+        editorB.drag(to: 0.7)
+        let oldA = try scheduler.takeNext()
+        let oldB = try scheduler.takeNext()
+        var callbacks = 0
+        nodeB.afterAttempt = { [weak nodeB] requested in
+            nodeB?.afterAttempt = nil
+            XCTAssertEqual(requested, 2)
+            editorB.beginEditing(locale: locale)
+            editorB.text = "9"
+        }
+        nodeA.afterAttempt = { [weak nodeA] _ in
+            nodeA?.afterAttempt = nil
+            callbacks += 1
+            oldB()
+            XCTAssertTrue(nodeB.attempts.isEmpty)
+            model.updateParameter(nodeID: nodeB.id, paramID: "amount", value: 2)
+            XCTAssertTrue(editorB.isEditing)
+            XCTAssertEqual(editorB.text, "9")
+        }
+
+        model.savePreset(to: fixture.url("batch-superseded-draft.tnf"))
+
+        XCTAssertEqual(callbacks, 1)
+        XCTAssertEqual(try fixture.exportedValue("batch-superseded-draft.tnf"), 4)
+        XCTAssertEqual(nodeA.attempts, [4])
+        XCTAssertEqual(try fixture.exportedValue("batch-superseded-draft.tnf", at: 1), 2)
+        XCTAssertEqual(nodeB.value, 2)
+        XCTAssertEqual(nodeB.attempts, [2])
+        XCTAssertTrue(editorB.isEditing, "Model-level focus intent only; native focus remains manual")
+        XCTAssertEqual(editorB.text, "9", "Save never parses an unsubmitted draft")
+        XCTAssertNil(editorB.errorMessage)
+        oldA()
+        oldB()
+        scheduler.runAll()
+        XCTAssertTrue(editorB.isEditing)
+        XCTAssertEqual(editorB.text, "9")
+        editorB.cancel()
+        XCTAssertFalse(editorB.isEditing)
+        XCTAssertEqual(editorB.value, 2)
+        XCTAssertEqual(editorB.text, "2.0")
+        XCTAssertEqual(nodeA.attempts, [4])
+        XCTAssertEqual(nodeB.attempts, [2])
+    }
 }
 
 /// Captures callbacks even after delivery so tests can replay obsolete work.
