@@ -192,12 +192,21 @@ final class AcceptedParameterEdits {
     func flushAll() -> Bool {
         discardStale()
         while !pending.isEmpty {
-            let batch = pending.values.sorted { $0.order < $1.order }
+            let batch = pending.sorted { $0.value.order < $1.value.order }
             // Invalidate ALL scheduled deliveries before any native setter can
-            // reenter acceptance. Newly accepted input gets a different ticket.
-            pending.removeAll()
-            nextTicket &+= 1
-            for entry in batch { deliver(entry) }
+            // reenter acceptance, but keep unattempted entries discoverable for
+            // immediate supersession and its scoped acknowledgement.
+            for (target, entry) in batch {
+                nextTicket &+= 1
+                pending[target] = Pending(handle: entry.handle, value: entry.value,
+                                          intentRevision: entry.intentRevision,
+                                          order: entry.order, ticket: nextTicket)
+            }
+            // Newer reentrant intent belongs to a later ordered batch, not the
+            // superseded entry's position in this one.
+            for (target, entry) in batch where pending[target]?.order == entry.order {
+                drain(target)
+            }
             discardStale()
         }
         return failures.isEmpty

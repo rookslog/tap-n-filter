@@ -182,7 +182,12 @@ immediate write does not acknowledge cancellation and preserves pending delivery
 The VM checks graph generation, UUID, object identity and parameter at actual
 delivery. Scheduling tickets are invalidated before draining, so already-delivered
 old closures cannot drain newer edits. Latest accepted intent wins across handles
-for the same target. Strict catalog validity is unchanged: even a one-ulp
+for the same target. Save keeps unattempted batch entries in the same pending
+dictionary so an immediate write reentered by another target's setter can still
+supersede and acknowledge their live sessions. It replaces all batch tickets
+before the first setter and drains only still-matching captured orders; newer
+reentrant input stays queued for a later ordered batch.
+Strict catalog validity is unchanged: even a one-ulp
 out-of-range readback remains a diagnostic and cannot be submitted as valid input.
 
 Repeated identical invalid readback, including NaN, does not republish diagnostic
