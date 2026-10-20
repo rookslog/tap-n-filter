@@ -55,6 +55,81 @@ final class AcceptedParameterCompositionTests: XCTestCase {
         XCTAssertEqual(node.attempts, [7, 9])
     }
 
+    func test_unchanged_immediate_write_reconciles_the_editor_whose_pending_drag_it_supersedes() throws {
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let editor = fixture.writer(node, model).makeEditor()
+        editor.drag(to: 0.7)
+        let oldTick = try scheduler.takeNext()
+        XCTAssertEqual(editor.value, 7)
+        XCTAssertEqual(node.value, 2)
+
+        model.updateParameter(nodeID: node.id, paramID: "amount", value: 2)
+
+        // Native 2→2 cannot produce a SwiftUI scalar onChange. Reconciliation
+        // must arrive synchronously through the superseded session's result.
+        XCTAssertEqual(node.value, 2)
+        XCTAssertEqual(editor.value, 2)
+        XCTAssertEqual(editor.text, "2")
+        XCTAssertFalse(editor.isEditing)
+        oldTick()
+        model.savePreset(to: fixture.url("superseded-unchanged.tnf"))
+        scheduler.runAll()
+        XCTAssertEqual(try fixture.exportedValue("superseded-unchanged.tnf"), 2)
+        XCTAssertEqual(node.attempts, [2])
+        XCTAssertEqual(editor.value, 2)
+    }
+
+    func test_superseding_immediate_result_preserves_reentrantly_accepted_newer_drag() throws {
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let editor = fixture.writer(node, model).makeEditor()
+        editor.drag(to: 0.7)
+        let oldTick = try scheduler.takeNext()
+        node.afterAttempt = { [weak node] _ in
+            node?.afterAttempt = nil
+            editor.drag(to: 0.9)
+        }
+
+        model.updateParameter(nodeID: node.id, paramID: "amount", value: 2)
+
+        XCTAssertEqual(node.value, 2)
+        XCTAssertEqual(editor.value, 9)
+        XCTAssertEqual(editor.text, "9")
+        oldTick()
+        XCTAssertEqual(node.attempts, [2])
+        XCTAssertEqual(scheduler.count, 1)
+        try scheduler.runNext()
+        model.savePreset(to: fixture.url("newer-than-immediate.tnf"))
+        XCTAssertEqual(try fixture.exportedValue("newer-than-immediate.tnf"), 9)
+        XCTAssertEqual(node.attempts, [2, 9])
+        XCTAssertEqual(editor.value, 9)
+    }
+
+    func test_rejected_immediate_write_keeps_pending_editor_intent_and_its_delivery() throws {
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let editor = fixture.writer(node, model).makeEditor()
+        editor.drag(to: 0.7)
+        let oldTick = try scheduler.takeNext()
+        node.behavior = .rejected
+
+        model.updateParameter(nodeID: node.id, paramID: "amount", value: 2)
+
+        XCTAssertNotNil(model.lastError)
+        XCTAssertEqual(node.value, 2)
+        XCTAssertEqual(editor.value, 7)
+        XCTAssertEqual(editor.text, "7")
+        oldTick()
+        XCTAssertEqual(node.attempts, [2])
+        node.behavior = .exact
+        scheduler.runAll()
+        model.savePreset(to: fixture.url("rejected-immediate-pending.tnf"))
+        XCTAssertEqual(try fixture.exportedValue("rejected-immediate-pending.tnf"), 7)
+        XCTAssertEqual(node.attempts, [2, 7])
+        XCTAssertEqual(editor.value, 7)
+    }
+
     func test_vm_coalescing_finish_and_repeated_drag_deliver_each_latest_value_once() throws {
         let model = makeModel()
         let node = try fixture.node(in: model)
