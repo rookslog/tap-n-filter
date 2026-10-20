@@ -54,7 +54,7 @@ jobs:
         run: |
           swift run -c debug --skip-build tap-n-filter-a11y-dump
           test -s test-artifacts/phase-3-accessibility-tree.json
-          test -s test-artifacts/phase-3-accessibility-preset.json
+          test -s test-artifacts/phase-3-accessibility-diagnostics.json
 
       - name: Validate regenerated preset accessibility evidence
         if: matrix.os == 'macos-26'
@@ -67,7 +67,7 @@ jobs:
           name: preset-accessibility-${{ github.sha }}
           path: |
             test-artifacts/phase-3-accessibility-tree.json
-            test-artifacts/phase-3-accessibility-preset.json
+            test-artifacts/phase-3-accessibility-diagnostics.json
           if-no-files-found: error
           retention-days: 7
 
