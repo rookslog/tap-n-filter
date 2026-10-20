@@ -58,7 +58,9 @@ jobs:
 
       - name: Validate regenerated diagnostics accessibility evidence
         if: matrix.os == 'macos-26'
-        run: swift test -c debug --skip-build --filter AccessibilityTreeTests
+        run: |
+          swift test -c debug --skip-build --filter AccessibilityTreeTests
+          git diff --exit-code -- test-artifacts/phase-3-accessibility-tree.json
 
       - name: Upload diagnostics accessibility evidence
         if: ${{ !cancelled() && matrix.os == 'macos-26' && steps.diagnostics-a11y.outcome == 'success' }}
