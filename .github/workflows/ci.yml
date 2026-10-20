@@ -55,6 +55,7 @@ jobs:
           swift run -c debug --skip-build tap-n-filter-a11y-dump
           test -s test-artifacts/phase-3-accessibility-tree.json
           test -s test-artifacts/phase-3-accessibility-diagnostics.json
+          test -s test-artifacts/phase-3-accessibility-panel.png
 
       - name: Validate regenerated parameter accessibility controls
         if: matrix.os == 'macos-26'
@@ -72,6 +73,7 @@ jobs:
           path: |
             test-artifacts/phase-3-accessibility-tree.json
             test-artifacts/phase-3-accessibility-diagnostics.json
+            test-artifacts/phase-3-accessibility-panel.png
           if-no-files-found: error
           retention-days: 7
 
