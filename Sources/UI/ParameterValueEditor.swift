@@ -184,7 +184,19 @@ final class ParameterValueEditor: ObservableObject {
               result.applicationSerial > latestApplicationSerial else { return }
         latestApplicationSerial = result.applicationSerial
         authoritativeActual = result.actualValue
-        guard let actual = result.actualValue else { return }
+        guard let actual = result.actualValue else {
+            guard result.outcome == .applied,
+                  result.intentRevision >= latestSubmittedRevision else { return }
+            // Accepted presentation is not measured actual. Repair cancelled
+            // intent without changing a newer draft or its validation error.
+            let accepted = pendingAcceptedValue?() ?? result.requestedValue
+            if isEditing {
+                if !sameValue(value, accepted) { value = accepted }
+            } else {
+                present(accepted)
+            }
+            return
+        }
         if !isEditing, result.intentRevision >= latestSubmittedRevision { present(actual) }
     }
 

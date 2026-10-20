@@ -214,6 +214,15 @@ resyncs text even when it equals the optimistic scalar or matches an older own
 write. No historical float backlog
 suppresses unrelated model changes.
 
+An applied result with nil readback clears authoritative actual state, but may
+reconcile presentation to current pending accepted input or otherwise its request,
+provided its intent revision is not older than the latest submission. This is
+optimistic accepted presentation, not measured actual or a snapshot guarantee.
+During a numeric draft only the backing value changes, preserving text, editing
+intent and validation error so Cancel can restore the accepted value without a
+write. Rejected nil results do not supply this fallback. Later available native
+readback remains authoritative, even when equal to a prior observation or request.
+
 Standalone `ParameterValueEditor` clients without these production hooks retain
 their local coalescer and cancellation semantics: locally queued, not-yet-accepted
 drag input is discarded on exact-edit start, resync or stop. Standalone scheduling
