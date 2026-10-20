@@ -72,3 +72,12 @@ Rejected. The brief excludes new top-level dependencies. The in-process walk is 
 - `docs/decisions/ADR-009-spm-only-project-structure.md` — the no-xcodeproj decision.
 - `Sources/AccessibilityDump/main.swift` — the artifact-producer executable.
 - `Tests/AccessibilityTreeTests/AccessibilityTreeTests.swift` — the CI gate that validates the artifact + source convention.
+
+### 2026-10-20 observed KVC coverage limit
+
+The parameter-controls hosted fixture exposes four AXTextField nodes but omits
+its visible Reset buttons and pre-existing Start/Quit. The same-view native
+cacheDisplay bitmap contains them (run 39425113185; transparent PNG inspected
+over white). Earlier completeness language in this ADR is therefore not a
+current guarantee. KVC structural/field checks and source-label checks cannot
+replace native VoiceOver/focus validation. No new AX permission is requested.

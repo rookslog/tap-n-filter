@@ -189,3 +189,18 @@ User ran the pass against the debug `.app` at
 - `Tests/AccessibilityTreeTests/AccessibilityTreeTests.swift` — CI gate enforcing the structural + source-level invariants.
 - `Sources/AccessibilityDump/main.swift` — the executable that produces the JSON artifact.
 - Phase 3 spec §3.8 — original gate definition.
+
+## 2026-10-20 parameter-control evidence refresh
+
+Hosted run 39425113185, PR head a8036be271d42459ad0b51a4b1df2c9e17d262c6
+(synthetic checkout d3e6a9e2cb9531a94770c87ca5430c469152b5bf), generated the
+committed KVC tree (SHA-256 1424fe65ef873162b207d0118bb2728c7f6e48b794f8d920fd6daad7749da898).
+The same-view 380×700 cacheDisplay PNG contains four exact-value fields and
+four Reset buttons plus Start/Quit when its transparent pixels are presented
+over white. The KVC tree exposes four fields but omits Reset and Start/Quit.
+Thus the new fresh-tree check asserts fields, not an unsupported complete-button
+count. This is a documented reader limit, not proof of native AX correctness.
+Original PNG bytes were retained; white compositing was analysis only and does
+not establish native material fidelity. Historical audit conclusions above are
+not revalidated by this refresh. Native VoiceOver, numeric-field focus/Space,
+menu opening and newest-macOS layout remain required manual evidence.
