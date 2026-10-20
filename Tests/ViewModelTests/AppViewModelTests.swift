@@ -43,12 +43,17 @@ final class AppViewModelTests: XCTestCase {
         )
     }
 
-    private func makeSource(pid: pid_t = 1234, bundleID: String = "com.example.test") -> CaptureSource {
+    private func makeSource(
+        pid: pid_t = 1234,
+        bundleID: String? = "com.example.test",
+        displayName: String = "Test",
+        audioProcessID: UInt32 = 42
+    ) -> CaptureSource {
         CaptureSource(
             pid: pid,
-            audioProcessID: 42,
+            audioProcessID: audioProcessID,
             bundleIdentifier: bundleID,
-            displayName: "Test"
+            displayName: displayName
         )
     }
 
@@ -98,6 +103,186 @@ final class AppViewModelTests: XCTestCase {
         try await Task.sleep(nanoseconds: 100_000_000)
         XCTAssertGreaterThanOrEqual(capture.stopCallCount, 1)
         XCTAssertEqual(model.currentSource?.bundleIdentifier, "com.example.second")
+    }
+
+    // MARK: Source identity
+
+    func test_restore_source_uses_saved_name_instead_of_first_bundle_match() async throws {
+        let first = makeSource(pid: 1, displayName: "Other site")
+        let saved = makeSource(pid: 2, displayName: "Saved site")
+        defaults.set(saved.bundleIdentifier, forKey: AppViewModelDefaultsKey.sourceBundleID)
+        defaults.set(saved.displayName, forKey: "lastSession.sourceDisplayName")
+
+        await assertSourceRestore(candidates: [first, saved], expected: saved)
+    }
+
+    func test_restore_source_leaves_duplicate_bundle_and_name_unselected() async throws {
+        let first = makeSource(pid: 1, displayName: "Saved site")
+        let duplicate = makeSource(pid: 2, displayName: first.displayName)
+        defaults.set(first.bundleIdentifier, forKey: AppViewModelDefaultsKey.sourceBundleID)
+        defaults.set(first.displayName, forKey: "lastSession.sourceDisplayName")
+
+        await assertSourceRestore(candidates: [first, duplicate], expected: nil)
+    }
+
+    func test_restore_source_leaves_ambiguous_legacy_bundle_unselected() async throws {
+        let first = makeSource(pid: 1, displayName: "First site")
+        let second = makeSource(pid: 2, displayName: "Second site")
+        defaults.set(first.bundleIdentifier, forKey: AppViewModelDefaultsKey.sourceBundleID)
+        XCTAssertNil(defaults.object(forKey: "lastSession.sourceDisplayName"))
+
+        await assertSourceRestore(candidates: [first, second], expected: nil)
+    }
+
+    func test_restore_source_restores_unique_legacy_bundle_match() async throws {
+        let unrelated = makeSource(pid: 1, bundleID: "com.example.unrelated")
+        let saved = makeSource(pid: 2)
+        defaults.set(saved.bundleIdentifier, forKey: AppViewModelDefaultsKey.sourceBundleID)
+        XCTAssertNil(defaults.object(forKey: "lastSession.sourceDisplayName"))
+
+        await assertSourceRestore(candidates: [unrelated, saved], expected: saved)
+    }
+
+    func test_restore_source_leaves_missing_saved_name_unselected() async throws {
+        let other = makeSource(pid: 1, displayName: "Other site")
+        defaults.set(other.bundleIdentifier, forKey: AppViewModelDefaultsKey.sourceBundleID)
+        defaults.set("Missing site", forKey: "lastSession.sourceDisplayName")
+
+        await assertSourceRestore(candidates: [other], expected: nil)
+    }
+
+    func test_setSource_persists_display_name_alongside_bundle() async throws {
+        let model = makeViewModel()
+        let source = makeSource(displayName: "Saved site")
+        model.setSource(source)
+
+        await waitFor(model: model) { _ in
+            self.defaults.string(forKey: AppViewModelDefaultsKey.sourceBundleID) == source.bundleIdentifier
+        }
+        XCTAssertEqual(defaults.string(forKey: "lastSession.sourceDisplayName"), source.displayName)
+    }
+
+    func test_setSource_persists_name_change_within_same_bundle() async throws {
+        let first = makeSource(pid: 1, displayName: "First site")
+        let second = makeSource(pid: 2, displayName: "Second site")
+        defaults.set(first.bundleIdentifier, forKey: AppViewModelDefaultsKey.sourceBundleID)
+        defaults.set(first.displayName, forKey: "lastSession.sourceDisplayName")
+        let model = makeViewModel()
+        model.setSource(first)
+        model.setSource(second)
+
+        await waitFor(model: model) { _ in
+            self.defaults.string(forKey: "lastSession.sourceDisplayName") == second.displayName
+        }
+        XCTAssertEqual(defaults.string(forKey: AppViewModelDefaultsKey.sourceBundleID), second.bundleIdentifier)
+    }
+
+    func test_powerOn_source_identity_prefers_live_pid_over_matching_bundle_and_name() async throws {
+        let selected = makeSource(pid: 1, displayName: "Saved site")
+        let other = makeSource(pid: 2, displayName: selected.displayName)
+        let live = makeSource(pid: selected.pid, displayName: selected.displayName, audioProcessID: 99)
+
+        await assertSourceResolution(selected: selected, candidates: [other, live], expected: live)
+    }
+
+    func test_powerOn_source_identity_resolves_changed_pid_by_unique_bundle_and_name() async throws {
+        let selected = makeSource(pid: 1, displayName: "Saved site")
+        let other = makeSource(pid: 2, displayName: "Other site")
+        let relaunched = makeSource(pid: 3, displayName: selected.displayName, audioProcessID: 99)
+
+        await assertSourceResolution(selected: selected, candidates: [other, relaunched], expected: relaunched)
+    }
+
+    func test_powerOn_source_identity_rejects_duplicate_bundle_and_name() async throws {
+        let selected = makeSource(pid: 1, displayName: "Saved site")
+        let first = makeSource(pid: 2, displayName: selected.displayName)
+        let duplicate = makeSource(pid: 3, displayName: selected.displayName)
+
+        await assertSourceResolution(selected: selected, candidates: [first, duplicate], expected: nil)
+    }
+
+    func test_powerOn_source_identity_rejects_bundle_match_with_different_name() async throws {
+        let selected = makeSource(pid: 1, displayName: "Saved site")
+        let unrelated = makeSource(pid: 2, displayName: "Other site")
+
+        await assertSourceResolution(selected: selected, candidates: [unrelated], expected: nil)
+    }
+
+    func test_powerOn_source_identity_rejects_unrelated_bundleless_process() async throws {
+        let selected = makeSource(pid: 1, bundleID: nil)
+        let unrelated = makeSource(pid: 2, bundleID: nil)
+
+        await assertSourceResolution(selected: selected, candidates: [unrelated], expected: nil)
+    }
+
+    func test_powerOn_source_identity_allows_bundleless_live_pid() async throws {
+        let selected = makeSource(pid: 1, bundleID: nil)
+        let unrelated = makeSource(pid: 2, bundleID: nil)
+        let live = makeSource(pid: selected.pid, bundleID: nil, audioProcessID: 99)
+
+        await assertSourceResolution(selected: selected, candidates: [unrelated, live], expected: live)
+    }
+
+    func test_powerOn_source_identity_rejects_empty_bundle_fallback() async throws {
+        let selected = makeSource(pid: 1, bundleID: "")
+        let unrelated = makeSource(pid: 2, bundleID: "")
+
+        await assertSourceResolution(selected: selected, candidates: [unrelated], expected: nil)
+    }
+
+    /// Observes both enumeration and selection. An inverted expectation gives
+    /// negative restore assertions a bounded async observation window rather
+    /// than treating the initial nil value as a completed restore.
+    private func assertSourceRestore(candidates: [CaptureSource], expected: CaptureSource?) async {
+        let capture = MockCaptureController()
+        capture.availableSourcesResult = candidates
+        let model = makeViewModel(capture: capture)
+        let enumerated = expectation(description: "Live sources published")
+        let selected = expectation(description: "Source restored")
+        selected.isInverted = expected == nil
+        let sourcesSubscription = model.$availableSources
+            .filter { $0 == candidates }
+            .first()
+            .sink { _ in enumerated.fulfill() }
+        let selectionSubscription = model.$currentSource
+            .compactMap { $0 }
+            .first()
+            .sink { _ in selected.fulfill() }
+
+        await fulfillment(of: [enumerated, selected], timeout: 1.0)
+        XCTAssertEqual(model.currentSource, expected)
+        XCTAssertTrue(capture.startCalls.isEmpty, "Restore must not start capture")
+        withExtendedLifetime((sourcesSubscription, selectionSubscription)) {}
+    }
+
+    /// Stop at the mock's start boundary, before source-node or engine setup.
+    /// The recorded argument proves resolution independently of audio hardware.
+    private func assertSourceResolution(
+        selected: CaptureSource,
+        candidates: [CaptureSource],
+        expected: CaptureSource?
+    ) async {
+        let capture = MockCaptureController()
+        capture.availableSourcesResult = candidates
+        capture.startError = .tapCreationFailed(-1)
+        let model = makeViewModel(capture: capture)
+        model.setSource(selected)
+
+        await model.powerOn()
+
+        XCTAssertEqual(capture.startCalls.map { $0.0 }, expected.map { [$0] } ?? [])
+        if expected == nil {
+            let error = model.lastError
+            XCTAssertNotNil(error, "A rejected source must explain how to recover")
+            XCTAssertTrue(
+                error?.userMessage.localizedCaseInsensitiveContains("source") == true,
+                "The error should identify the source selection problem"
+            )
+            XCTAssertTrue(
+                error?.userMessage.localizedCaseInsensitiveContains("again") == true,
+                "The error should direct the user to choose a source again"
+            )
+        }
     }
 
     // MARK: Persistence round-trip
