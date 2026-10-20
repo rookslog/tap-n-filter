@@ -4,8 +4,7 @@ import Graph
 @testable import ViewModel
 import XCTest
 
-/// Stage A proposed view-model surface: canUndoRemoval, lastRemovedEffectName,
-/// undoLastRemoval(). Missing members are structural red, not behavioral red.
+/// One-level removal recovery preserves effect state without replacing the graph.
 @MainActor
 final class UndoRemovalTests: RemovalTestCase {
     func test_undo_without_a_removal_is_unavailable_and_a_no_op() throws {
@@ -197,6 +196,18 @@ final class UndoRemovalTests: RemovalTestCase {
         XCTAssertEqual(states(model), before)
     }
 
+    func test_no_op_move_preserves_valid_removal() throws {
+        let model = try makeModel()
+        let before = states(model)
+        model.removeEffect(at: 1)
+        model.moveEffect(from: 0, to: 0)
+
+        XCTAssertNil(model.lastError)
+        XCTAssertTrue(model.canUndoRemoval)
+        model.undoLastRemoval()
+        XCTAssertEqual(states(model), before)
+    }
+
     func test_factory_preset_graph_replacement_invalidates_removal() throws {
         let model = try makeModel()
         model.removeEffect(at: 1)
@@ -253,6 +264,56 @@ final class UndoRemovalTests: RemovalTestCase {
         XCTAssertTrue(model.canUndoRemoval)
         model.undoLastRemoval()
         XCTAssertEqual(states(model), before)
+    }
+
+    func test_failed_capture_disables_undo_without_consuming_the_record() async throws {
+        let capture = MockCaptureController()
+        let model = try makeModel(capture: capture)
+        let before = states(model)
+        model.removeEffect(at: 1)
+        let afterRemoval = states(model)
+        let failure = CaptureState.failed(.permissionDenied)
+        capture.simulateState(failure)
+        await waitForState(failure, model: model)
+
+        XCTAssertFalse(model.canUndoRemoval)
+        XCTAssertEqual(model.lastRemovedEffectName, before[1].displayName)
+        model.undoLastRemoval()
+        XCTAssertEqual(states(model), afterRemoval)
+
+        capture.simulateState(.idle)
+        await waitForState(.idle, model: model)
+        model.clearError()
+        XCTAssertTrue(model.canUndoRemoval)
+        model.undoLastRemoval()
+        XCTAssertEqual(states(model), before)
+    }
+
+    /// Publisher-only state coverage; the engine remains stopped throughout.
+    func test_simulated_running_capture_allows_removal_recovery_with_stopped_engine() async throws {
+        let capture = MockCaptureController()
+        let model = try makeModel(capture: capture)
+        let before = states(model)
+        let source = CaptureSource(
+            pid: 1234,
+            audioProcessID: 42,
+            bundleIdentifier: "com.example.undo-test",
+            displayName: "Undo test"
+        )
+        let running = CaptureState.running(source: source)
+        capture.simulateState(running)
+        await waitForState(running, model: model)
+
+        XCTAssertFalse(model.engineIsRunning)
+        model.removeEffect(at: 1)
+        XCTAssertTrue(model.canUndoRemoval)
+        model.undoLastRemoval()
+
+        XCTAssertEqual(states(model), before)
+        XCTAssertFalse(model.engineIsRunning)
+        XCTAssertNil(model.lastError)
+        XCTAssertTrue(capture.startCalls.isEmpty)
+        XCTAssertEqual(capture.stopCallCount, 0)
     }
 
     private func assertRoundTrip(types: [String], index: Int) throws {

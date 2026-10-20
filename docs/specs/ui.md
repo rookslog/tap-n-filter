@@ -31,6 +31,7 @@ ControlPanelView
 │  ├─ EffectRow (for each node)
 │  │  ├─ Header (name, bypass toggle, wet/dry slider, expand chevron, remove)
 │  │  └─ EffectControlsView (when expanded)
+│  ├─ Removal recovery row (last removed name, Undo Remove, when available)
 │  └─ AddEffectButton
 ├─ Divider
 └─ FooterView
@@ -60,6 +61,9 @@ public final class AppViewModel: ObservableObject {
     public func powerOff() async
     public func addEffect(of typeIdentifier: String)
     public func removeEffect(at index: Int)
+    public var canUndoRemoval: Bool { get }
+    public var lastRemovedEffectName: String? { get }
+    public func undoLastRemoval()
     public func moveEffect(from: Int, to: Int)
     public func updateParameter(nodeID: UUID, paramID: String, value: Float)
     public func savePreset(to url: URL)
@@ -112,6 +116,31 @@ Menu("Add Effect") {
 
 The menu's contents are sourced from `EffectNodeRegistry.shared`, so adding a new effect type to the registry automatically adds it to the menu.
 
+### Removal recovery
+
+After a successful removal, a compact recovery row appears between the effect
+list's `ScrollView` and Add Effect. It displays the last removed effect's name
+and a labelled **Undo Remove** button with its **⌥⌘Z** shortcut. The row remains
+outside the scrolling list, including when the chain is empty. Recovery does
+not expire on a timer, and ordinary Command-Z remains available to text fields.
+
+The view model retains one `EffectState` and its original index. Undo restores
+the effect's UUID, type, name, parameters, bypass, wet/dry mix and extras through
+the existing indexed Graph insertion API and `mutateGraph` lifecycle. It leaves
+survivor parameter/mix/bypass edits and output trim unchanged. A new successful
+removal replaces the previous record. A successful add, an actual reorder, or
+graph replacement by a preset invalidates it; a new session starts without an
+undo record. A no-op move or a failed remove/add/move/load leaves a still-valid
+record intact.
+
+The recovery row remains visible but its action is disabled during capture
+start/stop transitions, failed capture, a stalled engine or an outstanding
+engine error, and while a stopped graph is still attached. Reconstruction or
+insertion failure retains the record for retry. Successful insertion consumes
+it even if the subsequent engine restart fails, so another undo cannot insert
+a duplicate. Dismissing an error does not repair an engine or detached chain;
+normal power recovery still applies.
+
 ## EffectRow
 
 ```
@@ -126,7 +155,7 @@ The menu's contents are sourced from `EffectNodeRegistry.shared`, so adding a ne
 └──────────────────────────────────────┘
 ```
 
-The chevron toggles expansion. The bypass toggle is a small SwiftUI `Toggle` styled minimally. The wet/dry slider is visible by default for nodes whose effect is time-domain (e.g., reverb, future delay, future distortion) — for these the wet/dry control is the most-used adjustment. For nodes whose effect is spectral-shaping (e.g., EQ), the wet/dry slider is hidden by default and accessible only via the expanded controls panel; the rationale is that wet/dry on an EQ at any value other than 1.0 partially defeats the filter, which is rarely what a user adjusting the slider expects. The trash icon removes the effect with confirmation (or with undo via a toast — V1 implements confirmation modal).
+The chevron toggles expansion. The bypass toggle is a small SwiftUI `Toggle` styled minimally. The wet/dry slider is visible by default for nodes whose effect is time-domain (e.g., reverb, future delay, future distortion) — for these the wet/dry control is the most-used adjustment. For nodes whose effect is spectral-shaping (e.g., EQ), the wet/dry slider is hidden by default and accessible only via the expanded controls panel; the rationale is that wet/dry on an EQ at any value other than 1.0 partially defeats the filter, which is rarely what a user adjusting the slider expects. The minus-circle button removes the effect immediately; the persistent Undo Remove row provides one-level recovery.
 
 The decision of "show wet/dry by default" is per-node. Each `EffectNode` exposes a static property `showsWetDryByDefault: Bool` (default `true`) that the UI consults when rendering the `EffectRow` header. `EQNode` overrides this to `false`; `ReverbNode` uses the default `true`. See `docs/decisions/ADR-007-wet-dry-on-eq.md`.
 
@@ -209,6 +238,8 @@ Keyboard navigation:
 - Arrow keys adjust sliders (in increments of 1% of the range).
 - Space toggles `Toggle`s and presses focused `Button`s.
 - Cmd+S saves preset, Cmd+O opens preset (when the menubar window has focus).
+- Cmd+Option+Z restores the last removed effect while Undo Remove is enabled;
+  its button is also reachable by Tab and announces the removed effect in its hint.
 
 VoiceOver audit: the orchestrator runs the app with VoiceOver enabled, reads through every control, and documents any rough edges in `docs/audits/verification/phase-3-accessibility.md`.
 
@@ -220,4 +251,14 @@ V1 ships English-only. All user-facing strings live in `Localizable.strings`. No
 
 - **Snapshot tests** under `Tests/UISnapshotTests/`. Capture `ControlPanelView` in three states (idle, running, failed) and compare against pinned baselines. macOS version pinned in CI.
 - **View model unit tests** under `Tests/ViewModelTests/`. Tests for state transitions, persistence round-trip, error propagation. Uses a `MockCaptureController` and a fresh `AVAudioEngine`.
+- **Removal recovery tests**: `RemovalBaselineTests` and `UndoRemovalTests`
+  cover indexed state restoration, one-level invalidation, failed edits,
+  reconstruction retry, survivor changes and capture-state gating. Simulated
+  running state uses a stopped engine and is not live-engine evidence.
 - **Manual checks** documented in the Phase 3 verification report: source change while running, add/remove/reorder effects with audio flowing, save preset → quit → relaunch → load preset → verify identical graph.
+- **Undo manual/layout gate** before merge: open the actual menu on the
+  maintainer's newest macOS; remove first/last/only effects and remove from a
+  scrolling chain; verify the recovery row stays visible, long names do not
+  hide the action, the effect list still renders and scrolls, Tab/VoiceOver
+  reaches Undo Remove, and Command-Option-Z restores without stealing text-field
+  Command-Z. Verify disabled/retry behavior during transitions and failures.

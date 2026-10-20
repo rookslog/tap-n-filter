@@ -147,7 +147,7 @@ public struct EffectRow: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Remove \(node.displayName)")
-        .accessibilityHint("Delete this effect from the chain.")
+        .accessibilityHint("Remove this effect. Use Undo Remove or Command-Option-Z to restore it.")
     }
 
     private var isExpanded: Bool {

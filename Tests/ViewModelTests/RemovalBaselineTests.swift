@@ -3,7 +3,7 @@ import Graph
 @testable import ViewModel
 import XCTest
 
-/// Existing-API baselines, separable from UndoRemovalTests for root's first test leg.
+/// Baselines for removal and indexed single-effect restoration through existing Graph APIs.
 @MainActor
 final class RemovalBaselineTests: RemovalTestCase {
     func test_remove_preserves_survivor_identity_order_state_and_output_gain() throws {
