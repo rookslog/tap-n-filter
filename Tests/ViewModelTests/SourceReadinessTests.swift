@@ -6,11 +6,9 @@ import Graph
 import ViewModel
 import XCTest
 
-/// Proposed Stage B seam: `isPowerActionEnabled` and
-/// `sourceReadinessMessage` are computed AppViewModel properties, not present
-/// at Stage A. Until implemented, this file is a structural red only.
-/// PowerToggle must consume this policy; these tests do not inspect SwiftUI
-/// rendering, help modifiers, or VoiceOver delivery.
+/// Readiness policy exposed by AppViewModel's `isPowerActionEnabled` and
+/// `sourceReadinessMessage`. PowerToggle consumes this policy; these tests
+/// do not inspect SwiftUI rendering, help modifiers, or VoiceOver delivery.
 @MainActor
 final class SourceReadinessTests: XCTestCase {
 

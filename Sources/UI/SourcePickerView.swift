@@ -57,9 +57,20 @@ public struct SourcePickerView: View {
             }
             .labelsHidden()
             .disabled(isInTransition)
+            .help(viewModel.sourceReadinessMessage ?? "Pick which app's audio to capture.")
             .accessibilityLabel("Audio source")
             .accessibilityValue(viewModel.currentSource?.displayName ?? "None")
-            .accessibilityHint("Pick which app's audio to capture. Changing while running stops capture.")
+            .accessibilityHint(
+                viewModel.sourceReadinessMessage
+                ?? "Pick which app's audio to capture. Changing while running stops capture."
+            )
+
+            if let message = viewModel.sourceReadinessMessage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 

@@ -6,8 +6,8 @@ import Graph
 import ViewModel
 import XCTest
 
-/// Existing-API behavioral expectations, kept separate from the proposed
-/// readiness-helper tests so root can publish this baseline independently.
+/// Plain-wording and recovery contracts, including preservation of useful
+/// failure details. Published as the behavioral baseline before implementation.
 final class AppErrorPresentationTests: XCTestCase {
 
     func test_domain_errors_use_plain_wording_and_preserve_the_reason() {
