@@ -98,7 +98,9 @@ final class PresetContinuityReceiptTests: XCTestCase {
         node.preset = .smallRoom
         XCTAssertTrue(model.isPresetModified)
         node.preset = .largeHall
-        XCTAssertFalse(model.isPresetModified)
+        let priorReceiptIDs = receiptIDs(in: model.debugLog)
+        let actualModified = model.isPresetModified
+        XCTAssertFalse(actualModified, freshReceipt(in: model.debugLog, excluding: priorReceiptIDs, caseCode: 1))
     }
 
     func test_rejected_edits_source_and_diagnostic_drawers_do_not_dirty_graph() throws {
@@ -249,7 +251,9 @@ final class PresetContinuityReceiptTests: XCTestCase {
         XCTAssertEqual(restored.presetName, "Restored Session")
         XCTAssertNil(restored.presetFileURL)
         XCTAssertEqual(restored.graph.nodes[0].parameterValue("gain"), -9)
-        XCTAssertFalse(restored.isPresetModified)
+        let priorReceiptIDs = receiptIDs(in: restored.debugLog)
+        let actualModified = restored.isPresetModified
+        XCTAssertFalse(actualModified, freshReceipt(in: restored.debugLog, excluding: priorReceiptIDs, caseCode: 2))
     }
 
     func test_partial_recovery_retains_name_and_visible_warnings_but_is_not_a_direct_save_target() throws {
@@ -313,5 +317,114 @@ final class PresetContinuityReceiptTests: XCTestCase {
         XCTAssertEqual(model.presetFileURL, original)
         XCTAssertFalse(model.isPresetModified)
         XCTAssertTrue(model.presetWarnings.isEmpty)
+    }
+
+    // Store-only receipt selection. IDs stay internal; no graph/native reads or subscriptions.
+    private func receiptIDs(in store: DebugLogStore) -> Set<UUID> {
+        Set(store.entries.filter {
+            $0.source == "AppViewModel" && $0.message.hasPrefix("[TNF-DIRTY61]")
+        }.map { $0.id })
+    }
+
+    private func freshReceipt(in store: DebugLogStore, excluding priorIDs: Set<UUID>, caseCode: Int) -> String {
+        let prefix: String
+        switch caseCode {
+        case 1: prefix = "case=1reverbrevert "
+        case 2: prefix = "case=2restored "
+        default: return "receipt unavailable"
+        }
+        let unavailable = prefix + "receipt unavailable"
+        let fresh = store.entries.filter {
+            !priorIDs.contains($0.id) && $0.source == "AppViewModel"
+                && $0.message.hasPrefix("[TNF-DIRTY61]")
+        }
+        guard fresh.count == 1, let message = fresh.first?.message,
+              prefix.utf8.count + message.utf8.count <= 8192,
+              message.utf8.allSatisfy({ $0 >= 32 && $0 <= 126 }),
+              strictReceipt(message) else { return unavailable }
+        return prefix + message
+    }
+
+    // Closed schema predicate retained verbatim from the immutable control file.
+    private func strictReceipt(_ message: String) -> Bool {
+        guard message.utf8.count <= 8192 else { return false }
+        let words = message.components(separatedBy: " ")
+        guard words.count >= 4, words[0] == "[TNF-DIRTY61]",
+              words[1] == "schema=1", words[3] == "modified=1" else { return false }
+        var fields: [String: String] = [:]
+        for word in words.dropFirst() {
+            let pair = word.components(separatedBy: "=")
+            guard pair.count == 2, !pair[0].isEmpty, !pair[1].isEmpty,
+                  fields.updateValue(pair[1], forKey: pair[0]) == nil else { return false }
+        }
+        func decimal(_ key: String) -> Int? {
+            guard let raw = fields[key], let value = Int(raw), value >= 0,
+                  String(value) == raw else { return nil }
+            return value
+        }
+        func hex(_ key: String, width: Int) -> UInt64? {
+            guard let raw = fields[key], raw.count == width,
+                  raw.allSatisfy({ ("0"..."9").contains($0) || ("a"..."f").contains($0) }) else {
+                return nil
+            }
+            return UInt64(raw, radix: 16)
+        }
+        func flag(_ key: String) -> Bool {
+            fields[key] == "0" || fields[key] == "1"
+        }
+        guard let rawCall = fields["call"], let call = UInt64(rawCall), call > 0,
+              String(call) == rawCall, words[2] == "call=\(rawCall)",
+              hex("gain.c", width: 8) != nil, hex("gain.b", width: 8) != nil, flag("gain.eq"),
+              let current = decimal("nodes.c"), let baseline = decimal("nodes.b"),
+              fields["overflow"] == (max(current, baseline) > 16 ? "1" : "0") else { return false }
+        var allowed: Set<String> = [
+            "schema", "call", "modified", "gain.c", "gain.b", "gain.eq", "nodes.c", "nodes.b", "overflow",
+        ]
+        let suffixes = ["f", "kc", "kb", "mix.c", "mix.b", "mix.eq", "pc", "pb", "xc", "xb", "kpc", "kpb"]
+        for slot in 0..<min(max(current, baseline), 16) {
+            let prefix = "n\(slot)."
+            for suffix in suffixes { allowed.insert(prefix + suffix) }
+            guard let bits = hex(prefix + "f", width: 4), bits <= 0x0fff,
+                  let kc = decimal(prefix + "kc"), kc <= 3,
+                  let kb = decimal(prefix + "kb"), kb <= 3,
+                  hex(prefix + "mix.c", width: 8) != nil,
+                  hex(prefix + "mix.b", width: 8) != nil, flag(prefix + "mix.eq") else { return false }
+            let currentExists = slot < current
+            let baselineExists = slot < baseline
+            guard (bits & 1 != 0) == currentExists,
+                  (bits & 2 != 0) == baselineExists else { return false }
+            if !currentExists || !baselineExists {
+                // All correspondence/equality bits need two present sides.
+                guard bits & 0x0f9c == 0, fields[prefix + "mix.eq"] == "0" else { return false }
+            }
+            for (side, kind, exists, parameterKey, extraKey, maskKey, bypassBit) in [
+                ("c", kc, currentExists, "pc", "xc", "kpc", UInt64(0x20)),
+                ("b", kb, baselineExists, "pb", "xb", "kpb", UInt64(0x40)),
+            ] {
+                guard let parameters = decimal(prefix + parameterKey),
+                      let extras = decimal(prefix + extraKey),
+                      let mask = hex(prefix + maskKey, width: 2) else { return false }
+                let maximum: UInt64 = kind == 1 ? 1 : (kind == 2 ? 15 : 0)
+                guard mask <= maximum, mask.nonzeroBitCount <= parameters else { return false }
+                if !exists {
+                    guard kind == 0, parameters == 0, extras == 0, mask == 0,
+                          fields[prefix + "mix." + side] == "00000000",
+                          bits & bypassBit == 0 else { return false }
+                }
+                if kind == 1 || kind == 2 {
+                    for index in 0..<(kind == 1 ? 1 : 4) {
+                        let key = prefix + "v\(index)" + side
+                        allowed.insert(key)
+                        guard hex(key, width: 8) != nil else { return false }
+                        if mask & (UInt64(1) << index) == 0 && fields[key] != "00000000" { return false }
+                    }
+                } else if kind == 3 {
+                    let key = prefix + "r" + side
+                    allowed.insert(key)
+                    guard let preset = decimal(key), preset <= 13 else { return false }
+                }
+            }
+        }
+        return Set(fields.keys) == allowed
     }
 }

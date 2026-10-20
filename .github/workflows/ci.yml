@@ -1,12 +1,16 @@
-name: CI
+name: Dirty comparison diagnostic (noncandidate)
 
 on:
   pull_request:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   matrix-build:
+    if: ${{ false }}
     name: Build and test on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -95,7 +99,7 @@ jobs:
     needs: matrix-build
     # `always()` so a failed or cancelled leg still produces a reported
     # conclusion here rather than leaving the required check pending forever.
-    if: always()
+    if: ${{ false }}
 
     steps:
       - name: Verify every matrix leg passed
@@ -113,7 +117,7 @@ jobs:
     name: Integration tests (manual)
     runs-on: macos-14
     timeout-minutes: 60
-    if: github.event_name == 'workflow_dispatch'
+    if: ${{ false }}
 
     steps:
       - name: Check out
@@ -128,3 +132,52 @@ jobs:
         env:
           RUN_INTEGRATION_TESTS: "1"
         run: swift test -c debug --filter CaptureIntegrationTests
+
+  dirty-comparison-diagnostic:
+    name: Noncandidate dirty comparison witnesses
+    # This branch is diagnostic-only and must never merge into a candidate/main.
+    if: >-
+      ${{ github.event_name == 'pull_request' &&
+          github.repository == 'rookslog/tap-n-filter' &&
+          github.event.pull_request.head.repo.full_name == 'rookslog/tap-n-filter' &&
+          github.head_ref == 'codex/tnf-native-diagnostic-tests-r2-20261020' &&
+          github.base_ref == 'codex/tnf-plan10-preset-continuity-20261020' &&
+          github.event.pull_request.base.sha == '61be30cb67556fe1cd4755feba357de21d744854' &&
+          github.event.pull_request.draft == true }}
+    runs-on: macos-15
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      RUN_INTEGRATION_TESTS: "0"
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+      EXPECTED_BASE: 61be30cb67556fe1cd4755feba357de21d744854
+      EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+      EVENT_MERGE: ${{ github.sha }}
+      EXECUTING_WORKFLOW_REF: ${{ github.workflow_ref }}
+      EXECUTING_WORKFLOW_SHA: ${{ github.workflow_sha }}
+    steps:
+      - name: Check out exact diagnostic head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - name: Show exact head and toolchain
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$EVENT_BASE" = "$EXPECTED_BASE"
+          echo "event-base=$EVENT_BASE"
+          echo "event-merge=$EVENT_MERGE"
+          echo "executing-workflow-ref=$EXECUTING_WORKFLOW_REF"
+          echo "executing-workflow-sha=$EXECUTING_WORKFLOW_SHA"
+          git rev-parse HEAD
+          xcodebuild -version
+          swift --version
+      - name: Collect 12 control and 2 native receipts (noncandidate; reproduction not assumed)
+        shell: bash
+        run: swift test -c debug --filter '^ViewModelTests[.](DirtyComparisonReceiptTests/[^/]+|PresetContinuityReceiptTests/(test_reverb_extras_are_meaningful_graph_edits|test_autosaved_session_never_restores_export_URL_or_bookmark))$'

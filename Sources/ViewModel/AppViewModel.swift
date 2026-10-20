@@ -166,9 +166,149 @@ public final class AppViewModel: ObservableObject {
     /// A recovered chain can match this baseline while still requiring Save As.
     public var isPresetModified: Bool {
         let current = graph.snapshot()
-        return !Self.presetScalarsMatch(current.outputGain, presetReceipt.baseline.outputGain)
-            || !Self.presetNodesMatch(current.nodes, presetReceipt.baseline.nodes)
+        let baseline = presetReceipt.baseline
+        let modified = !Self.presetScalarsMatch(current.outputGain, baseline.outputGain)
+            || !Self.presetNodesMatch(current.nodes, baseline.nodes)
+        if modified, !dirty61EmissionInFlight, dirty61CallOrdinal < UInt64.max {
+            dirty61EmissionInFlight = true
+            defer { dirty61EmissionInFlight = false }
+            dirty61CallOrdinal += 1
+            logger.info(Self.dirty61Message(current, baseline, call: dirty61CallOrdinal))
+        }
+        return modified
     }
+
+    // BEGIN TNF-DIRTY61 diagnostic-only
+    // Noncandidate capture: only the ordinal survives the getter. Exhaustion
+    // suppresses further receipts without wrapping or changing the actual Bool.
+    private var dirty61CallOrdinal: UInt64 = 0
+    // Suppress synchronous observer re-emission, never its snapshot/comparison.
+    private var dirty61EmissionInFlight = false
+
+    private static func dirty61Hex(_ value: UInt32, width: Int) -> String {
+        let digits = String(value, radix: 16)
+        return String(repeating: "0", count: max(0, width - digits.count)) + digits
+    }
+
+    private static func dirty61Kind(_ state: EffectState?) -> Int {
+        switch state?.typeIdentifier {
+        case "tnf.gain": return 1
+        case "tnf.eq": return 2
+        case "tnf.reverb": return 3
+        default: return 0
+        }
+    }
+
+    private static func dirty61Preset(_ state: EffectState?) -> Int {
+        guard let value = state?.extras["preset"], case .string(let name) = value else { return 0 }
+        switch name {
+        case "smallRoom": return 1
+        case "mediumRoom": return 2
+        case "largeRoom": return 3
+        case "largeRoom2": return 4
+        case "mediumHall": return 5
+        case "mediumHall2": return 6
+        case "mediumHall3": return 7
+        case "largeHall": return 8
+        case "largeHall2": return 9
+        case "plate": return 10
+        case "mediumChamber": return 11
+        case "largeChamber": return 12
+        case "cathedral": return 13
+        default: return 0
+        }
+    }
+
+    // Keys and positions are a literal allowlist, never a live parameter catalog.
+    private static func dirty61Known(_ state: EffectState?, kind: Int) -> (mask: UInt32, bits: [UInt32]) {
+        let keys: [String]
+        switch kind {
+        case 1: keys = ["gain"]
+        case 2: keys = ["hp.frequency", "hp.Q", "lp.frequency", "lp.Q"]
+        default: keys = []
+        }
+        var mask: UInt32 = 0
+        var bits: [UInt32] = []
+        for (index, key) in keys.enumerated() {
+            let value = state?.parameters[key]
+            if value != nil { mask |= UInt32(1) << index }
+            bits.append(value?.bitPattern ?? 0)
+        }
+        return (mask, bits)
+    }
+
+    private static func dirty61Flags(_ current: EffectState?, _ baseline: EffectState?) -> UInt32 {
+        var flags: UInt32 = 0
+        if let current {
+            flags |= 1 << 0
+            if current.bypass { flags |= 1 << 5 }
+        }
+        if let baseline {
+            flags |= 1 << 1
+            if baseline.bypass { flags |= 1 << 6 }
+        }
+        guard let current, let baseline else { return flags }
+        if current.id == baseline.id { flags |= 1 << 2 }
+        if current.typeIdentifier == baseline.typeIdentifier { flags |= 1 << 3 }
+        if current.displayName == baseline.displayName { flags |= 1 << 4 }
+        if current.bypass == baseline.bypass { flags |= 1 << 7 }
+        if Set(current.parameters.keys) == Set(baseline.parameters.keys) { flags |= 1 << 8 }
+        if presetParametersMatch(current.parameters, baseline.parameters) { flags |= 1 << 9 }
+        if Set(current.extras.keys) == Set(baseline.extras.keys) { flags |= 1 << 10 }
+        if presetExtrasMatch(current.extras, baseline.extras) { flags |= 1 << 11 }
+        return flags
+    }
+
+    private static func dirty61Message(_ current: GraphPreset, _ baseline: GraphPreset, call: UInt64) -> String {
+        let count = max(current.nodes.count, baseline.nodes.count)
+        var fields = [
+            "[TNF-DIRTY61]", "schema=1", "call=\(call)", "modified=1",
+            "gain.c=\(dirty61Hex(current.outputGain.bitPattern, width: 8))",
+            "gain.b=\(dirty61Hex(baseline.outputGain.bitPattern, width: 8))",
+            "gain.eq=\(presetScalarsMatch(current.outputGain, baseline.outputGain) ? 1 : 0)",
+            "nodes.c=\(current.nodes.count)", "nodes.b=\(baseline.nodes.count)",
+            "overflow=\(count > 16 ? 1 : 0)",
+        ]
+        for index in 0..<min(count, 16) {
+            let c: EffectState? = index < current.nodes.count ? current.nodes[index] : nil
+            let b: EffectState? = index < baseline.nodes.count ? baseline.nodes[index] : nil
+            let kc = dirty61Kind(c)
+            let kb = dirty61Kind(b)
+            let knownC = dirty61Known(c, kind: kc)
+            let knownB = dirty61Known(b, kind: kb)
+            let prefix = "n\(index)."
+            let mixEqual: Bool
+            if let c, let b {
+                mixEqual = presetScalarsMatch(c.wetDryMix, b.wetDryMix)
+            } else {
+                mixEqual = false
+            }
+            fields += [
+                "\(prefix)f=\(dirty61Hex(dirty61Flags(c, b), width: 4))",
+                "\(prefix)kc=\(kc)", "\(prefix)kb=\(kb)",
+                "\(prefix)mix.c=\(dirty61Hex(c?.wetDryMix.bitPattern ?? 0, width: 8))",
+                "\(prefix)mix.b=\(dirty61Hex(b?.wetDryMix.bitPattern ?? 0, width: 8))",
+                "\(prefix)mix.eq=\(mixEqual ? 1 : 0)",
+                "\(prefix)pc=\(c?.parameters.count ?? 0)", "\(prefix)pb=\(b?.parameters.count ?? 0)",
+                "\(prefix)xc=\(c?.extras.count ?? 0)", "\(prefix)xb=\(b?.extras.count ?? 0)",
+                "\(prefix)kpc=\(dirty61Hex(knownC.mask, width: 2))",
+                "\(prefix)kpb=\(dirty61Hex(knownB.mask, width: 2))",
+            ]
+            for (slot, bits) in knownC.bits.enumerated() {
+                fields.append("\(prefix)v\(slot)c=\(dirty61Hex(bits, width: 8))")
+            }
+            for (slot, bits) in knownB.bits.enumerated() {
+                fields.append("\(prefix)v\(slot)b=\(dirty61Hex(bits, width: 8))")
+            }
+            if kc == 3 { fields.append("\(prefix)rc=\(dirty61Preset(c))") }
+            if kb == 3 { fields.append("\(prefix)rb=\(dirty61Preset(b))") }
+        }
+        // All output is ASCII. At Int.max counts / UInt64.max call, sixteen
+        // EQ/EQ slots are the largest shape: 5,504 bytes, below the 8,192 cap.
+        // No truncation, raw fallback, reflection, or arbitrary numeric extras.
+        return fields.joined(separator: " ")
+    }
+    // END TNF-DIRTY61 diagnostic-only
 
     // Dirty-state comparison only: retained diagnostic NaNs are unchanged when
     // their bits match. This does not normalize state or alter import fidelity.
