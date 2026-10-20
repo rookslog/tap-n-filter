@@ -178,6 +178,6 @@ jobs:
           git rev-parse HEAD
           xcodebuild -version
           swift --version
-      - name: Run only diagnostic witnesses (baseline red is expected, not assumed)
+      - name: Collect 12 control and 2 native receipts (noncandidate; reproduction not assumed)
         shell: bash
-        run: swift test -c debug --filter '^ViewModelTests[.]DirtyComparisonReceiptTests/'
+        run: swift test -c debug --filter '^ViewModelTests[.](DirtyComparisonReceiptTests/[^/]+|PresetContinuityReceiptTests/(test_reverb_extras_are_meaningful_graph_edits|test_autosaved_session_never_restores_export_URL_or_bookmark))$'
