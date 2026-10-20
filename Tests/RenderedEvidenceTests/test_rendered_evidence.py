@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import struct
 import unittest
+from unittest.mock import patch
 import zlib
 
 
@@ -196,7 +197,10 @@ class RenderedEvidenceArtifactTests(unittest.TestCase):
         # CI supplies these separately; never infer one from the other.
         for field, env_key in (("checkoutSHA", "TNF_CHECKOUT_SHA"), ("prHeadSHA", "TNF_PR_HEAD_SHA")):
             if env_key in os.environ:
-                self.assertEqual(source[field], os.environ[env_key])
+                expected = os.environ[env_key]
+                if field == "prHeadSHA" and expected == "":
+                    expected = None
+                self.assertEqual(source[field], expected)
         for field in ("macOS", "swift", "xcode"):
             self.assertTrue(manifest["environment"][field].strip(), field)
 
@@ -272,6 +276,53 @@ class RenderedEvidenceArtifactTests(unittest.TestCase):
                 # screenshot baseline; allow two 8-bit levels for conversion.
                 for channel in pixels[:3]:
                     self.assertLessEqual(abs(channel - round(shade * 255)), 2)
+
+
+class MetadataValidatorContractTests(unittest.TestCase):
+    """In-memory metadata inputs invoke the actual artifact validation method.
+
+    No exporter, image, or source JSON file is generated or modified here.
+    """
+
+    def validate_metadata(self, event, head=None, expected_head="", expected_checkout="a" * 40):
+        validator = RenderedEvidenceArtifactTests(
+            "test_manifest_records_checkout_and_pr_head_separately_with_environment"
+        )
+        document = {
+            "source": {
+                "checkoutSHA": "a" * 40,
+                "eventName": event,
+                "ref": "refs/pull/12/merge" if event == "pull_request" else "refs/heads/main",
+                "prHeadSHA": head,
+                "baseSHA": "c" * 40 if event == "pull_request" else None,
+                "baseRef": "main" if event == "pull_request" else None,
+            },
+            "environment": {"macOS": "fixture OS", "swift": "fixture Swift", "xcode": "fixture Xcode"},
+        }
+        expected = {"TNF_CHECKOUT_SHA": expected_checkout, "TNF_PR_HEAD_SHA": expected_head}
+        with patch.dict(os.environ, expected), patch.object(validator, "manifest", return_value=document):
+            validator.test_manifest_records_checkout_and_pr_head_separately_with_environment()
+
+    def test_push_empty_pr_environment_accepts_null_head_metadata(self):
+        self.validate_metadata("push")
+
+    def test_workflow_dispatch_empty_pr_environment_accepts_null_head_metadata(self):
+        self.validate_metadata("workflow_dispatch")
+
+    def test_pull_request_head_matches_environment_separately_from_checkout(self):
+        self.validate_metadata("pull_request", head="b" * 40, expected_head="b" * 40)
+
+    def test_pull_request_head_environment_mismatch_is_rejected(self):
+        with self.assertRaises(AssertionError):
+            self.validate_metadata("pull_request", head="b" * 40, expected_head="d" * 40)
+
+    def test_nonpr_nonempty_expected_head_does_not_accept_null_metadata(self):
+        with self.assertRaises(AssertionError):
+            self.validate_metadata("push", expected_head="b" * 40)
+
+    def test_empty_checkout_environment_is_still_rejected(self):
+        with self.assertRaises(AssertionError):
+            self.validate_metadata("push", expected_checkout="")
 
 
 if __name__ == "__main__":
