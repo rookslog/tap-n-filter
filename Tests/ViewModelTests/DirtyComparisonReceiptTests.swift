@@ -569,6 +569,267 @@ final class DirtyComparisonReceiptTests: XCTestCase {
         }
     }
 
+    func test_one_shot_public_observer_reentry_keeps_actual_dirty_results_and_one_receipt() throws {
+        try withFixture { fixture in
+            fixture.model.graph.outputGain = 0.5
+            let previousIDs = Set(markers(fixture.model).map { $0.id })
+            var publishedIDs = previousIDs
+            var published: [DebugLogEntry] = []
+            var callbackCount = 0
+            var nestedReadCount = 0
+            var nestedResults: [Bool] = []
+            let readLimit = 1
+            let subscription = fixture.model.debugLog.$entries.dropFirst().sink { entries in
+                // Inspect the publisher argument, not the willSet-era stored array.
+                // Record each fresh marker BEFORE re-entry; outer writeback must
+                // not hide a nested publication from the cardinality oracle.
+                let fresh = entries.filter {
+                    $0.source == "AppViewModel" && $0.message.hasPrefix("[TNF-DIRTY61]")
+                        && !publishedIDs.contains($0.id)
+                }
+                guard !fresh.isEmpty else { return }
+                callbackCount += 1
+                for entry in fresh {
+                    publishedIDs.insert(entry.id)
+                    published.append(entry)
+                }
+                // Bound reads before calling the real getter, even on unfixed
+                // source. A nested-publication exclusivity abort is still possible.
+                guard nestedReadCount < readLimit else { return }
+                nestedReadCount += 1
+                let nestedBefore = fixture.nodes.map { $0.snapshotCount }
+                let nestedParameters = fixture.nodes.map { $0.parameterValueReadCount }
+                let nestedOrderStart = fixture.order.slots.count
+                let actualNested = fixture.model.isPresetModified
+                // Do not hold an Array.append mutation across the reentrant getter.
+                nestedResults.append(actualNested)
+                XCTAssertEqual(zip(fixture.nodes.map { $0.snapshotCount }, nestedBefore).map { $0.0 - $0.1 },
+                               [1, 1, 1], "Each nested invocation snapshots all three nodes once")
+                XCTAssertEqual(Array(fixture.order.slots.dropFirst(nestedOrderStart)), [0, 1, 2],
+                               "Nested invocation graph order")
+                XCTAssertEqual(zip(fixture.nodes.map { $0.parameterValueReadCount }, nestedParameters)
+                    .map { $0.0 - $0.1 }, [0, 0, 0], "No nested direct parameter reads")
+            }
+            defer { subscription.cancel() }
+
+            // A separate two-invocation window; the old one-getter probe is unchanged.
+            let before = fixture.nodes.map { $0.snapshotCount }
+            let parameterBefore = fixture.nodes.map { $0.parameterValueReadCount }
+            let orderStart = fixture.order.slots.count
+            let actualOuter = fixture.model.isPresetModified
+            XCTAssertTrue(actualOuter, "Outer returns its already-computed dirty result")
+            XCTAssertEqual(callbackCount, 1, "Exactly one receipt publication callback")
+            XCTAssertEqual(nestedReadCount, 1, "Only the outer receipt triggers a nested read")
+            XCTAssertEqual(nestedResults, [true], "Actual nested getter result, not a cached outer Bool")
+            XCTAssertEqual(zip(fixture.nodes.map { $0.snapshotCount }, before).map { $0.0 - $0.1 },
+                           [2, 2, 2], "Outer and nested invocations each snapshot every node once")
+            XCTAssertEqual(Array(fixture.order.slots.dropFirst(orderStart)), [0, 1, 2, 0, 1, 2],
+                           "Outer snapshot completes before the nested snapshot")
+            XCTAssertEqual(zip(fixture.nodes.map { $0.parameterValueReadCount }, parameterBefore)
+                .map { $0.0 - $0.1 }, [0, 0, 0], "No direct parameter reads in either invocation")
+            let retained = markers(fixture.model).filter { !previousIDs.contains($0.id) }
+            assertReceipt(published, count: 1)
+            assertReceipt(retained, count: 1)
+            XCTAssertEqual(Set(published.map { $0.id }), Set(retained.map { $0.id }),
+                           "The single published marker is retained")
+            for stream in [published, retained] {
+                assertBounds(stream, currentNodes: 3, baselineNodes: 3)
+                assertFixtureSlots(stream)
+                assertTokens(stream, expected: [
+                    "gain.c": "3f000000", "gain.b": "3f400000", "gain.eq": "0",
+                ])
+            }
+
+            subscription.cancel()
+            let later = probe(fixture, modified: true)
+            assertReceipt(later, count: 1)
+            let firstOrdinal = try XCTUnwrap(published.first.flatMap { ordinal($0.message) })
+            let laterOrdinal = try XCTUnwrap(later.first.flatMap { ordinal($0.message) })
+            XCTAssertLessThan(firstOrdinal, UInt64.max, "Finite fixture leaves ordinal capacity")
+            if firstOrdinal < UInt64.max {
+                XCTAssertEqual(laterOrdinal, firstOrdinal + 1,
+                               "Emission resets after return; nested reads allocate no ordinal")
+            }
+            XCTAssertEqual(markers(fixture.model).count, previousIDs.count + 2,
+                           "Exactly the outer and later independent dirty receipts")
+        }
+    }
+
+    func test_bounded_repeated_public_observer_reentry_emits_only_outer_receipt() throws {
+        try withFixture { fixture in
+            fixture.model.graph.outputGain = 0.5
+            let previousIDs = Set(markers(fixture.model).map { $0.id })
+            var publishedIDs = previousIDs
+            var published: [DebugLogEntry] = []
+            var callbackCount = 0
+            var nestedReadCount = 0
+            var nestedResults: [Bool] = []
+            let readLimit = 3
+            let subscription = fixture.model.debugLog.$entries.dropFirst().sink { entries in
+                // Inspect the publisher argument, not the willSet-era stored array.
+                // Record each fresh marker BEFORE re-entry; outer writeback must
+                // not hide a nested publication from the cardinality oracle.
+                let fresh = entries.filter {
+                    $0.source == "AppViewModel" && $0.message.hasPrefix("[TNF-DIRTY61]")
+                        && !publishedIDs.contains($0.id)
+                }
+                guard !fresh.isEmpty else { return }
+                callbackCount += 1
+                for entry in fresh {
+                    publishedIDs.insert(entry.id)
+                    published.append(entry)
+                }
+                // Bound reads before calling the real getter, even on unfixed
+                // source. A nested-publication exclusivity abort is still possible.
+                guard nestedReadCount < readLimit else { return }
+                nestedReadCount += 1
+                let nestedBefore = fixture.nodes.map { $0.snapshotCount }
+                let nestedParameters = fixture.nodes.map { $0.parameterValueReadCount }
+                let nestedOrderStart = fixture.order.slots.count
+                let actualNested = fixture.model.isPresetModified
+                // Do not hold an Array.append mutation across the reentrant getter.
+                nestedResults.append(actualNested)
+                XCTAssertEqual(zip(fixture.nodes.map { $0.snapshotCount }, nestedBefore).map { $0.0 - $0.1 },
+                               [1, 1, 1], "Each nested invocation snapshots all three nodes once")
+                XCTAssertEqual(Array(fixture.order.slots.dropFirst(nestedOrderStart)), [0, 1, 2],
+                               "Nested invocation graph order")
+                XCTAssertEqual(zip(fixture.nodes.map { $0.parameterValueReadCount }, nestedParameters)
+                    .map { $0.0 - $0.1 }, [0, 0, 0], "No nested direct parameter reads")
+            }
+            defer { subscription.cancel() }
+
+            // A separate two-invocation window; the old one-getter probe is unchanged.
+            let before = fixture.nodes.map { $0.snapshotCount }
+            let parameterBefore = fixture.nodes.map { $0.parameterValueReadCount }
+            let orderStart = fixture.order.slots.count
+            let actualOuter = fixture.model.isPresetModified
+            XCTAssertTrue(actualOuter, "Outer returns its already-computed dirty result")
+            XCTAssertEqual(callbackCount, 1, "Exactly one receipt publication callback")
+            XCTAssertEqual(nestedReadCount, 1, "Only the outer receipt triggers a nested read")
+            XCTAssertEqual(nestedResults, [true], "Actual nested getter result, not a cached outer Bool")
+            XCTAssertEqual(zip(fixture.nodes.map { $0.snapshotCount }, before).map { $0.0 - $0.1 },
+                           [2, 2, 2], "Outer and nested invocations each snapshot every node once")
+            XCTAssertEqual(Array(fixture.order.slots.dropFirst(orderStart)), [0, 1, 2, 0, 1, 2],
+                           "Outer snapshot completes before the nested snapshot")
+            XCTAssertEqual(zip(fixture.nodes.map { $0.parameterValueReadCount }, parameterBefore)
+                .map { $0.0 - $0.1 }, [0, 0, 0], "No direct parameter reads in either invocation")
+            let retained = markers(fixture.model).filter { !previousIDs.contains($0.id) }
+            assertReceipt(published, count: 1)
+            assertReceipt(retained, count: 1)
+            XCTAssertEqual(Set(published.map { $0.id }), Set(retained.map { $0.id }),
+                           "The single published marker is retained")
+            for stream in [published, retained] {
+                assertBounds(stream, currentNodes: 3, baselineNodes: 3)
+                assertFixtureSlots(stream)
+                assertTokens(stream, expected: [
+                    "gain.c": "3f000000", "gain.b": "3f400000", "gain.eq": "0",
+                ])
+            }
+
+            subscription.cancel()
+            let later = probe(fixture, modified: true)
+            assertReceipt(later, count: 1)
+            let firstOrdinal = try XCTUnwrap(published.first.flatMap { ordinal($0.message) })
+            let laterOrdinal = try XCTUnwrap(later.first.flatMap { ordinal($0.message) })
+            XCTAssertLessThan(firstOrdinal, UInt64.max, "Finite fixture leaves ordinal capacity")
+            if firstOrdinal < UInt64.max {
+                XCTAssertEqual(laterOrdinal, firstOrdinal + 1,
+                               "Emission resets after return; nested reads allocate no ordinal")
+            }
+            XCTAssertEqual(markers(fixture.model).count, previousIDs.count + 2,
+                           "Exactly the outer and later independent dirty receipts")
+        }
+    }
+
+    func test_public_observer_clean_inner_returns_false_without_replacing_outer_dirty_result() throws {
+        try withFixture { fixture in
+            fixture.model.graph.outputGain = 0.5
+            let previousIDs = Set(markers(fixture.model).map { $0.id })
+            var publishedIDs = previousIDs
+            var published: [DebugLogEntry] = []
+            var callbackCount = 0
+            var nestedReadCount = 0
+            var nestedResults: [Bool] = []
+            let readLimit = 1
+            let subscription = fixture.model.debugLog.$entries.dropFirst().sink { entries in
+                // Inspect the publisher argument, not the willSet-era stored array.
+                // Record each fresh marker BEFORE re-entry; outer writeback must
+                // not hide a nested publication from the cardinality oracle.
+                let fresh = entries.filter {
+                    $0.source == "AppViewModel" && $0.message.hasPrefix("[TNF-DIRTY61]")
+                        && !publishedIDs.contains($0.id)
+                }
+                guard !fresh.isEmpty else { return }
+                callbackCount += 1
+                for entry in fresh {
+                    publishedIDs.insert(entry.id)
+                    published.append(entry)
+                }
+                // Bound reads before calling the real getter, even on unfixed
+                // source. A nested-publication exclusivity abort is still possible.
+                guard nestedReadCount < readLimit else { return }
+                nestedReadCount += 1
+                fixture.model.graph.outputGain = 0.75
+                let nestedBefore = fixture.nodes.map { $0.snapshotCount }
+                let nestedParameters = fixture.nodes.map { $0.parameterValueReadCount }
+                let nestedOrderStart = fixture.order.slots.count
+                let actualNested = fixture.model.isPresetModified
+                // Do not hold an Array.append mutation across the reentrant getter.
+                nestedResults.append(actualNested)
+                XCTAssertEqual(zip(fixture.nodes.map { $0.snapshotCount }, nestedBefore).map { $0.0 - $0.1 },
+                               [1, 1, 1], "Each nested invocation snapshots all three nodes once")
+                XCTAssertEqual(Array(fixture.order.slots.dropFirst(nestedOrderStart)), [0, 1, 2],
+                               "Nested invocation graph order")
+                XCTAssertEqual(zip(fixture.nodes.map { $0.parameterValueReadCount }, nestedParameters)
+                    .map { $0.0 - $0.1 }, [0, 0, 0], "No nested direct parameter reads")
+            }
+            defer { subscription.cancel() }
+
+            // A separate two-invocation window; the old one-getter probe is unchanged.
+            let before = fixture.nodes.map { $0.snapshotCount }
+            let parameterBefore = fixture.nodes.map { $0.parameterValueReadCount }
+            let orderStart = fixture.order.slots.count
+            let actualOuter = fixture.model.isPresetModified
+            XCTAssertTrue(actualOuter, "Outer returns its already-computed dirty result")
+            XCTAssertEqual(callbackCount, 1, "Exactly one receipt publication callback")
+            XCTAssertEqual(nestedReadCount, 1, "Only the outer receipt triggers a nested read")
+            XCTAssertEqual(nestedResults, [false], "Actual nested getter result, not a cached outer Bool")
+            XCTAssertEqual(zip(fixture.nodes.map { $0.snapshotCount }, before).map { $0.0 - $0.1 },
+                           [2, 2, 2], "Outer and nested invocations each snapshot every node once")
+            XCTAssertEqual(Array(fixture.order.slots.dropFirst(orderStart)), [0, 1, 2, 0, 1, 2],
+                           "Outer snapshot completes before the nested snapshot")
+            XCTAssertEqual(zip(fixture.nodes.map { $0.parameterValueReadCount }, parameterBefore)
+                .map { $0.0 - $0.1 }, [0, 0, 0], "No direct parameter reads in either invocation")
+            let retained = markers(fixture.model).filter { !previousIDs.contains($0.id) }
+            assertReceipt(published, count: 1)
+            assertReceipt(retained, count: 1)
+            XCTAssertEqual(Set(published.map { $0.id }), Set(retained.map { $0.id }),
+                           "The single published marker is retained")
+            for stream in [published, retained] {
+                assertBounds(stream, currentNodes: 3, baselineNodes: 3)
+                assertFixtureSlots(stream)
+                assertTokens(stream, expected: [
+                    "gain.c": "3f000000", "gain.b": "3f400000", "gain.eq": "0",
+                ])
+            }
+
+            subscription.cancel()
+            assertReceipt(probe(fixture, modified: false), count: 0)
+            fixture.model.graph.outputGain = 0.5
+            let later = probe(fixture, modified: true)
+            assertReceipt(later, count: 1)
+            let firstOrdinal = try XCTUnwrap(published.first.flatMap { ordinal($0.message) })
+            let laterOrdinal = try XCTUnwrap(later.first.flatMap { ordinal($0.message) })
+            XCTAssertLessThan(firstOrdinal, UInt64.max, "Finite fixture leaves ordinal capacity")
+            if firstOrdinal < UInt64.max {
+                XCTAssertEqual(laterOrdinal, firstOrdinal + 1,
+                               "Emission resets after return; nested reads allocate no ordinal")
+            }
+            XCTAssertEqual(markers(fixture.model).count, previousIDs.count + 2,
+                           "Exactly the outer and later independent dirty receipts")
+        }
+    }
+
     private func withFixture(_ body: (ReceiptFixture) throws -> Void) throws {
         let suite = "DirtyComparisonReceiptTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
