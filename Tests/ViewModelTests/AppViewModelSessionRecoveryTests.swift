@@ -241,8 +241,15 @@ final class AppViewModelSessionRecoveryTests: XCTestCase {
             let decoded = try JSONDecoder().decode(GraphPreset.self, from: saved)
             XCTAssertEqual(decoded.formatVersion, PresetMigrator.currentFormatVersion)
             XCTAssertEqual(decoded, model.graph.snapshot(name: "lastSession"))
-            // Source-only autosaves after the explicit replacement use the new graph.
-            try await assertSourceOnlyWritePreserves(saved, model: model, sourceIndex: index + 1)
+            // After explicit replacement, autosave may re-encode equivalent
+            // current-version JSON. Exact-byte preservation is only the
+            // protected incompatible-input contract tested separately above.
+            let selected = source(index + 1)
+            model.setSource(selected)
+            try await waitForAutosave()
+            XCTAssertEqual(defaults.string(forKey: AppViewModelDefaultsKey.sourceBundleID), selected.bundleIdentifier)
+            let sourceSaved = try XCTUnwrap(defaults.data(forKey: AppViewModelDefaultsKey.graph))
+            XCTAssertEqual(try JSONDecoder().decode(GraphPreset.self, from: sourceSaved), decoded)
             // The guard must not remain latched after the first replacement:
             // a subsequent graph edit must also reach persistence.
             model.addEffect(of: "tnf.reverb")
