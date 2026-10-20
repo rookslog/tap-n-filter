@@ -44,10 +44,11 @@ public struct PowerToggle: View {
             .controlSize(.large)
             .keyboardShortcut(.space, modifiers: [])
             .tint(buttonTint)
-            .disabled(isDisabled)
+            .disabled(!viewModel.isPowerActionEnabled)
+            .help(viewModel.sourceReadinessMessage ?? "Start or stop audio capture.")
             .accessibilityLabel("Power")
             .accessibilityValue(stateLabel)
-            .accessibilityHint("Start or stop audio capture.")
+            .accessibilityHint(viewModel.sourceReadinessMessage ?? "Start or stop audio capture.")
         }
     }
 
@@ -68,13 +69,6 @@ public struct PowerToggle: View {
         case .starting, .stopping:
             // No-op; the button is disabled in these states.
             break
-        }
-    }
-
-    private var isDisabled: Bool {
-        switch viewModel.captureState {
-        case .starting, .stopping: return true
-        case .idle, .running, .failed: return false
         }
     }
 

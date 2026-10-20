@@ -27,16 +27,9 @@ public enum AppError: Error, Equatable {
         switch self {
         case .capture(let underlying):
             return AppError.message(for: underlying)
-        case .graph(let reason):
-            return "Graph error: \(reason)"
-        case .parameter(let reason):
-            return "Parameter error: \(reason)"
-        case .preset(let reason):
-            return "Preset error: \(reason)"
-        case .engine(let reason):
-            return "Engine error: \(reason)"
-        case .persistence(let reason):
-            return "Persistence error: \(reason)"
+        case .graph(let reason), .parameter(let reason), .preset(let reason),
+             .engine(let reason), .persistence(let reason):
+            return reason
         }
     }
 
@@ -121,11 +114,14 @@ public final class AppViewModel: ObservableObject {
         didSet {
             switch (oldValue, lastError) {
             case (nil, let new?):
-                logger.warning("lastError set: \(new.userMessage)")
+                logger.warning("lastError set: \(new.userMessage) [\(String(reflecting: new))]")
             case (let old?, nil):
-                logger.info("lastError cleared (was: \(old.userMessage))")
+                logger.info("lastError cleared (was: \(old.userMessage) [\(String(reflecting: old))])")
             case (let old?, let new?):
-                logger.warning("lastError replaced: \(old.userMessage) -> \(new.userMessage)")
+                logger.warning(
+                    "lastError replaced: \(old.userMessage) [\(String(reflecting: old))] -> "
+                    + "\(new.userMessage) [\(String(reflecting: new))]"
+                )
             case (nil, nil):
                 break
             }
@@ -503,6 +499,28 @@ public final class AppViewModel: ObservableObject {
 
     // MARK: Source selection
 
+    private static let sourceSelectionMessage = "Select an app in the source picker before starting audio capture."
+
+    /// Whether the power control can start, retry, or stop capture now.
+    /// A refreshed source list must never prevent stopping an active capture.
+    public var isPowerActionEnabled: Bool {
+        switch captureState {
+        case .idle, .failed: return currentSource != nil
+        case .running: return true
+        case .starting, .stopping: return false
+        }
+    }
+
+    /// Picker-directed guidance when Start or Retry needs a source selection.
+    public var sourceReadinessMessage: String? {
+        switch captureState {
+        case .idle, .failed:
+            return currentSource == nil ? Self.sourceSelectionMessage : nil
+        case .starting, .running, .stopping:
+            return nil
+        }
+    }
+
     public func setSource(_ source: CaptureSource?) {
         let previousSource = currentSource
         switch captureState {
@@ -542,7 +560,7 @@ public final class AppViewModel: ObservableObject {
     /// 4. `engine.prepare()` + `engine.start()`.
     public func powerOn() async {
         guard let source = currentSource else {
-            lastError = .engine("No source selected.")
+            lastError = .engine(Self.sourceSelectionMessage)
             return
         }
         guard captureState == .idle || isFailedState(captureState) else {

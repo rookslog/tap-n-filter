@@ -51,6 +51,8 @@ public final class AppViewModel: ObservableObject {
     @Published var captureState: CaptureState
     @Published var expandedEffectID: UUID?
     @Published var lastError: AppError?
+    var isPowerActionEnabled: Bool { get }
+    var sourceReadinessMessage: String? { get }
     
     private let capture: CaptureControllerProtocol
     private let engine: AVAudioEngine
@@ -85,6 +87,13 @@ Picker("Source", selection: $viewModel.currentSource) {
 ```
 
 `SourceRow` shows the app icon (from `NSWorkspace.shared.icon(forFile:)` or `NSRunningApplication.icon`) and the display name. The picker is disabled while `captureState` is `.starting` or `.stopping`. Changing source while `.running` triggers `viewModel.powerOff()` followed by re-setting the source, with the user invited to power on again — V1 does not auto-restart on source change, to avoid surprise.
+
+When idle or failed with no chosen source, a caption below the picker says
+"Select an app in the source picker before starting audio capture." The same
+guidance is provided through picker and power-button help and accessibility
+hints. It disappears once a source is chosen or capture is running or
+transitioning. Refreshing the list does not automatically select or start a
+source.
 
 ### Targeting granularity and the no-tabs explainer
 
@@ -167,13 +176,26 @@ Menu {
 
 A large prominent button at the bottom of the panel:
 
-- `.idle` → label "Start", filled style, accent color.
+- `.idle` → label "Start", filled style, accent color; disabled without a chosen source.
 - `.starting` → label with spinner, disabled.
-- `.running` → label "Stop", outlined style.
+- `.running` → label "Stop", outlined style; enabled even if the chosen source disappears from the picker/list.
 - `.stopping` → label with spinner, disabled.
-- `.failed` → label "Retry", with error icon, accent destructive color.
+- `.failed` → label "Retry", with error icon, accent destructive color; disabled without a chosen source.
 
-Tapping in `.idle` calls `viewModel.powerOn()`. Tapping in `.running` calls `viewModel.powerOff()`. Tapping in `.failed` clears the error and returns to `.idle`.
+Tapping in `.idle` calls `viewModel.powerOn()`. Tapping in `.running` calls
+`viewModel.powerOff()`. Tapping in `.failed` clears the error and calls
+`viewModel.powerOn()` to retry. `viewModel.isPowerActionEnabled` supplies the
+button's enabled state: idle/failed require a non-nil `currentSource`, running
+always allows Stop, and starting/stopping remain locked. List membership is
+not an extra readiness requirement. `sourceReadinessMessage` supplies the
+picker-directed reason when idle/failed without a source. A direct `powerOn()`
+call without a source also reports that guidance without starting capture.
+
+Error banners show the underlying reason without Graph/Parameter/Preset/Engine/
+Persistence `error:` prefixes. Capture errors retain their recovery guidance
+and useful failure details, including status codes. Error-change diagnostics
+include both the user-facing message and the underlying `AppError` case and
+associated values, preserving technical domain context outside the banner.
 
 While `viewModel.lastError` is non-nil, a full-width error banner sits above the footer showing the message text in full, with a warning icon and a separate dismiss control. It is a sibling of the footer, not part of the power control: the footer lays its actions out in one centre-aligned row, and a multi-line banner nested inside `PowerToggle` would drag the presets and quit buttons out of alignment.
 

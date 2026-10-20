@@ -49,6 +49,11 @@ Work toward v0.1.0. Nothing has been tagged or released yet.
 
 ### Fixed
 
+- Start and Retry are disabled until a source is chosen, with visible, help,
+  and accessibility guidance pointing to the source picker. Stop remains
+  available while running even if the selected source disappears from the list.
+- Error banners show the failure reason without developer-domain prefixes;
+  diagnostics retain the underlying error case and useful failure details.
 - Menu panel collapsed on macOS 27, taking the effect list with it. The chain
   editor's `ScrollView` was constrained only by `maxHeight` inside a window
   that sizes to its content's fitting height; height floors now keep the panel
