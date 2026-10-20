@@ -314,4 +314,77 @@ final class PresetImportFidelityTests: XCTestCase {
         XCTAssertFalse(model.isPresetModified)
         XCTAssertEqual(try Data(contentsOf: original), bytes)
     }
+
+    func test_missing_gain_catalog_parameter_recovers_without_skipping_and_requires_explicit_different_save_as() throws {
+        let base = fixture.preset()
+        let singleGain = GraphPreset(name: base.name, outputGain: base.outputGain,
+                                    nodes: Array(base.nodes.prefix(1)))
+        let original = try write(singleGain) { object in
+            try editNode(0, in: &object) { $0["parameters"] = [String: Any]() }
+        }
+        let bytes = try Data(contentsOf: original)
+        let model = try assertFidelityRecovery(original, context: "single Gain parameters={}")
+        XCTAssertEqual(model.graph.nodes.count, 1)
+        let gain = try XCTUnwrap(model.graph.nodes.first as? GainNode)
+        XCTAssertEqual(gain.id, singleGain.nodes[0].id)
+        let catalogGain = try XCTUnwrap(gain.parameters.first { $0.identifier == "gain" })
+        XCTAssertEqual(gain.parameterValue("gain"), catalogGain.defaultValue)
+        XCTAssertTrue(model.graph.lastLoadWarnings.isEmpty)
+        let target = fixture.url("Recovered Gain Copy.tnf")
+        XCTAssertNotEqual(target, original)
+
+        // This URL is an explicit Save As choice, never a simulated Cmd-S.
+        model.savePreset(to: target)
+
+        XCTAssertNil(model.lastError)
+        let exported = try PresetStore.load(from: target)
+        XCTAssertEqual(exported, model.graph.snapshot(name: "Recovered Gain Copy"))
+        XCTAssertEqual(exported.nodes.first?.parameters["gain"], catalogGain.defaultValue)
+        XCTAssertEqual(model.presetOrigin, .file)
+        XCTAssertEqual(model.presetFileURL, target)
+        XCTAssertNil(model.presetRecoveryNotice)
+        XCTAssertTrue(model.presetWarnings.isEmpty)
+        XCTAssertFalse(model.isPresetModified)
+        XCTAssertEqual(try Data(contentsOf: original), bytes)
+    }
+
+    func test_missing_EQ_catalog_parameter_recovers_without_skipping_and_explicit_save_as_persists_restored_key() throws {
+        let base = fixture.preset()
+        let original = try write(base) { object in
+            try editNode(2, in: &object) { node in
+                var parameters = node["parameters"] as? [String: Any] ?? [:]
+                parameters.removeValue(forKey: "hp.frequency")
+                node["parameters"] = parameters
+            }
+        }
+        let bytes = try Data(contentsOf: original)
+        let input = try PresetStore.load(from: original)
+        var supplied = base.nodes[2].parameters
+        supplied.removeValue(forKey: "hp.frequency")
+        XCTAssertEqual(input.nodes[2].parameters, supplied, "All other supplied EQ keys remain unchanged")
+        let model = try assertFidelityRecovery(original, context: "EQ missing hp.frequency only")
+        XCTAssertEqual(model.graph.nodes.count, base.nodes.count)
+        XCTAssertEqual(model.graph.nodes.map { $0.id }, base.nodes.map { $0.id })
+        XCTAssertTrue(model.graph.nodes[2] is EQNode)
+        XCTAssertTrue(model.graph.lastLoadWarnings.isEmpty)
+        let restored = model.graph.snapshot()
+        XCTAssertNotNil(restored.nodes[2].parameters["hp.frequency"])
+        let target = fixture.url("Recovered EQ Copy.tnf")
+        XCTAssertNotEqual(target, original)
+
+        // Persist the actual restored snapshot, not an assumed native scalar.
+        model.savePreset(to: target)
+
+        XCTAssertNil(model.lastError)
+        let exported = try PresetStore.load(from: target)
+        XCTAssertNotNil(exported.nodes[2].parameters["hp.frequency"])
+        XCTAssertEqual(exported, model.graph.snapshot(name: "Recovered EQ Copy"))
+        XCTAssertEqual(exported.nodes[2].parameters, restored.nodes[2].parameters)
+        XCTAssertEqual(model.presetOrigin, .file)
+        XCTAssertEqual(model.presetFileURL, target)
+        XCTAssertNil(model.presetRecoveryNotice)
+        XCTAssertTrue(model.presetWarnings.isEmpty)
+        XCTAssertFalse(model.isPresetModified)
+        XCTAssertEqual(try Data(contentsOf: original), bytes)
+    }
 }

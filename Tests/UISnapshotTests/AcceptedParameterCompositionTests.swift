@@ -1085,6 +1085,117 @@ final class AcceptedParameterCompositionTests: XCTestCase {
         scheduler.runAll()
         XCTAssertEqual(node.attempts, [4], "Real readback and Save cannot echo another setter")
     }
+
+    func test_nil_nested_public_direct_success_reconciles_latest_success_before_any_model_echo() throws {
+        // Unlike a nested editor commit, public direct writes do not advance
+        // this editor's submission revision. The newest successful write wins.
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let editor = fixture.writer(node, model).makeEditor()
+        XCTAssertEqual(node.value, 2)
+        editor.drag(to: 0.7)
+        let oldTick = try scheduler.takeNext()
+        node.readbackAvailable = false
+        var callbacks = 0
+        node.afterAttempt = { [weak node] requested in
+            guard let node else { return XCTFail("The live target must remain available") }
+            node.afterAttempt = nil
+            callbacks += 1
+            XCTAssertEqual(requested, 4)
+            model.updateParameter(nodeID: node.id, paramID: "amount", value: 8)
+        }
+
+        model.updateParameter(nodeID: node.id, paramID: "amount", value: 4)
+
+        XCTAssertEqual(callbacks, 1)
+        XCTAssertNil(node.parameterValue("amount"))
+        XCTAssertEqual(node.value, 8)
+        XCTAssertEqual(editor.value, 8, "Outer request 4 cannot overwrite newer direct success 8")
+        XCTAssertEqual(editor.text, "8.0")
+        XCTAssertFalse(editor.isEditing)
+        XCTAssertEqual(node.attempts, [4, 8])
+        oldTick()
+        XCTAssertEqual(node.attempts, [4, 8])
+        editor.beginEditing(locale: fixture.locale)
+        editor.text = "6"
+        editor.cancel()
+        XCTAssertEqual(editor.value, 8)
+        XCTAssertEqual(editor.text, "8.0")
+        XCTAssertFalse(editor.isEditing)
+        XCTAssertEqual(node.attempts, [4, 8], "Cancel must not write draft 6")
+        model.savePreset(to: fixture.url("nil-nested-public-success.tnf"))
+        XCTAssertEqual(try fixture.exportedValue("nil-nested-public-success.tnf"), 8)
+        XCTAssertEqual(model.presetFileURL, fixture.url("nil-nested-public-success.tnf"))
+        scheduler.runAll()
+        oldTick()
+        XCTAssertEqual(editor.value, 8)
+        XCTAssertEqual(editor.text, "8.0")
+        XCTAssertEqual(node.attempts, [4, 8])
+    }
+
+    func test_nil_rejected_nested_public_direct_preserves_outer_success_presentation_and_target_save_block() throws {
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let editor = fixture.writer(node, model).makeEditor()
+        XCTAssertEqual(node.value, 2)
+        editor.drag(to: 0.7)
+        let oldTick = try scheduler.takeNext()
+        node.readbackAvailable = false
+        var callbacks = 0
+        node.afterAttempt = { [weak node] requested in
+            guard let node else { return XCTFail("The live target must remain available") }
+            node.afterAttempt = nil
+            callbacks += 1
+            XCTAssertEqual(requested, 4)
+            node.behavior = .rejected
+            model.updateParameter(nodeID: node.id, paramID: "amount", value: 8)
+            node.behavior = .exact
+        }
+
+        model.updateParameter(nodeID: node.id, paramID: "amount", value: 4)
+
+        XCTAssertEqual(callbacks, 1)
+        XCTAssertNil(node.parameterValue("amount"))
+        XCTAssertEqual(node.value, 4)
+        XCTAssertEqual(editor.value, 4, "Rejected 8 is not a newer successful application")
+        XCTAssertEqual(editor.text, "4.0")
+        XCTAssertFalse(editor.isEditing)
+        XCTAssertEqual(node.attempts, [4, 8])
+        oldTick()
+        editor.beginEditing(locale: fixture.locale)
+        editor.text = "6"
+        editor.cancel()
+        XCTAssertEqual(editor.value, 4)
+        XCTAssertEqual(editor.text, "4.0")
+        XCTAssertFalse(editor.isEditing)
+        XCTAssertEqual(node.attempts, [4, 8])
+        let blocked = fixture.url("nil-nested-public-blocked.tnf")
+        model.savePreset(to: blocked)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: blocked.path))
+        XCTAssertNotNil(model.lastError, "Outer success returning later cannot clear the nested target failure")
+        XCTAssertNil(model.presetFileURL)
+        scheduler.runAll()
+        oldTick()
+        model.savePreset(to: blocked)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: blocked.path))
+        XCTAssertNotNil(model.lastError)
+        XCTAssertEqual(node.attempts, [4, 8], "Save and obsolete tickets must not retry rejection")
+
+        editor.drag(to: 0.9)
+        oldTick()
+        XCTAssertEqual(node.attempts, [4, 8], "Old ticket cannot deliver newly accepted 9")
+        let recovered = fixture.url("nil-nested-public-recovered.tnf")
+        model.savePreset(to: recovered)
+        XCTAssertEqual(try fixture.exportedValue("nil-nested-public-recovered.tnf"), 9)
+        XCTAssertEqual(model.presetFileURL, recovered, "A genuinely newer success clears the target block")
+        XCTAssertEqual(editor.value, 9)
+        XCTAssertEqual(editor.text, "9.0")
+        XCTAssertFalse(model.isPresetModified)
+        scheduler.runAll()
+        oldTick()
+        XCTAssertEqual(node.attempts, [4, 8, 9])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: blocked.path))
+    }
 }
 
 /// Captures callbacks even after delivery so tests can replay obsolete work.
