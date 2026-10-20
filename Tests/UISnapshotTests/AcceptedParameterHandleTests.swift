@@ -524,3 +524,235 @@ private final class R6ReadCountingParameterNode: EffectNode {
     func snapshot() -> EffectState { base.snapshot() }
     func restore(from state: EffectState) throws { try base.restore(from: state) }
 }
+
+// Getter-specific coverage added after the R7 API under exact GREEN-GO;
+// these methods are not pre-fix behavioral-red witnesses.
+extension AcceptedParameterHandleTests {
+    func test_started_order_is_zero_until_invocation_then_tracks_rejection_and_is_scoped_per_target() throws {
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let handle = try XCTUnwrap(model.makeParameterEditHandle(node: node, parameterID: "amount"))
+        let other = try XCTUnwrap(model.makeParameterEditHandle(node: node, parameterID: "other"))
+        let secondNode = try fixture.node(in: model, at: 1)
+        let second = try XCTUnwrap(model.makeParameterEditHandle(node: secondNode, parameterID: "amount"))
+        XCTAssertEqual(handle.latestStartedOperationOrder, 0)
+        XCTAssertEqual(other.latestStartedOperationOrder, 0)
+        XCTAssertEqual(second.latestStartedOperationOrder, 0)
+        XCTAssertTrue(model.acceptParameterValue(7, for: handle, intentRevision: 1))
+        let oldTick = try scheduler.takeNext()
+        XCTAssertEqual(handle.latestStartedOperationOrder, 0, "Pending admission is not invocation")
+        var insideOrder: UInt64?
+        node.afterAttempt = { [weak node] _ in
+            node?.afterAttempt = nil
+            insideOrder = handle.latestStartedOperationOrder
+            XCTAssertGreaterThan(insideOrder ?? 0, 0)
+            XCTAssertNil(handle.successfulPresentation, "Started order is visible before success publication")
+        }
+
+        model.updateParameter(nodeID: node.id, paramID: "amount", value: 4)
+
+        let first = try XCTUnwrap(insideOrder)
+        XCTAssertEqual(handle.latestStartedOperationOrder, first)
+        XCTAssertEqual(handle.successfulPresentation?.operationOrder, first)
+        XCTAssertEqual(other.latestStartedOperationOrder, 0)
+        XCTAssertEqual(second.latestStartedOperationOrder, 0)
+        node.behavior = .rejected
+        XCTAssertFalse(model.commitParameterValue(8, for: handle, intentRevision: 2))
+        let rejected = try XCTUnwrap(handle.latestStartedOperationOrder)
+        XCTAssertGreaterThan(rejected, first)
+        XCTAssertEqual(handle.successfulPresentation?.operationOrder, first, "Rejection advances start, not success")
+        node.behavior = .exact
+        XCTAssertTrue(model.commitParameterValue(3, for: other, intentRevision: 1))
+        XCTAssertGreaterThan(try XCTUnwrap(other.latestStartedOperationOrder), rejected)
+        XCTAssertEqual(handle.latestStartedOperationOrder, rejected)
+        XCTAssertEqual(second.latestStartedOperationOrder, 0)
+        oldTick()
+        scheduler.runAll()
+        XCTAssertEqual(handle.latestStartedOperationOrder, rejected, "Obsolete tickets cannot start invocations")
+        XCTAssertEqual(node.attempts, [4, 8, 3])
+        XCTAssertTrue(secondNode.attempts.isEmpty)
+    }
+
+    func test_started_order_is_visible_inside_nested_apply_and_never_rolls_back_on_outer_completion() throws {
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let handle = try XCTUnwrap(model.makeParameterEditHandle(node: node, parameterID: "amount"))
+        node.readbackAvailable = false
+        XCTAssertTrue(model.acceptParameterValue(7, for: handle, intentRevision: 1))
+        let oldTick = try scheduler.takeNext()
+        var outerOrder: UInt64?
+        var innerOrder: UInt64?
+        node.afterAttempt = { [weak node] _ in
+            guard let target = node else { XCTFail("Expected live node"); return }
+            node?.afterAttempt = nil
+            outerOrder = handle.latestStartedOperationOrder
+            XCTAssertGreaterThan(outerOrder ?? 0, 0)
+            XCTAssertNil(handle.successfulPresentation)
+            node?.afterAttempt = { [weak node] _ in
+                node?.afterAttempt = nil
+                innerOrder = handle.latestStartedOperationOrder
+                XCTAssertGreaterThan(innerOrder ?? 0, outerOrder ?? 0)
+                XCTAssertNil(handle.successfulPresentation, "Neither invocation has completed inside inner apply")
+            }
+            model.updateParameter(nodeID: target.id, paramID: "amount", value: 8)
+            XCTAssertEqual(handle.latestStartedOperationOrder, innerOrder)
+            XCTAssertEqual(handle.successfulPresentation?.operationOrder, innerOrder)
+        }
+
+        model.updateParameter(nodeID: node.id, paramID: "amount", value: 4)
+
+        let outer = try XCTUnwrap(outerOrder)
+        let inner = try XCTUnwrap(innerOrder)
+        XCTAssertGreaterThan(inner, outer)
+        XCTAssertEqual(handle.latestStartedOperationOrder, inner)
+        XCTAssertEqual(handle.successfulPresentation?.operationOrder, inner)
+        XCTAssertEqual(handle.successfulPresentation?.value, 8)
+        oldTick()
+        scheduler.runAll()
+        XCTAssertEqual(handle.latestStartedOperationOrder, inner)
+        XCTAssertEqual(node.attempts, [4, 8])
+    }
+
+    func test_started_order_guards_owner_retirement_and_generation_but_failed_load_keeps_live_history() throws {
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let handle = try XCTUnwrap(model.makeParameterEditHandle(node: node, parameterID: "amount"))
+        XCTAssertTrue(model.commitParameterValue(4, for: handle, intentRevision: 1))
+        let order = try XCTUnwrap(handle.latestStartedOperationOrder)
+        let foreignModel = makeModel()
+        XCTAssertFalse(foreignModel.commitParameterValue(8, for: handle, intentRevision: 2))
+        foreignModel.retireParameterEditHandle(handle)
+        XCTAssertEqual(handle.latestStartedOperationOrder, order, "Foreign owner cannot invoke or retire this session")
+        model.loadPreset(from: fixture.url("r7-started-missing.tnf"))
+        XCTAssertNotNil(model.lastError)
+        XCTAssertEqual(handle.latestStartedOperationOrder, order)
+        model.clearError()
+        model.retireParameterEditHandle(handle)
+        XCTAssertNil(handle.latestStartedOperationOrder)
+        let fresh = try XCTUnwrap(model.makeParameterEditHandle(node: node, parameterID: "amount"))
+        XCTAssertEqual(fresh.latestStartedOperationOrder, order, "Order belongs to the concrete target, not a session")
+        let url = fixture.url("r7-started-replacement.tnf")
+        model.savePreset(to: url)
+        model.loadPreset(from: url)
+        XCTAssertNil(model.lastError)
+        XCTAssertNil(fresh.latestStartedOperationOrder)
+        let replacement = try fixture.node(in: model)
+        XCTAssertEqual(replacement.id, node.id)
+        XCTAssertFalse(replacement === node)
+        let renewed = try XCTUnwrap(model.makeParameterEditHandle(node: replacement, parameterID: "amount"))
+        XCTAssertEqual(renewed.latestStartedOperationOrder, 0, "A restored generation has no invoked operation")
+    }
+
+    func test_started_order_rejects_changed_UUID_and_current_target_then_prunes_invalid_history() throws {
+        let node = R6ReadCountingParameterNode()
+        var current = true
+        let edits = AcceptedParameterEdits(
+            schedule: scheduler.schedule, isCurrent: { candidate in current && candidate === node },
+            apply: { target, parameter, value in
+                do {
+                    try target.setParameter(parameter, value: value)
+                    return ParameterApplication(success: true, actual: target.parameterValue(parameter))
+                } catch {
+                    return ParameterApplication(success: false, actual: target.parameterValue(parameter))
+                }
+            }
+        )
+        let handle = try XCTUnwrap(edits.makeHandle(node: node, parameterID: "amount"))
+        XCTAssertNil(edits.makeHandle(node: node, parameterID: "unknown"))
+        XCTAssertTrue(edits.commit(4, for: handle, intentRevision: 1))
+        let first = try XCTUnwrap(handle.latestStartedOperationOrder)
+        let id = node.id
+        node.base.id = UUID()
+        XCTAssertNil(handle.latestStartedOperationOrder)
+        node.base.id = id
+        XCTAssertEqual(handle.latestStartedOperationOrder, 0, "Pruned identity history cannot reappear")
+        XCTAssertTrue(edits.commit(6, for: handle, intentRevision: 2))
+        XCTAssertGreaterThan(try XCTUnwrap(handle.latestStartedOperationOrder), first)
+        current = false
+        XCTAssertNil(handle.latestStartedOperationOrder)
+        XCTAssertTrue(edits.flushAll())
+        current = true
+        let renewed = try XCTUnwrap(edits.makeHandle(node: node, parameterID: "amount"))
+        XCTAssertEqual(renewed.latestStartedOperationOrder, 0)
+        let impostor = R6ReadCountingParameterNode()
+        impostor.base.id = id
+        XCTAssertNil(edits.makeHandle(node: impostor, parameterID: "amount"))
+        XCTAssertEqual(node.nativeReads, 2, "Only the two application harness reads are allowed")
+        XCTAssertEqual(node.base.attempts, [4, 6])
+    }
+
+    func test_started_order_query_never_reads_native_state_including_inside_apply_and_after_retirement() throws {
+        let node = R6ReadCountingParameterNode()
+        let identity = ObjectIdentifier(node)
+        let edits = AcceptedParameterEdits(
+            schedule: scheduler.schedule, isCurrent: { ObjectIdentifier($0) == identity },
+            apply: { target, parameter, value in
+                do {
+                    try target.setParameter(parameter, value: value)
+                    return ParameterApplication(success: true, actual: target.parameterValue(parameter))
+                } catch {
+                    return ParameterApplication(success: false, actual: target.parameterValue(parameter))
+                }
+            }
+        )
+        let handle = try XCTUnwrap(edits.makeHandle(node: node, parameterID: "amount"))
+        XCTAssertEqual(handle.latestStartedOperationOrder, 0)
+        XCTAssertEqual(node.nativeReads, 0)
+        var insideOrder: UInt64?
+        node.base.afterAttempt = { [weak node] _ in
+            node?.base.afterAttempt = nil
+            insideOrder = handle.latestStartedOperationOrder
+            XCTAssertGreaterThan(insideOrder ?? 0, 0)
+            XCTAssertNil(handle.successfulPresentation)
+            XCTAssertEqual(node?.nativeReads, 0, "Inside-apply query cannot pre-read native state")
+        }
+        XCTAssertTrue(edits.commit(4, for: handle, intentRevision: 1))
+        let first = try XCTUnwrap(insideOrder)
+        for _ in 0..<3 { XCTAssertEqual(handle.latestStartedOperationOrder, first) }
+        XCTAssertEqual(node.nativeReads, 1)
+        XCTAssertTrue(edits.accept(7, for: handle, intentRevision: 2))
+        XCTAssertEqual(handle.latestStartedOperationOrder, first)
+        XCTAssertEqual(node.nativeReads, 1)
+        node.base.readbackAvailable = false
+        XCTAssertTrue(edits.commit(8, for: handle, intentRevision: 3))
+        let second = try XCTUnwrap(handle.latestStartedOperationOrder)
+        XCTAssertGreaterThan(second, first)
+        XCTAssertEqual(node.nativeReads, 2)
+        node.base.behavior = .rejected
+        XCTAssertFalse(edits.commit(9, for: handle, intentRevision: 4))
+        XCTAssertGreaterThan(try XCTUnwrap(handle.latestStartedOperationOrder), second)
+        XCTAssertEqual(node.nativeReads, 3)
+        edits.retire(handle)
+        XCTAssertNil(handle.latestStartedOperationOrder)
+        scheduler.runAll()
+        XCTAssertNil(handle.latestStartedOperationOrder)
+        XCTAssertEqual(node.nativeReads, 3, "Retired query and obsolete ticks cannot read native state")
+        XCTAssertEqual(node.base.attempts, [4, 8, 9])
+    }
+
+    func test_started_order_record_and_retained_handle_do_not_retain_node_or_owner() throws {
+        var node: R6ReadCountingParameterNode? = R6ReadCountingParameterNode()
+        weak var weakNode = node
+        var edits: AcceptedParameterEdits? = AcceptedParameterEdits(
+            schedule: scheduler.schedule, isCurrent: { [weak node] candidate in candidate === node },
+            apply: { target, parameter, value in
+                do {
+                    try target.setParameter(parameter, value: value)
+                    return ParameterApplication(success: true, actual: target.parameterValue(parameter))
+                } catch {
+                    return ParameterApplication(success: false, actual: target.parameterValue(parameter))
+                }
+            }
+        )
+        weak var weakOwner = edits
+        let handle = try XCTUnwrap(edits?.makeHandle(node: XCTUnwrap(node), parameterID: "amount"))
+        XCTAssertTrue(try XCTUnwrap(edits).commit(4, for: handle, intentRevision: 1))
+        XCTAssertGreaterThan(try XCTUnwrap(handle.latestStartedOperationOrder), 0)
+        node = nil
+        XCTAssertNil(weakNode)
+        XCTAssertNil(handle.latestStartedOperationOrder)
+        edits = nil
+        XCTAssertNil(weakOwner)
+        XCTAssertNil(handle.latestStartedOperationOrder)
+    }
+}

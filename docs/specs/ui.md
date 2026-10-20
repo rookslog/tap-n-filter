@@ -228,6 +228,11 @@ read-only `ParameterEditHandle.successfulPresentation` exposes operation order
 and actual-if-available, otherwise successful request; it validates the live
 session/owner/generation/concrete target and performs no native read. Existing
 live-target checks exclude/prune removed history; generation replacement clears it.
+The same weak target record tracks the greatest started invocation separately
+from completed success/outcome. `ParameterEditHandle.latestStartedOperationOrder`
+exposes that read-only order before application begins: zero for a valid target
+with no invocation, nil for an invalid/retired session. It uses the same live-target
+guards and pruning and performs no native read; completion never rolls the order back.
 
 The editor tracks fallback as catalog seed, genuine observation, or successful
 presentation, separately from optimistic value and authoritative actual. Factory
@@ -235,8 +240,15 @@ initialization preserves the pending-first short circuit: it does not read nativ
 state merely to seed fallback when input is already pending, and initial pending
 input is never successful history. Otherwise its existing actual observation,
 known successful history, or catalog seed supplies fallback. A genuine observation
-watermarks completed success order so an older unnotified success cannot replace
-a newer observed scalar.
+raises the incorporation floor to the greatest already-started invocation order,
+not just completed success. This includes genuine actual initialization, nonnil
+application readback, ordinary model reads and draft-start/Cancel native reads.
+An observation inside an in-flight setter excludes that setter's later fallback
+publication; a genuinely later invocation can still supply successful fallback
+only when its order is strictly greater than the floor. Pending intent, submission,
+nil readback, a draft start without actual readback, or callback receipt alone
+never raises this floor. Fallback remains historical presentation, not native
+authority or a guarantee of setter rollback.
 
 Every nil result, applied or rejected, clears authoritative actual state. Before
 presentation guards, the editor incorporates newer successful history and settles
@@ -284,10 +296,16 @@ panel URL calls the VM; cancelling changes no receipt or recovery context.
 ### Preset identity and Modified state
 
 The footer shows `presetName` and provenance: Factory, Session, File, Recovered,
-or Unsaved. Modified is appended when exact ordered effect snapshots or output
-gain differ from the baseline. Effect parameters, bypass, wet/dry, membership,
-order and extras participate; snapshot title metadata does not. Returning to the
-baseline clears Modified. Source selection, expanded controls, Diagnostics,
+or Unsaved. Modified uses a private comparison of output gain and ordered effect
+snapshots against the baseline. Membership, order and every effect field participate:
+type identifier, UUID, display name, bypass, wet/dry, parameter keys/values and
+extras keys/cases/values. Different extras cases never coerce to the same value.
+Float values and Double extras match under `==` or when both are NaN with identical
+bit patterns; different NaN payloads/signs and finite-versus-NaN remain different.
+Infinity and signed zero retain `==` semantics; strings, integers and booleans
+retain exact equality. Snapshot title and format metadata are excluded. This is
+diagnostic-state comparison only, not serialization normalization or a native-cause
+repair. Returning to the baseline clears Modified. Source selection, expanded controls, Diagnostics,
 settings drawers and rejected graph/parameter edits do not change this comparison.
 VM parameter updates notify observers in both directions.
 
@@ -337,8 +355,14 @@ pending accepted input and both original files remain unchanged. Fidelity
 correspondence alone does not establish safe runtime identity. Normal Q rounding,
 intentional corrupt-Q migration
 and supported integer-to-name reverb canonicalization do not imply fidelity
-loss. Exact graph dirty comparison remains unchanged; no numeric tolerance or
-editor/save-queue behavior is introduced by this classification.
+loss. For `tnf.eq` only, migrated `hp.frequency` and `lp.frequency` must each
+exist and exactly equal their already-captured restored snapshot values. Missing
+or different frequency values require Recovered/Save As with a fidelity notice,
+not an invented skipped-node warning. This conservative file-protection policy
+can require Save As even for small frequency normalization; it neither diagnoses
+native causes/audio accuracy nor adds native reads, retries or tolerances.
+Graph dirty comparison uses the separate private Modified-state policy above;
+this frequency classification introduces no numeric tolerance or editor/save-queue change.
 
 ## PowerToggle
 

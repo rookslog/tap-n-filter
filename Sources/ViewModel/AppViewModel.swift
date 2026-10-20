@@ -166,8 +166,61 @@ public final class AppViewModel: ObservableObject {
     /// A recovered chain can match this baseline while still requiring Save As.
     public var isPresetModified: Bool {
         let current = graph.snapshot()
-        return current.outputGain != presetReceipt.baseline.outputGain
-            || current.nodes != presetReceipt.baseline.nodes
+        return !Self.presetScalarsMatch(current.outputGain, presetReceipt.baseline.outputGain)
+            || !Self.presetNodesMatch(current.nodes, presetReceipt.baseline.nodes)
+    }
+
+    // Dirty-state comparison only: retained diagnostic NaNs are unchanged when
+    // their bits match. This does not normalize state or alter import fidelity.
+    private static func presetScalarsMatch(_ lhs: Float, _ rhs: Float) -> Bool {
+        lhs == rhs || (lhs.isNaN && rhs.isNaN && lhs.bitPattern == rhs.bitPattern)
+    }
+
+    private static func presetScalarsMatch(_ lhs: Double, _ rhs: Double) -> Bool {
+        lhs == rhs || (lhs.isNaN && rhs.isNaN && lhs.bitPattern == rhs.bitPattern)
+    }
+
+    private static func presetNodesMatch(_ lhs: [EffectState], _ rhs: [EffectState]) -> Bool {
+        guard lhs.count == rhs.count else { return false }
+        return zip(lhs, rhs).allSatisfy { presetNodeMatches($0.0, $0.1) }
+    }
+
+    private static func presetNodeMatches(_ lhs: EffectState, _ rhs: EffectState) -> Bool {
+        lhs.typeIdentifier == rhs.typeIdentifier
+            && lhs.id == rhs.id
+            && lhs.displayName == rhs.displayName
+            && lhs.bypass == rhs.bypass
+            && presetScalarsMatch(lhs.wetDryMix, rhs.wetDryMix)
+            && presetParametersMatch(lhs.parameters, rhs.parameters)
+            && presetExtrasMatch(lhs.extras, rhs.extras)
+    }
+
+    private static func presetParametersMatch(_ lhs: [String: Float], _ rhs: [String: Float]) -> Bool {
+        guard lhs.count == rhs.count else { return false }
+        for (key, value) in lhs {
+            guard let other = rhs[key], presetScalarsMatch(value, other) else { return false }
+        }
+        return true
+    }
+
+    private static func presetExtrasMatch(
+        _ lhs: [String: AnyCodableValue], _ rhs: [String: AnyCodableValue]
+    ) -> Bool {
+        guard lhs.count == rhs.count else { return false }
+        for (key, value) in lhs {
+            guard let other = rhs[key], presetExtraMatches(value, other) else { return false }
+        }
+        return true
+    }
+
+    private static func presetExtraMatches(_ lhs: AnyCodableValue, _ rhs: AnyCodableValue) -> Bool {
+        switch (lhs, rhs) {
+        case (.string(let left), .string(let right)): return left == right
+        case (.int(let left), .int(let right)): return left == right
+        case (.double(let left), .double(let right)): return presetScalarsMatch(left, right)
+        case (.bool(let left), .bool(let right)): return left == right
+        default: return false
+        }
     }
 
     @Published public var currentSource: CaptureSource?
@@ -1049,6 +1102,13 @@ public final class AppViewModel: ObservableObject {
                 // runtime catalog keys. Preserve recovery/Save As provenance.
                 guard let value = original.parameters[parameter.identifier],
                       parameter.range.contains(value) else { return true }
+            }
+            if original.typeIdentifier == "tnf.eq" {
+                for identifier in ["hp.frequency", "lp.frequency"] {
+                    guard let requested = original.parameters[identifier],
+                          let restoredValue = actual.parameters[identifier],
+                          requested == restoredValue else { return true }
+                }
             }
         }
         return false

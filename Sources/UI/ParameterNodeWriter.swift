@@ -18,6 +18,7 @@ struct ParameterNodeWriter {
             return model.pendingParameterValue(for: handle)
         }
         let successful: () -> ParameterSuccessfulPresentation? = { handle?.successfulPresentation }
+        let latestStarted: () -> UInt64? = { handle?.latestStartedOperationOrder }
         // Preserve the pending-first short circuit: do not read native state
         // just to seed fallback while accepted input already supplies display.
         let initialPending = pending()
@@ -46,7 +47,8 @@ struct ParameterNodeWriter {
             pendingAcceptedValue: pending,
             applicationSessionID: handle?.sessionID,
             initialActual: initialActual,
-            successfulPresentation: successful
+            successfulPresentation: successful,
+            latestStartedOperationOrder: latestStarted
         )
         handle?.setApplicationResultHandler { [weak editor] result in editor?.receiveApplicationResult(result) }
         return editor

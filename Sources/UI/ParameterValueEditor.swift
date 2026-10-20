@@ -45,6 +45,7 @@ final class ParameterValueEditor: ObservableObject {
     private let pendingAcceptedValue: (() -> Float?)?
     private let applicationSessionID: UUID?
     private let successfulPresentation: (() -> ParameterSuccessfulPresentation?)?
+    private let latestStartedOperationOrder: (() -> UInt64?)?
     private var fallback: Fallback
     private var incorporatedSuccessOrder: UInt64 = 0
     private var awaitingSubmission = false
@@ -70,7 +71,8 @@ final class ParameterValueEditor: ObservableObject {
         pendingAcceptedValue: (() -> Float?)? = nil,
         applicationSessionID: UUID? = nil,
         initialActual: Float? = nil,
-        successfulPresentation: (() -> ParameterSuccessfulPresentation?)? = nil
+        successfulPresentation: (() -> ParameterSuccessfulPresentation?)? = nil,
+        latestStartedOperationOrder: (() -> UInt64?)? = nil
     ) {
         let presentation = ParameterValuePresentation(parameter: parameter)
         self.presentation = presentation
@@ -86,6 +88,7 @@ final class ParameterValueEditor: ObservableObject {
         self.pendingAcceptedValue = pendingAcceptedValue
         self.applicationSessionID = applicationSessionID
         self.successfulPresentation = successfulPresentation
+        self.latestStartedOperationOrder = latestStartedOperationOrder
         // Optimistic initial pending input is not successful history. Only an
         // actual observation, scoped success, or original catalog seed may be
         // used after a settled rejection.
@@ -193,8 +196,8 @@ final class ParameterValueEditor: ObservableObject {
             }
             guard let actual = readValue?() else { return }
             let previousActual = authoritativeActual
-            // Even an equal ordinary observation watermarks completed success
-            // history; it must not later be displaced by an unnotified write.
+            // Even an equal ordinary observation watermarks already-started
+            // invocations, including success not yet published by an outer write.
             observe(actual)
             // The result already reconciled this actual without erasing a
             // newer draft. No historical float backlog can hide a later change.
@@ -327,7 +330,7 @@ final class ParameterValueEditor: ObservableObject {
         authoritativeActual = actual
         fallback = .observed(actual)
         incorporatedSuccessOrder = max(
-            incorporatedSuccessOrder, successfulPresentation?()?.operationOrder ?? 0
+            incorporatedSuccessOrder, latestStartedOperationOrder?() ?? 0
         )
     }
 

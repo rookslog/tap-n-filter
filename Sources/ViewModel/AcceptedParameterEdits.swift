@@ -69,6 +69,12 @@ public final class ParameterEditHandle {
     public var successfulPresentation: ParameterSuccessfulPresentation? {
         owner?.successfulPresentation(for: self)
     }
+
+    /// Greatest setter-invocation order started for this live concrete target.
+    /// Zero means no invocation; nil means an invalid/retired session. No native read.
+    public var latestStartedOperationOrder: UInt64? {
+        owner?.latestStartedOperationOrder(for: self)
+    }
 }
 
 struct ParameterApplication {
@@ -99,6 +105,7 @@ final class AcceptedParameterEdits {
     private final class Completed {
         weak var node: (any EffectNode)?
         let nodeID: UUID
+        var startedOrder: UInt64 = 0
         var success: ParameterSuccessfulPresentation?
         var outcomeOrder: UInt64 = 0
         init(_ node: any EffectNode) { self.node = node; self.nodeID = node.id }
@@ -171,6 +178,14 @@ final class AcceptedParameterEdits {
         guard let node = liveNode(handle), let record = completed[key(node, handle.parameterID)],
               record.node === node, record.nodeID == node.id else { return nil }
         return record.success
+    }
+
+    fileprivate func latestStartedOperationOrder(for handle: ParameterEditHandle) -> UInt64? {
+        discardStale()
+        guard let node = liveNode(handle) else { return nil }
+        guard let record = completed[key(node, handle.parameterID)] else { return 0 }
+        guard record.node === node, record.nodeID == node.id else { return nil }
+        return record.startedOrder
     }
 
     func finish(_ handle: ParameterEditHandle) -> Bool {
@@ -308,6 +323,14 @@ final class AcceptedParameterEdits {
         let nodeID = node.id
         nextAttempt &+= 1
         let attemptID = nextAttempt
+        if generation == attemptedGeneration, node.id == nodeID, isCurrent(node),
+           node.parameters.contains(where: { $0.identifier == parameter }) {
+            let record = completed[target] ?? Completed(node)
+            completed[target] = record
+            // Observations inside apply must see this invocation before it can
+            // publish success. Nested completion must not roll this order back.
+            record.startedOrder = max(record.startedOrder, attemptID)
+        }
         let result = apply(node, parameter, value)
         if generation == attemptedGeneration, node.id == nodeID, isCurrent(node),
            node.parameters.contains(where: { $0.identifier == parameter }) {

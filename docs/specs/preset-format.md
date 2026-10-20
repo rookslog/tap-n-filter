@@ -232,6 +232,13 @@ introduce required numeric keys. It does not use general float snapshot inequali
 as an import-loss test: normal Q roundtrips, intentional corrupt-Q repair and legacy integer
 reverb preset canonicalization remain supported. Actual restored state is the
 clean graph baseline; original-file fidelity is a separate receipt concern.
+For `tnf.eq` specifically, migrated `hp.frequency` and `lp.frequency` must both
+be present and exactly equal their corresponding values in the already-captured
+restored snapshot. A missing or unequal value requires Recovered provenance,
+a fidelity-loss notice and Save As, even with no skipped effects. This narrow
+file-preservation rule can conservatively require Save As for small frequency
+normalization; it adds no native read, retry, tolerance or blanket snapshot
+comparison and does not repair/diagnose native behavior or audio accuracy.
 No raw-JSON preservation store, persistence fields or schema version change is
 introduced. Original imported bytes remain untouched until an explicit save.
 
