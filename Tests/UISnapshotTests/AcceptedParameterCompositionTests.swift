@@ -816,6 +816,275 @@ final class AcceptedParameterCompositionTests: XCTestCase {
         XCTAssertEqual(nodeA.attempts, [4])
         XCTAssertEqual(nodeB.attempts, [2])
     }
+
+    func test_nil_direct_supersession_replaces_cancelled_drag_not_with_stale_authoritative_actual() throws {
+        // Falsifier: accepted 4 replaces cancelled 7, not the last observed 2,
+        // before any model event, tick or Save can repair presentation.
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let editor = fixture.writer(node, model).makeEditor()
+        editor.receiveModelValue(try XCTUnwrap(node.parameterValue("amount")))
+        XCTAssertEqual(editor.value, 2)
+        editor.drag(to: 0.7)
+        let oldTick = try scheduler.takeNext()
+        node.readbackAvailable = false
+
+        model.updateParameter(nodeID: node.id, paramID: "amount", value: 4)
+
+        XCTAssertNil(node.parameterValue("amount"))
+        XCTAssertEqual(node.value, 4)
+        XCTAssertEqual(editor.value, 4)
+        XCTAssertEqual(editor.text, "4.0")
+        XCTAssertFalse(editor.isEditing)
+        XCTAssertNil(editor.errorMessage)
+        XCTAssertEqual(node.attempts, [4])
+        oldTick()
+        XCTAssertEqual(editor.value, 4)
+        XCTAssertEqual(node.attempts, [4])
+        model.savePreset(to: fixture.url("nil-direct-four.tnf"))
+        XCTAssertEqual(try fixture.exportedValue("nil-direct-four.tnf"), 4)
+        scheduler.runAll()
+        oldTick()
+        XCTAssertEqual(editor.text, "4.0")
+        XCTAssertEqual(node.attempts, [4])
+    }
+
+    func test_nil_old_to_old_direct_supersession_reconciles_cancelled_drag_without_scalar_echo() throws {
+        // Falsifier: native 2→2 still acknowledges cancelled 7 as accepted 2.
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let editor = fixture.writer(node, model).makeEditor()
+        editor.receiveModelValue(try XCTUnwrap(node.parameterValue("amount")))
+        editor.drag(to: 0.7)
+        let oldTick = try scheduler.takeNext()
+        node.readbackAvailable = false
+
+        model.updateParameter(nodeID: node.id, paramID: "amount", value: 2)
+
+        XCTAssertNil(node.parameterValue("amount"))
+        XCTAssertEqual(node.value, 2)
+        XCTAssertEqual(editor.value, 2)
+        XCTAssertEqual(editor.text, "2.0")
+        XCTAssertFalse(editor.isEditing)
+        XCTAssertNil(editor.errorMessage)
+        oldTick()
+        XCTAssertEqual(node.attempts, [2])
+        XCTAssertEqual(editor.value, 2)
+        model.savePreset(to: fixture.url("nil-direct-old-to-old.tnf"))
+        XCTAssertEqual(try fixture.exportedValue("nil-direct-old-to-old.tnf"), 2)
+        scheduler.runAll()
+        oldTick()
+        XCTAssertEqual(editor.text, "2.0")
+        XCTAssertEqual(node.attempts, [2])
+    }
+
+    func test_nil_direct_result_repairs_backing_value_beneath_reentrant_invalid_draft_without_clearing_error() throws {
+        // Falsifier: backing/Cancel become 4 while exact invalid text, editing
+        // intent and the setter-time validation error survive result and Save.
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let editor = fixture.writer(node, model).makeEditor()
+        let locale = fixture.locale
+        editor.drag(to: 0.7)
+        let oldTick = try scheduler.takeNext()
+        node.readbackAvailable = false
+        var validationError: String?
+        var callbacks = 0
+        node.afterAttempt = { [weak node] requested in
+            node?.afterAttempt = nil
+            callbacks += 1
+            XCTAssertEqual(requested, 4)
+            editor.beginEditing(locale: locale)
+            editor.text = "invalid draft"
+            XCTAssertFalse(editor.commit(locale: locale))
+            validationError = editor.errorMessage
+            XCTAssertNotNil(validationError)
+        }
+
+        model.updateParameter(nodeID: node.id, paramID: "amount", value: 4)
+
+        let error = try XCTUnwrap(validationError)
+        XCTAssertEqual(callbacks, 1)
+        XCTAssertNil(node.parameterValue("amount"))
+        XCTAssertEqual(editor.value, 4, "Draft protection must not retain cancelled backing 7")
+        XCTAssertEqual(editor.text, "invalid draft")
+        XCTAssertTrue(editor.isEditing)
+        XCTAssertEqual(editor.errorMessage, error)
+        oldTick()
+        model.savePreset(to: fixture.url("nil-direct-invalid-draft.tnf"))
+        XCTAssertEqual(try fixture.exportedValue("nil-direct-invalid-draft.tnf"), 4)
+        XCTAssertEqual(editor.value, 4)
+        XCTAssertEqual(editor.text, "invalid draft")
+        XCTAssertTrue(editor.isEditing)
+        XCTAssertEqual(editor.errorMessage, error)
+        XCTAssertEqual(node.attempts, [4], "Save must not submit invalid text")
+        editor.cancel()
+        XCTAssertEqual(editor.value, 4)
+        XCTAssertEqual(editor.text, "4.0")
+        XCTAssertFalse(editor.isEditing)
+        XCTAssertNil(editor.errorMessage)
+        scheduler.runAll()
+        oldTick()
+        XCTAssertEqual(node.attempts, [4], "Cancel is not another setter")
+    }
+
+    func test_nil_older_direct_acknowledgement_preserves_reentrant_newer_drag_and_old_tick_cannot_deliver_it() throws {
+        // Falsifier: older request 4 cannot replace newer pending 9, and only
+        // Save (not the cancelled 7 ticket) delivers 9 once.
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let editor = fixture.writer(node, model).makeEditor()
+        editor.drag(to: 0.7)
+        let oldTick = try scheduler.takeNext()
+        node.readbackAvailable = false
+        var callbacks = 0
+        node.afterAttempt = { [weak node] requested in
+            node?.afterAttempt = nil
+            callbacks += 1
+            XCTAssertEqual(requested, 4)
+            editor.drag(to: 0.9)
+        }
+
+        model.updateParameter(nodeID: node.id, paramID: "amount", value: 4)
+
+        XCTAssertEqual(callbacks, 1)
+        XCTAssertNil(node.parameterValue("amount"))
+        XCTAssertEqual(node.value, 4)
+        XCTAssertEqual(editor.value, 9)
+        XCTAssertEqual(editor.text, "9.0")
+        XCTAssertFalse(editor.isEditing)
+        XCTAssertNil(editor.errorMessage)
+        XCTAssertEqual(scheduler.count, 1)
+        oldTick()
+        XCTAssertEqual(node.attempts, [4], "Old ticket cannot deliver pending 9 early")
+        XCTAssertEqual(node.value, 4)
+        XCTAssertEqual(editor.value, 9)
+        model.savePreset(to: fixture.url("nil-direct-newer-drag.tnf"))
+        XCTAssertEqual(try fixture.exportedValue("nil-direct-newer-drag.tnf"), 9)
+        XCTAssertEqual(node.attempts, [4, 9])
+        XCTAssertEqual(editor.value, 9)
+        XCTAssertEqual(editor.text, "9.0")
+        oldTick()
+        scheduler.runAll()
+        XCTAssertEqual(node.attempts, [4, 9])
+    }
+
+    func test_nil_later_serial_outer_direct_result_cannot_overwrite_newer_nested_commit_or_cancel_backing() throws {
+        // Falsifier: inner commit 8 wins even though outer request 4 receives
+        // its acknowledgement later, with a higher application serial.
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let editor = fixture.writer(node, model).makeEditor()
+        let locale = fixture.locale
+        editor.drag(to: 0.7)
+        let oldTick = try scheduler.takeNext()
+        node.readbackAvailable = false
+        var callbacks = 0
+        node.afterAttempt = { [weak node] requested in
+            node?.afterAttempt = nil
+            callbacks += 1
+            XCTAssertEqual(requested, 4)
+            editor.beginEditing(locale: locale)
+            editor.text = "8"
+            XCTAssertTrue(editor.commit(locale: locale))
+            XCTAssertEqual(editor.value, 8)
+            XCTAssertEqual(editor.text, "8.0")
+        }
+
+        model.updateParameter(nodeID: node.id, paramID: "amount", value: 4)
+
+        XCTAssertEqual(callbacks, 1)
+        XCTAssertNil(node.parameterValue("amount"))
+        XCTAssertEqual(node.value, 8)
+        XCTAssertEqual(editor.value, 8)
+        XCTAssertEqual(editor.text, "8.0")
+        XCTAssertFalse(editor.isEditing)
+        XCTAssertNil(editor.errorMessage)
+        XCTAssertEqual(node.attempts, [4, 8])
+        editor.beginEditing(locale: locale)
+        editor.text = "6"
+        editor.cancel()
+        XCTAssertEqual(editor.value, 8)
+        XCTAssertEqual(editor.text, "8.0")
+        XCTAssertFalse(editor.isEditing)
+        oldTick()
+        model.savePreset(to: fixture.url("nil-direct-nested-commit.tnf"))
+        XCTAssertEqual(try fixture.exportedValue("nil-direct-nested-commit.tnf"), 8)
+        scheduler.runAll()
+        oldTick()
+        XCTAssertEqual(editor.value, 8)
+        XCTAssertEqual(node.attempts, [4, 8])
+    }
+
+    func test_nil_unchanged_setter_clears_old_authoritative_actual_so_restored_equal_readback_reconciles_draft() throws {
+        // Falsifier: accepted presentation 4 is not native 2; restoring real
+        // readback 2 must reconcile even though 2 was previously observed.
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let editor = fixture.writer(node, model).makeEditor()
+        editor.receiveModelValue(try XCTUnwrap(node.parameterValue("amount")))
+        node.behavior = .unchanged
+        editor.drag(to: 0.7)
+        let oldTick = try scheduler.takeNext()
+        node.readbackAvailable = false
+
+        model.updateParameter(nodeID: node.id, paramID: "amount", value: 4)
+
+        XCTAssertNil(node.parameterValue("amount"))
+        XCTAssertEqual(editor.value, 4)
+        XCTAssertEqual(editor.text, "4.0")
+        XCTAssertFalse(editor.isEditing)
+        XCTAssertEqual(node.value, 2, "Successful unchanged setter need not match accepted presentation")
+        model.savePreset(to: fixture.url("nil-unchanged-actual-two.tnf"))
+        XCTAssertEqual(try fixture.exportedValue("nil-unchanged-actual-two.tnf"), 2)
+        editor.beginEditing(locale: fixture.locale)
+        editor.text = "6"
+        node.readbackAvailable = true
+        let actual = try XCTUnwrap(node.parameterValue("amount"))
+        XCTAssertEqual(actual, 2)
+        editor.receiveModelValue(actual)
+        XCTAssertEqual(editor.value, 2)
+        XCTAssertEqual(editor.text, "2.0", "Nil acknowledgement must clear, not preserve, old actual 2")
+        XCTAssertTrue(editor.isEditing)
+        XCTAssertNil(editor.errorMessage)
+        oldTick()
+        scheduler.runAll()
+        XCTAssertEqual(node.attempts, [4], "Ordinary readback must not write or substitute a default")
+    }
+
+    func test_nil_applied_request_is_not_fabricated_authoritative_actual_when_matching_real_readback_returns() throws {
+        // Falsifier: actual 4 must replace draft text even when it equals the
+        // optimistic request; caching request as authoritative would hide it.
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let editor = fixture.writer(node, model).makeEditor()
+        editor.drag(to: 0.7)
+        let oldTick = try scheduler.takeNext()
+        node.readbackAvailable = false
+
+        model.updateParameter(nodeID: node.id, paramID: "amount", value: 4)
+
+        XCTAssertNil(node.parameterValue("amount"))
+        XCTAssertEqual(editor.value, 4)
+        XCTAssertEqual(editor.text, "4.0")
+        XCTAssertFalse(editor.isEditing)
+        editor.beginEditing(locale: fixture.locale)
+        editor.text = "6"
+        XCTAssertTrue(editor.isEditing)
+        node.readbackAvailable = true
+        let actual = try XCTUnwrap(node.parameterValue("amount"))
+        XCTAssertEqual(actual, 4)
+        editor.receiveModelValue(actual)
+        XCTAssertEqual(editor.value, 4)
+        XCTAssertEqual(editor.text, "4.0", "Accepted request must not suppress later measured actual 4")
+        XCTAssertTrue(editor.isEditing)
+        XCTAssertNil(editor.errorMessage)
+        model.savePreset(to: fixture.url("nil-restored-actual-four.tnf"))
+        XCTAssertEqual(try fixture.exportedValue("nil-restored-actual-four.tnf"), 4)
+        oldTick()
+        scheduler.runAll()
+        XCTAssertEqual(node.attempts, [4], "Real readback and Save cannot echo another setter")
+    }
 }
 
 /// Captures callbacks even after delivery so tests can replay obsolete work.
