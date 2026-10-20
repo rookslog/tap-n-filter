@@ -962,6 +962,13 @@ public final class AppViewModel: ObservableObject {
     public func loadPreset(from url: URL) {
         do {
             let result = try PresetStore.loadResult(from: url)
+            // UUID-only row actions cannot disambiguate occurrences, even if
+            // fidelity matching could preserve all their values and order.
+            // Reject raw FILE input before install, flush or generation change.
+            guard Set(result.preset.nodes.map { $0.id }).count == result.preset.nodes.count else {
+                lastError = .preset("Load failed: Preset contains duplicate effect identifiers.")
+                return
+            }
             let migrated = PresetMigrator.migrate(result.preset)
             try installPreset(migrated)
             recordLoadedPreset(
@@ -1017,12 +1024,11 @@ public final class AppViewModel: ObservableObject {
         var inputCursor = 0
         for (outputIndex, node) in restored.nodes.enumerated() {
             let actual = actualStates[outputIndex]
-            // UUIDs are untrusted and may repeat. Match ordered occurrences by
-            // ID AND type, never a unique-key dictionary. Ambiguity is unsafe.
+            // This is fidelity correspondence only, not runtime identity
+            // validation. FILE UUID uniqueness was checked before installation.
             let index: Int
             if completeOrderedMatch {
-                // With no missing occurrences, order disambiguates even repeated
-                // ID/type pairs; duplicate UUIDs alone do not imply lost data.
+                // Fully restored occurrences correspond positionally.
                 index = outputIndex
             } else {
                 let candidates = input.nodes.indices.filter { index in

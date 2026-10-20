@@ -155,6 +155,11 @@ main queue; the UI does not run a second production timer. Final drag, exact
 numeric commits, reset and Save flush without waiting for that timer. Finishing
 a drag leaves its control session usable for another drag. Disappearance flushes
 accepted input before retirement, then cancels any numeric draft.
+A retained slider owns a UI lifecycle host: reappearance creates a fresh default
+editor/handle for the still-current concrete node and graph generation. The old
+editor stays terminal. The host holds its VM/node weakly; it cannot renew against
+a same-UUID replacement. The slider observes host editor replacement and its
+content observes the current editor directly for value, text and error changes.
 
 Frequency readouts use Hz below 1000 Hz and readable kHz at and above it (e.g., "800 Hz", "1 kHz", "1.5 kHz"). Other continuous readouts keep their unit conventions. Nonfinite readback is diagnosed as invalid; out-of-range readback retains its actual value with a warning. Only the thumb is constrained to the legal range; the readout never silently substitutes an endpoint.
 
@@ -195,7 +200,8 @@ accepted pending intent, then reads current optional native state rather than
 trusting a potentially stale or default-substituted parent Float. Nil remains
 unknown. NaN-aware equality with the latest authoritative readback preserves a
 newer draft after its own application result; genuinely changed native state
-resyncs even when it matches an older own write. No historical float backlog
+resyncs text even when it equals the optimistic scalar or matches an older own
+write. No historical float backlog
 suppresses unrelated model changes.
 
 Standalone `ParameterValueEditor` clients without these production hooks retain
@@ -276,9 +282,13 @@ The file-import fidelity classifier uses decode diagnostics from the same bytes
 and compares migrated input to corresponding restored node occurrences by
 ID/type/order. It detects unknown root/node fields, dropped parameter/extras
 keys, output gain outside 0–2, wet/dry outside 0–1 and parameters outside their
-runtime metadata ranges. Duplicate UUIDs are not unique dictionary keys:
-complete ordered occurrences remain supported, while ambiguous partial matches
-are treated conservatively. Normal Q rounding, intentional corrupt-Q migration
+runtime metadata ranges. FILE imports with duplicate UUIDs are rejected before
+installation, accepted-edit flushing or generation invalidation, including
+duplicates across types or occurrences that restoration would skip. The existing
+load-error surface reports rejection; the previous graph, receipt, baseline,
+pending accepted input and both original files remain unchanged. Fidelity
+correspondence alone does not establish safe runtime identity. Normal Q rounding,
+intentional corrupt-Q migration
 and supported integer-to-name reverb canonicalization do not imply fidelity
 loss. Exact graph dirty comparison remains unchanged; no numeric tolerance or
 editor/save-queue behavior is introduced by this classification.

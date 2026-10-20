@@ -245,6 +245,15 @@ The format is intentionally human-readable. Field names are descriptive, paramet
 
 ## Validation
 
+FILE imports reject repeated effect UUIDs in the decoded input, even across
+different types or when an occurrence would otherwise be skipped. Validation
+precedes graph installation, accepted-edit flushing and generation invalidation.
+The existing load-error surface is used, preserving the previous graph and node
+identities, receipt/baseline, pending accepted edits and all original file bytes.
+IDs are not rewritten. This FILE boundary does not change lower-level decoding,
+session restoration or the schema. Ordered fidelity matching does not establish
+safe runtime identity for UUID-only controls.
+
 The app validates presets on load. Validation errors:
 
 - Invalid JSON → loader throws, UI shows "Preset file is not valid JSON."

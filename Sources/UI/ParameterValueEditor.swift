@@ -162,7 +162,13 @@ final class ParameterValueEditor: ObservableObject {
             // The result already reconciled this actual without erasing a
             // newer draft. No historical float backlog can hide a later change.
             if let authoritativeActual, sameValue(authoritativeActual, actual) { return }
-            resync(value: actual)
+            // A genuine authoritative transition must reconcile text even if
+            // its scalar equals our optimistic value. Standalone resync keeps
+            // its unchanged-value/NaN draft suppression semantics.
+            invalidateDrag()
+            lastWritten = nil
+            authoritativeActual = actual
+            present(actual)
             return
         }
         let echo = lastWritten

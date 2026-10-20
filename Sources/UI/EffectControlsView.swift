@@ -173,17 +173,38 @@ public struct EffectControlsView: View {
 /// Native continuous slider with a discoverable exact-value field and reset.
 private struct ParameterSlider: View {
 
-    let parameter: EffectParameter
     let initialValue: Float
-    @Environment(\.locale) private var locale
-    @FocusState private var inputFocused: Bool
-    @StateObject private var editor: ParameterValueEditor
+    @StateObject private var session: ParameterEditorSession
 
     init(writer: ParameterNodeWriter, initialValue: Float) {
-        self.parameter = writer.parameter
         self.initialValue = initialValue
-        _editor = StateObject(wrappedValue: writer.makeEditor())
+        // StateObject's deferred initializer must not retain the strong writer.
+        let session = ParameterEditorSession(writer: writer)
+        _session = StateObject(wrappedValue: session)
     }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let editor = session.editor {
+                ParameterSliderContent(initialValue: initialValue, editor: editor)
+                    .id(ObjectIdentifier(editor))
+            }
+        }
+        .onAppear { session.appear() }
+        .onDisappear { session.disappear() }
+    }
+}
+
+/// Observe the current editor directly. Publishing a replacement on the host
+/// does not forward the new editor's nested value/text/error publications.
+private struct ParameterSliderContent: View {
+
+    let initialValue: Float
+    @ObservedObject var editor: ParameterValueEditor
+    @Environment(\.locale) private var locale
+    @FocusState private var inputFocused: Bool
+
+    private var parameter: EffectParameter { editor.presentation.parameter }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -246,9 +267,6 @@ private struct ParameterSlider: View {
         }
         .onAppear {
             editor.receiveModelValue(initialValue)
-        }
-        .onDisappear {
-            editor.stop()
         }
         .onChange(of: inputFocused) { _, focused in
             if focused {

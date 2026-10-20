@@ -67,6 +67,12 @@ Work toward v0.1.0. Nothing has been tagged or released yet.
 
 ### Fixed
 
+- Duplicate-UUID preset FILE imports are rejected before replacing the graph or
+  invalidating pending edits; prior preset context and original files are retained.
+- Retained continuous controls renew their editor sessions on reappearance,
+  keeping retired editors inert and observing the new editor directly.
+- Genuine external parameter changes reconcile numeric draft text even when the
+  readback equals the optimistic slider value; own-result draft protections remain.
 - Menu panel collapsed on macOS 27, taking the effect list with it. The chain
   editor's `ScrollView` was constrained only by `maxHeight` inside a window
   that sizes to its content's fitting height; height floors now keep the panel
