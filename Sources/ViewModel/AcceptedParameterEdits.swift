@@ -13,9 +13,9 @@ public enum ParameterApplicationOutcome: Equatable {
 /// Scoped acknowledgement of one actual setter attempt, independent of whether
 /// the native value changed enough to produce a SwiftUI model echo.
 public struct ParameterApplicationResult {
-    /// The control session that submitted the value.
+    /// The submitting session, or the pending session superseded by this write.
     public let sessionID: UUID
-    /// Caller revision, captured before submission (including synchronous writes).
+    /// Submitted intent revision, including an intent superseded by a direct write.
     public let intentRevision: UInt64
     /// Monotonically increasing application acknowledgement serial.
     public let applicationSerial: UInt64
@@ -172,6 +172,14 @@ final class AcceptedParameterEdits {
         if result.success {
             if (latestOrders[target] ?? 0) <= cutoff { latestOrders[target] = cutoff }
             if let queued = pending[target], queued.order <= cutoff { invalidate(target) }
+            // A direct write can leave the native scalar unchanged, so no model
+            // echo will reconcile the cancelled optimistic drag. Acknowledge
+            // its revision with THIS write's actual readback; newer input and
+            // numeric drafts remain protected by the consumer's revision guard.
+            if let unattempted {
+                acknowledge(unattempted.handle, intentRevision: unattempted.intentRevision,
+                            requestedValue: value, result: result)
+            }
         } else if let unattempted, pending[target] == nil,
                   latestOrders[target] == unattempted.order, liveNode(unattempted.handle) != nil {
             // Restore delivery of the previously accepted, UNATTEMPTED drag,
@@ -264,15 +272,21 @@ final class AcceptedParameterEdits {
             else { failures[target] = Failure(node) }
         }
         if attempts[target] == attemptID { attempts.removeValue(forKey: target) }
-        if let handle, liveNode(handle) != nil {
-            applicationSerial &+= 1
-            handle.handler?(ParameterApplicationResult(
-                sessionID: handle.sessionID, intentRevision: intentRevision,
-                applicationSerial: applicationSerial, requestedValue: value,
-                actualValue: result.actual, outcome: result.success ? .applied : .rejected
-            ))
+        if let handle {
+            acknowledge(handle, intentRevision: intentRevision, requestedValue: value, result: result)
         }
         return result
+    }
+
+    private func acknowledge(_ handle: ParameterEditHandle, intentRevision: UInt64,
+                             requestedValue: Float, result: ParameterApplication) {
+        guard liveNode(handle) != nil else { return }
+        applicationSerial &+= 1
+        handle.handler?(ParameterApplicationResult(
+            sessionID: handle.sessionID, intentRevision: intentRevision,
+            applicationSerial: applicationSerial, requestedValue: requestedValue,
+            actualValue: result.actual, outcome: result.success ? .applied : .rejected
+        ))
     }
 
     private func discardStale() {

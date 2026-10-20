@@ -172,7 +172,12 @@ targets; reorder preserves them and failed load preserves current accepted input
 Each actual write uses the VM's shared immediate apply routine, notifies its
 observers and reads actual `Float?` state, without substituting a default for nil.
 The public immediate `updateParameter` API remains supported; successful writes
-supersede older queued input for the same target.
+supersede older queued input for the same target. The cancelled pending session
+receives that successful write's actual optional readback under its superseded
+intent revision, even when native old→old cannot produce an ordinary model echo.
+The result's request is the actual immediate setter request, not the cancelled
+drag value. Newer reentrant drag/draft revisions remain protected. A rejected
+immediate write does not acknowledge cancellation and preserves pending delivery.
 
 The VM checks graph generation, UUID, object identity and parameter at actual
 delivery. Scheduling tickets are invalidated before draining, so already-delivered
