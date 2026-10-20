@@ -1,4 +1,3 @@
-import Combine
 import Effects
 import SwiftUI
 import ViewModel
@@ -11,8 +10,8 @@ import ViewModel
 /// - `.integer` → `Stepper`.
 /// - `.enumValue(cases:)` → `Picker`.
 ///
-/// Slider drags are coalesced through a per-parameter Combine subject that
-/// throttles at 30 Hz before calling `viewModel.updateParameter`.
+/// Slider drags are coalesced at 30 Hz before calling `viewModel.updateParameter`.
+/// Exact numeric commits, reset, and the final drag value bypass that delay.
 public struct EffectControlsView: View {
 
     @EnvironmentObject public var viewModel: AppViewModel
@@ -58,14 +57,21 @@ public struct EffectControlsView: View {
     private func continuousSlider(_ parameter: EffectParameter) -> some View {
         ParameterSlider(
             parameter: parameter,
-            initialValue: currentValue(for: parameter)
+            initialValue: currentValue(for: parameter),
+            readValue: { currentValue(for: parameter) }
         ) { value in
+            // Nodes are reference types, so their parameter setters do not
+            // publish a graph change. Refresh observers and actual AU readback.
+            viewModel.objectWillChange.send()
             viewModel.updateParameter(
                 nodeID: node.id,
                 paramID: parameter.identifier,
                 value: value
             )
         }
+        // Presets may replace the node object while retaining its saved UUID
+        // and values. Its old editor/queued drag must not survive that swap.
+        .id(ObjectIdentifier(node))
     }
 
     private func integerStepper(_ parameter: EffectParameter) -> some View {
@@ -167,31 +173,31 @@ public struct EffectControlsView: View {
 
     /// Read the current parameter value off the node via the protocol-level
     /// reader. Nodes that don't recognise the identifier (or have no
-    /// read-back path) return `nil`; we fall back to `parameter.defaultValue`
-    /// so the control always has a valid initial value.
+    /// read-back path) return `nil`; only then do we use `parameter.defaultValue`.
+    /// Non-nil readback, including invalid/out-of-range values, stays diagnostic.
     private func currentValue(for parameter: EffectParameter) -> Float {
         return node.parameterValue(parameter.identifier) ?? parameter.defaultValue
     }
 }
 
-/// A continuous slider plus numeric readout. Drags are throttled at 30 Hz
-/// using Combine's `throttle` so the underlying audio-unit parameter setter
-/// is not flooded.
+/// Native continuous slider with a discoverable exact-value field and reset.
 private struct ParameterSlider: View {
 
     let parameter: EffectParameter
     let initialValue: Float
-    let onChange: (Float) -> Void
+    @Environment(\.locale) private var locale
+    @FocusState private var inputFocused: Bool
+    @StateObject private var editor: ParameterValueEditor
 
-    @State private var liveValue: Float
-    @State private var subject = PassthroughSubject<Float, Never>()
-    @State private var cancellable: AnyCancellable?
-
-    init(parameter: EffectParameter, initialValue: Float, onChange: @escaping (Float) -> Void) {
+    init(
+        parameter: EffectParameter, initialValue: Float,
+        readValue: @escaping () -> Float, onChange: @escaping (Float) -> Void
+    ) {
         self.parameter = parameter
         self.initialValue = initialValue
-        self.onChange = onChange
-        _liveValue = State(initialValue: initialValue)
+        _editor = StateObject(wrappedValue: ParameterValueEditor(
+            parameter: parameter, initialValue: initialValue, onCommit: onChange, readValue: readValue
+        ))
     }
 
     var body: some View {
@@ -200,90 +206,77 @@ private struct ParameterSlider: View {
                 Text(parameter.displayName)
                     .font(.caption)
                 Spacer()
-                Text(format(liveValue))
+                Text(editor.presentation.displayValue(editor.value))
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(editor.presentation.isValid(editor.value) ? Color.secondary : Color.red)
             }
             Slider(
                 value: Binding(
-                    get: { liveValue },
-                    set: { newValue in
-                        liveValue = newValue
-                        subject.send(newValue)
-                    }
+                    get: { editor.presentation.position(for: editor.value) },
+                    set: { editor.drag(to: $0) }
                 ),
-                in: parameter.range.lowerBound ... parameter.range.upperBound
+                in: 0 ... 1,
+                onEditingChanged: { dragging in
+                    if dragging {
+                        inputFocused = false
+                    } else {
+                        editor.finishDragging()
+                    }
+                }
             )
             .accessibilityLabel(parameter.displayName)
-            .accessibilityValue(accessibilityValue)
+            .accessibilityValue(editor.presentation.displayValue(editor.value))
+            .accessibilityHint("Use arrow keys to adjust, or enter an exact value below.")
+
+            HStack(spacing: 6) {
+                TextField("Exact value", text: $editor.text)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($inputFocused)
+                    .focusedValue(\.parameterNumericEditing, true)
+                    .accessibilityLabel("\(parameter.displayName), exact value in \(editor.presentation.inputUnit)")
+                    .accessibilityHint("Type a number. Press Return to apply or Escape to cancel.")
+                    .onSubmit {
+                        if editor.commit(locale: locale) { inputFocused = false }
+                    }
+                    .onExitCommand {
+                        editor.cancel()
+                        inputFocused = false
+                    }
+                Text(editor.presentation.inputUnit)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Reset") {
+                    editor.reset()
+                    inputFocused = false
+                }
+                .accessibilityLabel("Reset \(parameter.displayName) to default")
+                .help("Default: \(editor.presentation.displayValue(parameter.defaultValue))")
+            }
+            if let error = editor.errorMessage {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .onAppear {
-            cancellable = subject
-                .throttle(
-                    for: .milliseconds(33),
-                    scheduler: DispatchQueue.main,
-                    latest: true
-                )
-                .sink(receiveValue: onChange)
+            editor.resync(value: initialValue)
         }
         .onDisappear {
-            cancellable?.cancel()
-            cancellable = nil
+            editor.stop()
         }
-        // Resync `liveValue` from the latest `initialValue` whenever the
-        // parent passes a new one. Without this, `@State` seeds the slider
-        // once at view-identity creation and a preset load (or any
-        // programmatic parameter write that bypasses the slider's own set)
-        // would leave the thumb stuck at the prior value even as the
-        // underlying node moves. The parent rebuilds `initialValue` from
-        // `currentValue(for:)` on each body evaluation, so a change here
-        // means the node actually moved.
-        .onChange(of: initialValue) { _, newValue in
-            liveValue = newValue
+        .onChange(of: inputFocused) { _, focused in
+            if focused {
+                editor.beginEditing(locale: locale)
+            } else if editor.isEditing {
+                editor.cancel()
+            }
         }
-    }
-
-    private func format(_ value: Float) -> String {
-        switch parameter.unit {
-        case .hertz:
-            return "\(Int(value)) Hz"
-        case .decibels:
-            return String(format: "%.1f dB", value)
-        case .ratio:
-            return String(format: "%.2f", value)
-        case .seconds:
-            return String(format: "%.2f s", value)
-        case .milliseconds:
-            return "\(Int(value)) ms"
-        case .normalized:
-            return String(format: "%.2f", value)
-        case .percent:
-            return "\(Int(value * 100))%"
-        case .integer:
-            return "\(Int(value))"
-        case .enumValue:
-            return "\(Int(value))"
-        }
-    }
-
-    private var accessibilityValue: String {
-        switch parameter.unit {
-        case .hertz:
-            return "\(Int(liveValue)) Hertz"
-        case .decibels:
-            return String(format: "%.1f decibels", liveValue)
-        case .ratio:
-            return String(format: "%.2f", liveValue)
-        case .seconds:
-            return String(format: "%.2f seconds", liveValue)
-        case .milliseconds:
-            return "\(Int(liveValue)) milliseconds"
-        case .normalized:
-            return String(format: "%.2f", liveValue)
-        case .percent:
-            return "\(Int(liveValue * 100)) percent"
-        case .integer, .enumValue:
-            return "\(Int(liveValue))"
+        // The parent reads the node again after object/preset updates. Keep
+        // that readback authoritative without echoing it into the audio unit.
+        // Unchanged NaN must not look like new model data during a recovery drag.
+        .onChange(of: initialValue.isNaN ? nil : initialValue) { _, _ in
+            editor.receiveModelValue(initialValue)
         }
     }
 }
