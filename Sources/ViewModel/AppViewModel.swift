@@ -331,6 +331,10 @@ public final class AppViewModel: ObservableObject {
     private var refreshSourcesTask: Task<Void, Never>?
     private var sourceChangeShutdownTask: Task<Void, Never>?
 
+    /// Leave incompatible session bytes untouched until a successful explicit
+    /// graph change. Source changes and warning dismissal never clear this.
+    private var preservesIncompatibleSession = false
+
     private static let persistenceDebounceInterval: TimeInterval = 0.200
 
     /// Whether the render engine is believed to be running.
@@ -383,7 +387,16 @@ public final class AppViewModel: ObservableObject {
         self.preserveBluetoothQuality = (storedPreserve as? Bool) ?? true
         self.logger = TnfLogger(source: "AppViewModel", store: debugLog)
         let bootstrapLogger = Logger(subsystem: "tnf.app", category: "AppViewModel.bootstrap")
-        self.graph = AppViewModel.restoreGraph(from: defaults, registry: registry, logger: bootstrapLogger)
+        let restored = AppViewModel.restoreGraph(from: defaults, registry: registry, logger: bootstrapLogger)
+        self.graph = restored.graph
+        self.preservesIncompatibleSession = restored.incompatibleVersion != nil
+        if let version = restored.incompatibleVersion {
+            self.lastError = .persistence(
+                "Session format version \(version) is newer than supported version "
+                + "\(PresetMigrator.currentFormatVersion). Using distant-engines. "
+                + "Your saved session is preserved until you change the graph."
+            )
+        }
 
         stateCancellable = capture.statePublisher
             .receive(on: DispatchQueue.main)
@@ -730,7 +743,13 @@ public final class AppViewModel: ObservableObject {
             return
         }
         do {
+            let previousValue = node.parameterValue(paramID)
             try node.setParameter(paramID, value: value)
+            // A write of the existing value is a no-op even if the AU's
+            // conversion round trip introduces a readback difference.
+            if previousValue != value && previousValue != node.parameterValue(paramID) {
+                preservesIncompatibleSession = false
+            }
             logger.info("updateParameter: \(type(of: node).typeIdentifier)/\(shortID) \(paramID)=\(value)")
             schedulePersistence()
         } catch {
@@ -747,6 +766,7 @@ public final class AppViewModel: ObservableObject {
             return
         }
         let clamped = min(max(value, 0.0), 1.0)
+        let previousMix = node.wetDryMix
         // EXP-031: shares `applyMixGains()` with setBypass, so we mirror the
         // before/after diagnostic block here. If the bug is in
         // `applyMixGains` itself, wetDryMix changes will produce the same
@@ -757,6 +777,9 @@ public final class AppViewModel: ObservableObject {
             + "requested=\(clamped) state={\(node.debugStateDescription())}"
         )
         node.wetDryMix = clamped
+        if previousMix != node.wetDryMix {
+            preservesIncompatibleSession = false
+        }
         logger.info(
             "[EXP-031.wetDryMix.after] node=\(shortID) "
             + "type=\(type(of: node).typeIdentifier) "
@@ -784,7 +807,11 @@ public final class AppViewModel: ObservableObject {
             + "type=\(type(of: node).typeIdentifier) "
             + "state={\(node.debugStateDescription())}"
         )
+        let previousBypass = node.bypass
         node.bypass = bypass
+        if previousBypass != node.bypass {
+            preservesIncompatibleSession = false
+        }
         logger.info(
             "[EXP-031.setBypass.after] node=\(shortID) "
             + "type=\(type(of: node).typeIdentifier) "
@@ -809,7 +836,8 @@ public final class AppViewModel: ObservableObject {
     public func loadPreset(from url: URL) {
         do {
             let preset = try PresetStore.load(from: url)
-            try installPreset(PresetMigrator.migrate(preset))
+            let migrated = try PresetMigrator.migrate(preset)
+            try installPreset(migrated)
         } catch {
             lastError = .preset("Load failed: \(error.localizedDescription)")
         }
@@ -818,7 +846,8 @@ public final class AppViewModel: ObservableObject {
     public func loadFactoryPreset(named name: String) {
         do {
             let preset = try FactoryPresets.load(named: name)
-            try installPreset(PresetMigrator.migrate(preset))
+            let migrated = try PresetMigrator.migrate(preset)
+            try installPreset(migrated)
         } catch {
             lastError = .preset("Factory preset load failed: \(error.localizedDescription)")
         }
@@ -830,6 +859,9 @@ public final class AppViewModel: ObservableObject {
     /// detach the graph for the mutation and re-attach via the same path
     /// `powerOn` uses (source node → mainMixerNode).
     private func mutateGraph(_ mutation: (Graph) throws -> Void) {
+        // These closures only add/remove/reorder nodes. Compare identity order
+        // so AU parameter readback timing cannot turn a no-op into consent.
+        let previousNodeIDs = preservesIncompatibleSession ? graph.nodes.map(\.id) : nil
         let wasRunning = engineIsRunning
         logger.info(
             "[EXP-031.mutateGraph.entry] wasRunning=\(wasRunning) "
@@ -855,6 +887,9 @@ public final class AppViewModel: ObservableObject {
                 reattachAfterMutation()
             }
             return
+        }
+        if let previousNodeIDs, previousNodeIDs != graph.nodes.map(\.id) {
+            preservesIncompatibleSession = false
         }
         objectWillChange.send()
         schedulePersistence()
@@ -968,6 +1003,11 @@ public final class AppViewModel: ObservableObject {
             }
             throw error
         }
+        // Both snapshots are runtime-canonical: comparing a raw preset with
+        // AU readbacks would mistake conversion/clamping for an explicit edit.
+        if preservesIncompatibleSession && graph.snapshot() != newGraph.snapshot() {
+            preservesIncompatibleSession = false
+        }
         graph = newGraph
         for warning in newGraph.lastLoadWarnings {
             logger.warning("Preset load warning: \(String(describing: warning))")
@@ -1023,23 +1063,36 @@ public final class AppViewModel: ObservableObject {
         return "rate=\(format.sampleRate) ch=\(format.channelCount) common=\(common) interleaved=\(format.isInterleaved)"
     }
 
+    /// Read version independently: future schemas may omit today's graph fields.
+    private struct SessionVersionHeader: Decodable {
+        let formatVersion: Int
+    }
+
     private static func restoreGraph(
         from defaults: UserDefaults,
         registry: EffectNodeRegistry,
         logger: Logger
-    ) -> Graph {
+    ) -> (graph: Graph, incompatibleVersion: Int?) {
         if let data = defaults.data(forKey: AppViewModelDefaultsKey.graph) {
             do {
-                let preset = try JSONDecoder().decode(GraphPreset.self, from: data)
-                let migrated = PresetMigrator.migrate(preset)
-                return try Graph.restore(from: migrated, using: registry)
+                let decoder = JSONDecoder()
+                let header = try decoder.decode(SessionVersionHeader.self, from: data)
+                guard header.formatVersion <= PresetMigrator.currentFormatVersion else {
+                    throw PresetMigrationError.unsupportedFormatVersion(header.formatVersion)
+                }
+                let preset = try decoder.decode(GraphPreset.self, from: data)
+                let migrated = try PresetMigrator.migrate(preset)
+                return (try Graph.restore(from: migrated, using: registry), nil)
+            } catch PresetMigrationError.unsupportedFormatVersion(let version) {
+                logger.warning("Session format version \(version) is unsupported; preserving saved graph.")
+                return (restoreDistantEngines(registry: registry, logger: logger), version)
             } catch {
                 logger.warning("Failed to decode lastSession.graph; falling back to distant-engines: \(error.localizedDescription, privacy: .public)")
             }
         } else {
             logger.info("No lastSession.graph in UserDefaults; falling back to distant-engines.")
         }
-        return restoreDistantEngines(registry: registry, logger: logger)
+        return (restoreDistantEngines(registry: registry, logger: logger), nil)
     }
 
     private static func restoreDistantEngines(
@@ -1048,7 +1101,8 @@ public final class AppViewModel: ObservableObject {
     ) -> Graph {
         do {
             let preset = try FactoryPresets.load(named: "distant-engines")
-            return try Graph.restore(from: preset, using: registry)
+            let migrated = try PresetMigrator.migrate(preset)
+            return try Graph.restore(from: migrated, using: registry)
         } catch {
             logger.error("Failed to load distant-engines fallback; returning empty graph: \(error.localizedDescription, privacy: .public)")
             return Graph()
@@ -1095,12 +1149,14 @@ public final class AppViewModel: ObservableObject {
     }
 
     private func writePersistence() {
-        let snapshot = graph.snapshot(name: "lastSession")
-        do {
-            let data = try JSONEncoder().encode(snapshot)
-            defaults.set(data, forKey: AppViewModelDefaultsKey.graph)
-        } catch {
-            logger.error("Failed to encode graph for persistence: \(error.localizedDescription)")
+        if !preservesIncompatibleSession {
+            let snapshot = graph.snapshot(name: "lastSession")
+            do {
+                let data = try JSONEncoder().encode(snapshot)
+                defaults.set(data, forKey: AppViewModelDefaultsKey.graph)
+            } catch {
+                logger.error("Failed to encode graph for persistence: \(error.localizedDescription)")
+            }
         }
         if let bundleID = currentSource?.bundleIdentifier {
             defaults.set(bundleID, forKey: AppViewModelDefaultsKey.sourceBundleID)

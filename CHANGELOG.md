@@ -49,6 +49,14 @@ Work toward v0.1.0. Nothing has been tagged or released yet.
 
 ### Fixed
 
+- Future-format session graphs now produce a recoverable load warning instead
+  of trapping. The version header is checked before decoding current graph
+  fields, so changed future schemas also retain protection. The app uses
+  `distant-engines` while preserving original session
+  bytes through source-only persistence, failed edits, and no-ops. A successful
+  explicit graph change resumes autosave and replaces the incompatible session.
+  `PresetMigrator.migrate` now throws a typed unsupported-version error; existing
+  EQ Q repair and reverb extras behavior are preserved.
 - Menu panel collapsed on macOS 27, taking the effect list with it. The chain
   editor's `ScrollView` was constrained only by `maxHeight` inside a window
   that sizes to its content's fitting height; height floors now keep the panel
