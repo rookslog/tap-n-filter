@@ -18,7 +18,7 @@ final class ParameterValueEditor: ObservableObject {
 
     private var locale = Locale.current
     private let onCommit: (Float) -> Void
-    private let readValue: (() -> Float)?
+    private let readValue: (() -> Float?)?
     private let scheduleDrag: (@escaping () -> Void) -> Void
     private var generation: UInt = 0
     private var pendingDrag: Float?
@@ -29,7 +29,7 @@ final class ParameterValueEditor: ObservableObject {
         parameter: EffectParameter,
         initialValue: Float,
         onCommit: @escaping (Float) -> Void,
-        readValue: (() -> Float)? = nil,
+        readValue: (() -> Float?)? = nil,
         scheduleDrag: @escaping (@escaping () -> Void) -> Void = { action in
             DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(33)) { action() }
         }

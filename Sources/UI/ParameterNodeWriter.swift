@@ -12,14 +12,16 @@ struct ParameterNodeWriter {
     func makeEditor(
         scheduleDrag: ((@escaping () -> Void) -> Void)? = nil
     ) -> ParameterValueEditor {
+        // A default seeds presentation only; verification must preserve nil.
+        let initialValue = readValue() ?? parameter.defaultValue
         if let scheduleDrag {
             return ParameterValueEditor(
-                parameter: parameter, initialValue: readValue(), onCommit: write,
+                parameter: parameter, initialValue: initialValue, onCommit: write,
                 readValue: readValue, scheduleDrag: scheduleDrag
             )
         }
         return ParameterValueEditor(
-            parameter: parameter, initialValue: readValue(), onCommit: write, readValue: readValue
+            parameter: parameter, initialValue: initialValue, onCommit: write, readValue: readValue
         )
     }
 
@@ -32,7 +34,7 @@ struct ParameterNodeWriter {
         viewModel.updateParameter(nodeID: node.id, paramID: parameter.identifier, value: value)
     }
 
-    private func readValue() -> Float {
-        node.parameterValue(parameter.identifier) ?? parameter.defaultValue
+    private func readValue() -> Float? {
+        node.parameterValue(parameter.identifier)
     }
 }

@@ -93,6 +93,62 @@ final class ParameterNodeWriterTests: XCTestCase {
         XCTAssertFalse(engine.isRunning)
     }
 
+    func test_no_readback_keeps_accepted_exact_entry_without_substituting_default() throws {
+        let (model, capture, engine) = try makeModel()
+        let node = try XCTUnwrap(model.graph.nodes.first as? ParameterWriterTestNode)
+        node.readbackAvailable = false
+        let writer = ParameterNodeWriter(node: node, parameter: node.parameters[0], viewModel: model)
+        let editor = writer.makeEditor()
+        let locale = Locale(identifier: "en_US_POSIX")
+        XCTAssertEqual(editor.value, node.parameters[0].defaultValue)
+        XCTAssertNil(node.parameterValue(node.parameters[0].identifier))
+
+        editor.beginEditing(locale: locale)
+        editor.text = "1234.5"
+        XCTAssertTrue(editor.commit(locale: locale))
+
+        XCTAssertEqual(node.value, 1_234.5)
+        XCTAssertEqual(node.writes, [1_234.5])
+        XCTAssertEqual(editor.value, 1_234.5)
+        XCTAssertEqual(Float(editor.text), 1_234.5)
+        editor.beginEditing(locale: locale)
+        XCTAssertEqual(Float(editor.text), 1_234.5)
+        editor.cancel()
+        XCTAssertEqual(editor.value, 1_234.5)
+        XCTAssertNil(node.parameterValue(node.parameters[0].identifier))
+        XCTAssertEqual(capture.starts, 0)
+        XCTAssertFalse(engine.isRunning)
+    }
+
+    func test_no_readback_keeps_accepted_drag_tick_and_final_value() throws {
+        let (model, capture, engine) = try makeModel()
+        let node = try XCTUnwrap(model.graph.nodes.first as? ParameterWriterTestNode)
+        node.readbackAvailable = false
+        let writer = ParameterNodeWriter(node: node, parameter: node.parameters[0], viewModel: model)
+        var queued: [() -> Void] = []
+        let editor = writer.makeEditor(scheduleDrag: { queued.append($0) })
+
+        editor.drag(to: 0.5)
+        let tickValue = editor.value
+        queued[0]()
+        XCTAssertEqual(node.value, tickValue)
+        XCTAssertEqual(editor.value, tickValue)
+        XCTAssertEqual(editor.presentation.parseInput(editor.text, locale: .current), tickValue)
+
+        editor.drag(to: 0.8)
+        let finalValue = editor.value
+        editor.finishDragging()
+        queued[1]()
+
+        XCTAssertEqual(node.writes, [tickValue, finalValue])
+        XCTAssertEqual(node.value, finalValue)
+        XCTAssertEqual(editor.value, finalValue)
+        XCTAssertEqual(editor.presentation.parseInput(editor.text, locale: .current), finalValue)
+        XCTAssertNil(node.parameterValue(node.parameters[0].identifier))
+        XCTAssertEqual(capture.starts, 0)
+        XCTAssertFalse(engine.isRunning)
+    }
+
     private func makeModel() throws -> (AppViewModel, ParameterWriterCapture, AVAudioEngine) {
         let registry = EffectNodeRegistry()
         registry.register(ParameterWriterTestNode.self)
@@ -135,6 +191,7 @@ private final class ParameterWriterTestNode: DefaultConstructibleEffectNode {
     let outputBus = AVAudioMixerNode()
     private(set) var value: Float = 800
     private(set) var writes: [Float] = []
+    var readbackAvailable = true
     let parameters = [EffectParameter(
         identifier: "frequency", displayName: "Frequency", range: 200 ... 18_000,
         defaultValue: 800, unit: .hertz
@@ -155,7 +212,7 @@ private final class ParameterWriterTestNode: DefaultConstructibleEffectNode {
         writes.append(value)
     }
     func parameterValue(_ identifier: String) -> Float? {
-        identifier == parameters[0].identifier ? value : nil
+        readbackAvailable && identifier == parameters[0].identifier ? value : nil
     }
     func attach(to engine: AVAudioEngine) throws { throw ParameterWriterTestError.audioLifecycle }
     func detach() {}
