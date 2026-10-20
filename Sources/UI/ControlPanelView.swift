@@ -5,10 +5,10 @@ import ViewModel
 ///
 /// Composed of `HeaderView`, `SourcePickerView`, `ChainEditorView`, and
 /// `FooterView`, with an optional `SettingsSectionView` rendered below the
-/// footer when `viewModel.showSettings` is true (toggled via the gear button
-/// in `HeaderView`), and an optional `DebugPanel` rendered below that when
-/// `viewModel.showDebugPanel` is true (toggled via the ladybug button in
-/// `HeaderView`). Width is fixed at 380 pt per `docs/specs/ui.md`.
+/// footer when `viewModel.showSettings` is true (the Settings action in
+/// `HeaderView`’s Settings menu), and an optional `DebugPanel` below that when
+/// `viewModel.showDebugPanel` is true (the Diagnostics action in that menu).
+/// Width is fixed at 380 pt per `docs/specs/ui.md`.
 /// Height is dynamic, capped at 700 pt by default and lifted to 900 pt
 /// while the debug panel or settings panel is shown.
 public struct ControlPanelView: View {

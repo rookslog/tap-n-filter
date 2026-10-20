@@ -40,6 +40,22 @@ Work toward v0.1.0. Nothing has been tagged or released yet.
   committed accessibility-tree artifact and tests enforcing label discipline
   (ADR-011).
 
+### Changed
+
+- The header gear now opens a Settings menu with separate Settings panel and
+  Diagnostics actions. The existing Diagnostics preference still controls the
+  debug panel, independently of session-only Settings panel visibility.
+- Detailed EXP-031 wet/dry and bypass messages are constructed only while
+  Diagnostics is enabled. Warnings, errors, recovery evidence, and existing
+  log history remain available when the panel is hidden. No latency or disk
+  performance measurement is claimed.
+
+### Removed
+
+- The throwaway EXP-029 five-second reader-test entry in the debug panel and
+  its otherwise-unused view-model action/state and power-on interlock. Capture
+  diagnostics, investigation notebooks, and standalone probes are retained.
+
 ### Deferred to V0.2
 
 - The `submerged` and `next-room` factory presets. Four presets were scoped for
