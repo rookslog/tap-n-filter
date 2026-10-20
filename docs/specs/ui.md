@@ -145,13 +145,23 @@ A second flag, `supportsWetDry: Bool` (default `true`), distinguishes nodes that
 
 For each `EffectParameter` in the node's `parameters`:
 
-- `ParameterUnit.hertz`, `.decibels`, `.ratio`, `.seconds`, `.milliseconds`, `.normalized`, `.percent` → `Slider` from `parameter.range.lowerBound` to `parameter.range.upperBound`, with a numeric readout showing the value and unit.
+- `ParameterUnit.hertz`, `.decibels`, `.ratio`, `.seconds`, `.milliseconds`, `.normalized`, `.percent` → native continuous `Slider`, with a numeric readout showing the value and unit. Its normalized 0…1 position maps logarithmically for positive frequency ranges; all other units, including decibels, map linearly to the declared range. DSP/catalog values and ranges are unchanged.
 - `ParameterUnit.integer` → `Stepper` with the range.
 - `ParameterUnit.enumValue(cases: [String])` → `Picker`.
 
-Sliders update the parameter on every drag, throttled at 30 Hz to avoid overwhelming the underlying `AVAudioUnit`'s parameter setter. The throttling uses Combine's `throttle(for: .milliseconds(33), scheduler: DispatchQueue.main, latest: true)`.
+Drag changes are coalesced to the latest value every 33 ms on the main queue to avoid overwhelming the underlying `AVAudioUnit`'s parameter setter. The final drag value is delivered immediately when editing ends. Exact numeric commits and reset are immediate; queued drag callbacks carry a generation check and cannot overwrite a later commit, reset, model resync, or disappearing control.
 
-Numeric readouts show the user's value, formatted appropriately (e.g., "800 Hz", "−12 dB", "70%"). Decibel parameters use a log mapping for the slider so the perceived range is intuitive.
+Frequency readouts use Hz below 1000 Hz and readable kHz at and above it (e.g., "800 Hz", "1 kHz", "1.5 kHz"). Other continuous readouts keep their unit conventions. Nonfinite readback is diagnosed as invalid; out-of-range readback retains its actual value with a warning. Only the thumb is constrained to the legal range; the readout never silently substitutes an endpoint.
+
+Each continuous parameter's expanded controls expose an **Exact value** field with a visible unit and a **Reset** button. The field seeds the full native Float precision rather than the rounded readout. Frequency entry is numeric Hz only; unit suffixes/group separators are rejected. The current locale's decimal separator is used for both seeding and parsing. Percent entry uses 0…100 display units and converts back to native 0…1 values. Inputs must be finite, wholly numeric, and within the declared range before Float rounding. Return applies; Escape or focus loss discards a draft; invalid submit shows an inline message and leaves the draft available for correction without writing. Reset writes the catalog default.
+
+Programmatic/preset updates resync the thumb, draft, and readout without echo writes. Replacing a node object, even with the same saved UUID, creates a new editor and retires the old queued drag. An acknowledgement of the control's own write does not cancel a newer pending drag. Each continuous-control write notifies view-model observers, uses the existing `updateParameter` callback, and checks actual node readback even if a refused write leaves the previous value unchanged; no persistence or DSP contract changes are introduced.
+
+The UI writer also checks the graph's current node object identity at actual delivery, so an old editor cannot write to a same-UUID preset replacement before SwiftUI teardown. When an audio unit normalizes a write, its actual readback is retained as the acknowledgement; a later parent echo does not discard a newer pending drag. Strict catalog validity is unchanged: even a one-ulp out-of-range readback remains a diagnostic, and cannot be submitted as valid input.
+
+Repeated identical invalid readback, including NaN, does not republish diagnostic state or overwrite a correctable draft. Starting an exact edit discards a still-pending drag and rereads the actual parameter value; Cancel/focus loss restores actual readback without writing. When a slider takes over text editing, a delayed field focus-loss callback does not cancel that slider movement.
+
+Sliders retain native arrow-key adjustment and accessibility values. Exact-value fields and Reset buttons have parameter-specific accessible labels. A focused numeric field publishes a UI-only focused value that removes Power's unmodified-Space shortcut for the duration of text focus, without changing Start/Retry readiness or mouse/button behavior. Runtime focus, VoiceOver, and current-macOS layout checks remain manual pre-merge gates alongside full-Xcode tests.
 
 ## PresetMenu
 

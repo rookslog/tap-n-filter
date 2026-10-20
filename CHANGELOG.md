@@ -13,6 +13,10 @@ Work toward v0.1.0. Nothing has been tagged or released yet.
 
 ### Added
 
+- Native frequency sliders with logarithmic travel and readable Hz/kHz values;
+  expanded continuous controls expose locale-aware exact numeric entry and
+  catalog-default reset. Other parameter scales remain linear. Invalid input
+  does not write; stale queued drags cannot overwrite committed values.
 - Audio capture from a chosen application via Core Audio process taps, with a
   direct IOProc reader and a single-lock SPSC ring buffer (ADR-018). The
   buffer guards each read and write with an `OSAllocatedUnfairLock` over a

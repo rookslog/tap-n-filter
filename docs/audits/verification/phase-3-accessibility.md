@@ -190,6 +190,22 @@ User ran the pass against the debug `.app` at
 - `Sources/AccessibilityDump/main.swift` — the executable that produces the JSON artifact.
 - Phase 3 spec §3.8 — original gate definition.
 
+## 2026-10-20 parameter-control evidence refresh
+
+Hosted run 39425113185, PR head a8036be271d42459ad0b51a4b1df2c9e17d262c6
+(synthetic checkout d3e6a9e2cb9531a94770c87ca5430c469152b5bf), generated the
+committed KVC tree (SHA-256 1424fe65ef873162b207d0118bb2728c7f6e48b794f8d920fd6daad7749da898).
+The same-view 380×700 cacheDisplay PNG contains four exact-value fields and
+four Reset buttons plus Start/Quit when its transparent pixels are presented
+over white. The KVC tree exposes four fields but omits Reset and Start/Quit.
+Thus the new fresh-tree check asserts fields, not an unsupported complete-button
+count. This is a documented reader limit, not proof of native AX correctness.
+Original PNG bytes were retained; white compositing was analysis only and does
+not establish native material fidelity. Historical audit conclusions above are
+not revalidated by this refresh. Native VoiceOver, numeric-field focus/Space,
+menu opening and newest-macOS layout remain required manual evidence.
+
+
 ## 2026-10-20 PLAN item 10 hosted evidence
 
 Run 39428168248, PR head 0dd5ee7a5bd5024acce1639ea60f63ea66d94248, synthetic checkout
@@ -201,3 +217,12 @@ VoiceOver/focus or actual menu correctness. The new preset receipt/footer and fi
 remain subject to actual newest-macOS/manual interaction checks. This refresh
 does not revalidate historical audit conclusions. CI now rejects drift from
 the committed tree after regeneration and structural checks.
+
+## Explicit item5 + item10 stack: evidence pending
+
+Both refresh notes above are historical evidence for their named heads. The
+stack initially carries item5's genuine four-field tree bytes, not an invented
+combined dump. Hosted CI regenerates this composed source, checks structure and
+tracked drift, and uploads the actual tree/PNG for root inspection; any changed
+output must be downloaded and committed before clearance. No composed visual,
+native VoiceOver or manual newest-macOS menu/layout claim yet.

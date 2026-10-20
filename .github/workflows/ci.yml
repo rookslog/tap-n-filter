@@ -46,30 +46,36 @@ jobs:
       - name: Test
         run: swift test -c debug --enable-code-coverage
 
-      # Fake-backed offscreen dump: refresh evidence after the footer/menu change.
-      # This is not the newest-macOS actual-menu/VoiceOver merge gate.
-      - name: Generate preset accessibility evidence
-        id: preset-a11y
+      # Existing idle capture stub + isolated defaults, offscreen hosted UI.
+      # This produces structural evidence, not a VoiceOver/focus/runtime gate.
+      - name: Generate preset and parameter accessibility evidence
+        id: parameter-a11y
         if: matrix.os == 'macos-26'
         run: |
           swift run -c debug --skip-build tap-n-filter-a11y-dump
           test -s test-artifacts/phase-3-accessibility-tree.json
           test -s test-artifacts/phase-3-accessibility-diagnostics.json
+          test -s test-artifacts/phase-3-accessibility-panel.png
 
-      - name: Validate regenerated preset accessibility evidence
+      - name: Validate regenerated parameter accessibility controls
         if: matrix.os == 'macos-26'
+        env:
+          TNF_REQUIRE_PARAMETER_A11Y: "1"
         run: |
           swift test -c debug --skip-build --filter AccessibilityTreeTests
           git diff --exit-code -- test-artifacts/phase-3-accessibility-tree.json
 
-      - name: Upload preset accessibility evidence
-        if: ${{ !cancelled() && matrix.os == 'macos-26' && steps.preset-a11y.outcome == 'success' }}
+      # Retain evidence even if fresh structural assertions fail, so root can
+      # inspect what actually materialized. Never upload an old/absent dump.
+      - name: Upload preset and parameter accessibility evidence
+        if: ${{ !cancelled() && matrix.os == 'macos-26' && steps.parameter-a11y.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
           name: preset-accessibility-${{ github.sha }}
           path: |
             test-artifacts/phase-3-accessibility-tree.json
             test-artifacts/phase-3-accessibility-diagnostics.json
+            test-artifacts/phase-3-accessibility-panel.png
           if-no-files-found: error
           retention-days: 7
 

@@ -89,12 +89,28 @@ func runDump() {
     //
     // The trade-off: SwiftUI's `.accessibilityLabel(_:)` modifier does not
     // always populate AXDescription on the in-process tree (it lands in
-    // various places depending on the underlying control). The structural
-    // dump (roles, values, hierarchy) is reliable; assertion of label
-    // presence is best-effort. The manual VoiceOver pass and a CI XCTest run
-    // (with full Xcode + AXUIElement permission) are the authoritative
-    // checks. See ADR-011 for the broader rationale.
+    // various places depending on the underlying control). The KVC tree may
+    // omit controls; compare it with the same-view PNG rather than assuming
+    // completeness. The manual VoiceOver pass is authoritative for native AX;
+    // CI tests only this partial KVC artifact and source label conventions.
+    // See ADR-011 for the broader rationale.
+    hosting.layoutSubtreeIfNeeded()
+    hosting.displayIfNeeded()
     let tree = AccessibilityNode.dump(from: hosting)
+
+    // Capture the very same expanded-EQ hosting view while its offscreen
+    // window is still ordered. Compare this image to the KVC tree; successful
+    // encoding alone does not establish that controls are visible or exposed.
+    guard let bitmap = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds),
+          bitmap.pixelsWide > 0, bitmap.pixelsHigh > 0 else {
+        FileHandle.standardError.write(Data("Failed: no bitmap for hosted accessibility PNG\n".utf8))
+        exit(1)
+    }
+    hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+    guard let png = bitmap.representation(using: .png, properties: [:]), !png.isEmpty else {
+        FileHandle.standardError.write(Data("Failed: hosted accessibility PNG is missing or empty\n".utf8))
+        exit(1)
+    }
     window.orderOut(nil)
 
     // Wrap the tree with a small metadata header so the verification subagent
@@ -118,12 +134,20 @@ func runDump() {
     )
     let diagnostics = DiagnosticsDocument(
         generatedAt: ISO8601DateFormatter().string(from: Date()),
-        macOSVersion: ProcessInfo.processInfo.operatingSystemVersionString
+        macOSVersion: ProcessInfo.processInfo.operatingSystemVersionString,
+        pngFilename: "phase-3-accessibility-panel.png",
+        viewWidthPoints: Double(hosting.bounds.width),
+        viewHeightPoints: Double(hosting.bounds.height),
+        imagePixelWidth: bitmap.pixelsWide,
+        imagePixelHeight: bitmap.pixelsHigh,
+        captureMethod: "Same NSHostingView, AppKit cacheDisplay(in:to:); RGBA transparency, view over contrasting background",
+        treeLimitation: "KVC may omit controls; compare the hosted PNG and tree. VoiceOver remains manual."
     )
     let outURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         .appendingPathComponent("test-artifacts/phase-3-accessibility-tree.json")
     let diagnosticsURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         .appendingPathComponent("test-artifacts/phase-3-accessibility-diagnostics.json")
+    let imageURL = outURL.deletingLastPathComponent().appendingPathComponent(diagnostics.pngFilename)
     try? FileManager.default.createDirectory(
         at: outURL.deletingLastPathComponent(),
         withIntermediateDirectories: true
@@ -134,6 +158,8 @@ func runDump() {
         let data = try encoder.encode(dump)
         try data.write(to: outURL)
         FileHandle.standardOutput.write(Data("Wrote \(outURL.path)\n".utf8))
+        try png.write(to: imageURL)
+        FileHandle.standardOutput.write(Data("Wrote \(imageURL.path)\n".utf8))
         let diagnosticsData = try encoder.encode(diagnostics)
         try diagnosticsData.write(to: diagnosticsURL)
         FileHandle.standardOutput.write(Data("Wrote \(diagnosticsURL.path)\n".utf8))
@@ -169,6 +195,13 @@ struct DumpDocument: Codable {
 struct DiagnosticsDocument: Codable {
     let generatedAt: String
     let macOSVersion: String
+    let pngFilename: String
+    let viewWidthPoints: Double
+    let viewHeightPoints: Double
+    let imagePixelWidth: Int
+    let imagePixelHeight: Int
+    let captureMethod: String
+    let treeLimitation: String
 }
 
 struct AccessibilityNode: Codable {

@@ -10,6 +10,7 @@ import ViewModel
 public struct PowerToggle: View {
 
     @EnvironmentObject public var viewModel: AppViewModel
+    @FocusedValue(\.parameterNumericEditing) private var parameterNumericEditing
 
     public init() {}
 
@@ -42,7 +43,7 @@ public struct PowerToggle: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .keyboardShortcut(.space, modifiers: [])
+            .keyboardShortcut(parameterNumericEditing == true ? nil : KeyboardShortcut(.space, modifiers: []))
             .tint(buttonTint)
             .disabled(isDisabled)
             .accessibilityLabel("Power")
