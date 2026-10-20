@@ -169,7 +169,9 @@ public final class AppViewModel: ObservableObject {
         let baseline = presetReceipt.baseline
         let modified = !Self.presetScalarsMatch(current.outputGain, baseline.outputGain)
             || !Self.presetNodesMatch(current.nodes, baseline.nodes)
-        if modified, dirty61CallOrdinal < UInt64.max {
+        if modified, !dirty61EmissionInFlight, dirty61CallOrdinal < UInt64.max {
+            dirty61EmissionInFlight = true
+            defer { dirty61EmissionInFlight = false }
             dirty61CallOrdinal += 1
             logger.info(Self.dirty61Message(current, baseline, call: dirty61CallOrdinal))
         }
@@ -180,6 +182,8 @@ public final class AppViewModel: ObservableObject {
     // Noncandidate capture: only the ordinal survives the getter. Exhaustion
     // suppresses further receipts without wrapping or changing the actual Bool.
     private var dirty61CallOrdinal: UInt64 = 0
+    // Suppress synchronous observer re-emission, never its snapshot/comparison.
+    private var dirty61EmissionInFlight = false
 
     private static func dirty61Hex(_ value: UInt32, width: Int) -> String {
         let digits = String(value, radix: 16)
