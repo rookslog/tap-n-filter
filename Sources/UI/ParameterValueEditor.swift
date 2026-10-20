@@ -35,7 +35,6 @@ final class ParameterValueEditor: ObservableObject {
     private var latestSubmittedRevision: UInt64 = 0
     private var latestApplicationSerial: UInt64 = 0
     private var authoritativeActual: Float?
-    private var expectedModelEchoes: [Float] = []
     private var stopped = false
     private var usesAcceptedEdits: Bool { onDragAccepted != nil }
 
@@ -139,7 +138,6 @@ final class ParameterValueEditor: ObservableObject {
     func resync(value: Float) {
         invalidateDrag()
         lastWritten = nil
-        expectedModelEchoes.removeAll()
         authoritativeActual = value
         // NaN is unequal to itself, but repeated NaN readback represents the
         // same diagnostic state. Avoid republishing it (or resetting a draft)
@@ -155,16 +153,17 @@ final class ParameterValueEditor: ObservableObject {
     func receiveModelValue(_ value: Float) {
         if usesAcceptedEdits {
             guard !stopped else { return }
-            if let index = expectedModelEchoes.firstIndex(where: { sameValue($0, value) }) {
-                expectedModelEchoes.remove(at: index)
-                return
-            }
-            // This is also the ordinary EffectControlsView onChange adapter:
-            // stale native readback cannot erase a newer accepted pending drag.
+            // Parent floats may be stale or a default substituted for nil.
             if let pending = pendingAcceptedValue?() {
                 if !isEditing { present(pending) }
                 return
             }
+            guard let actual = readValue?() else { return }
+            // The result already reconciled this actual without erasing a
+            // newer draft. No historical float backlog can hide a later change.
+            if let authoritativeActual, sameValue(authoritativeActual, actual) { return }
+            resync(value: actual)
+            return
         }
         let echo = lastWritten
         lastWritten = nil
@@ -180,9 +179,6 @@ final class ParameterValueEditor: ObservableObject {
         latestApplicationSerial = result.applicationSerial
         authoritativeActual = result.actualValue
         guard let actual = result.actualValue else { return }
-        if !expectedModelEchoes.contains(where: { sameValue($0, actual) }) {
-            expectedModelEchoes.append(actual)
-        }
         if !isEditing, result.intentRevision >= latestSubmittedRevision { present(actual) }
     }
 

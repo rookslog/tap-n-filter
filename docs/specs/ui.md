@@ -190,10 +190,13 @@ flush and retirement, even if native old→old readback cannot trigger onChange.
 The handler captures its editor weakly. Draft-start and submission revisions are
 recorded before callbacks; a result updates authoritative readback independently
 of visible text/focus/validation and never cancels the VM queue. Newer optimistic
-drag intent survives older results. Normalized own-model echoes are acknowledged
-with NaN-aware equality, including after a newer draft/drag. The ordinary model
-echo adapter and direct read both prefer accepted pending intent where applicable;
-unrelated model changes retain authoritative resync behavior.
+drag intent survives older results. The ordinary model echo adapter prefers
+accepted pending intent, then reads current optional native state rather than
+trusting a potentially stale or default-substituted parent Float. Nil remains
+unknown. NaN-aware equality with the latest authoritative readback preserves a
+newer draft after its own application result; genuinely changed native state
+resyncs even when it matches an older own write. No historical float backlog
+suppresses unrelated model changes.
 
 Standalone `ParameterValueEditor` clients without these production hooks retain
 their local coalescer and cancellation semantics: locally queued, not-yet-accepted
