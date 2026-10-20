@@ -24,6 +24,9 @@ Work toward v0.1.0. Nothing has been tagged or released yet.
   declares `supportsWetDry = false`, and the EQ hides the control by default
   (ADR-007). Convolution with custom impulse responses is future work, not
   shipped here.
+- Reverb Room picker for the existing 13 factory rooms, using the generic
+  effect controls. Room selection preserves legacy `.tnf` preset names and
+  the Large Hall default.
 - Always-on output limiter, not user-defeatable, which prevents the graph from
   clipping above 0 dBFS (ADR-021). It bounds digital peak level, not loudness:
   a gain stage can still raise a quiet source by up to +12 dB without reaching
@@ -49,6 +52,8 @@ Work toward v0.1.0. Nothing has been tagged or released yet.
 
 ### Fixed
 
+- Invalid legacy reverb integer presets now produce a recoverable restore
+  error instead of loading an unsupported ObjC enum raw value.
 - Menu panel collapsed on macOS 27, taking the effect list with it. The chain
   editor's `ScrollView` was constrained only by `maxHeight` inside a window
   that sizes to its content's fitting height; height floors now keep the panel

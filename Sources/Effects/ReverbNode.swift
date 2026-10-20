@@ -21,6 +21,8 @@ public final class ReverbNode: EffectNode {
 
     private static let defaultDisplayName: String = "Reverb"
 
+    private static let roomParameterIdentifier: String = "room"
+
     /// Default preset chosen to produce a noticeable but musical hall sound
     /// suitable as the ear-test baseline. Documented in the
     /// `distant-engines` preset spec.
@@ -107,15 +109,47 @@ public final class ReverbNode: EffectNode {
 
     // MARK: Parameters
 
-    /// Reverb has no continuous parameters in V1 — the preset is the only
-    /// user-tunable knob and it lives in `extras` as a categorical choice.
-    /// Adding continuous parameters (e.g., pre-delay) is a future enhancement.
-    public static let parameterCatalog: [EffectParameter] = []
+    /// The room picker uses zero-based indices into `supportedPresets`.
+    /// Indices are UI values only; snapshots persist the stable legacy name.
+    public static let parameterCatalog: [EffectParameter] = [
+        EffectParameter(
+            identifier: roomParameterIdentifier,
+            displayName: "Room",
+            range: 0 ... Float(supportedPresets.count - 1),
+            defaultValue: Float(supportedPresets.firstIndex { $0.preset == defaultPreset } ?? 0),
+            unit: .enumValue(cases: [
+                "Small Room", "Medium Room", "Large Room", "Large Room 2",
+                "Medium Hall", "Medium Hall 2", "Medium Hall 3", "Large Hall",
+                "Large Hall 2", "Plate", "Medium Chamber", "Large Chamber", "Cathedral",
+            ])
+        ),
+    ]
 
     public var parameters: [EffectParameter] { Self.parameterCatalog }
 
     public func setParameter(_ identifier: String, value: Float) throws {
-        throw EffectParameterError.unknownParameter(identifier: identifier)
+        guard let parameter = Self.parameterCatalog.first(where: { $0.identifier == identifier }) else {
+            throw EffectParameterError.unknownParameter(identifier: identifier)
+        }
+        // Check finiteness, range, and integrality before converting to Int;
+        // malformed enum values must neither trap nor select a different room.
+        guard value.isFinite, parameter.range.contains(value), value.rounded() == value else {
+            throw EffectParameterError.valueOutOfRange(
+                identifier: identifier,
+                value: value,
+                range: parameter.range
+            )
+        }
+        preset = Self.supportedPresets[Int(value)].preset
+    }
+
+    /// Read the current room index, including changes made through `preset`.
+    /// Unknown identifiers or unsupported direct preset values return `nil`.
+    public func parameterValue(_ identifier: String) -> Float? {
+        guard identifier == Self.roomParameterIdentifier,
+            let index = Self.supportedPresets.firstIndex(where: { $0.preset == preset })
+        else { return nil }
+        return Float(index)
     }
 
     // MARK: Attach / detach
@@ -269,6 +303,9 @@ public final class ReverbNode: EffectNode {
         )
     }
 
+    /// Legacy extras are authoritative, including when numeric room data is
+    /// also present. Missing extras keep the current room (the default on a
+    /// fresh node); invalid extras throw without loading a different room.
     public func restore(from state: EffectState) throws {
         guard state.typeIdentifier == Self.typeIdentifier else {
             throw EffectRestoreError.typeIdentifierMismatch(
@@ -294,13 +331,15 @@ public final class ReverbNode: EffectNode {
                 }
                 preset = resolved
             case .int(let raw):
-                guard let resolved = AVAudioUnitReverbPreset(rawValue: raw) else {
+                // ObjC enum construction accepts unknown raw values; validate
+                // against the app's supported rooms before loading the unit.
+                guard let resolved = Self.supportedPresets.first(where: { $0.preset.rawValue == raw }) else {
                     throw EffectRestoreError.invalidExtra(
                         key: "preset",
-                        reason: "Reverb preset rawValue \(raw) is not a known case"
+                        reason: "Reverb preset rawValue \(raw) is not a supported room"
                     )
                 }
-                preset = resolved
+                preset = resolved.preset
             default:
                 throw EffectRestoreError.invalidExtra(
                     key: "preset",
@@ -316,9 +355,9 @@ public final class ReverbNode: EffectNode {
     /// All `AVAudioUnitReverbPreset` cases supported in V1, each paired with
     /// its stable string name used in `.tnf` files.
     ///
-    /// When Apple adds new presets in future SDKs, add them here. Existing
-    /// entries must not be renamed; doing so would silently fail to load
-    /// older `.tnf` files that contain the old name.
+    /// Keep the macOS-14.4-compatible set and picker ordering. Any deliberate
+    /// expansion must update the picker labels too. Existing names must not
+    /// change because older `.tnf` files use them.
     public static let supportedPresets: [(name: String, preset: AVAudioUnitReverbPreset)] = [
         ("smallRoom", .smallRoom),
         ("mediumRoom", .mediumRoom),

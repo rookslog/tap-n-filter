@@ -140,6 +140,25 @@ For each `EffectParameter` in the node's `parameters`:
 - `ParameterUnit.integer` → `Stepper` with the range.
 - `ParameterUnit.enumValue(cases: [String])` → `Picker`.
 
+Reverb exposes one **Room** picker through this generic enum path. Its `room`
+parameter is a zero-based index into `ReverbNode.supportedPresets`, covering
+the existing 13 macOS-14.4-compatible factory rooms, with Large Hall as the
+default. The picker reads the current preset, including direct preset changes
+and restoration. Writes must be finite, integral, and within the declared
+range; invalid writes throw without changing the room. Wet/dry remains a
+separate control, with the underlying reverb unit running at 100% wet.
+
+Room indices are UI values only. Snapshots keep `parameters` empty and persist
+the stable room name in `extras["preset"]`, preserving the legacy `.tnf`
+representation and old-reader compatibility. Restore accepts supported legacy
+string names or integer raw values; extras take precedence over conflicting
+numeric room parameters. Missing extras preserve the node's current room
+(Large Hall on a fresh node). Unknown names, unsupported raw values, and wrong
+extra types throw a recoverable `invalidExtra` error without changing the room;
+other node metadata may already have been restored. Loading a valid state
+afterward remains supported. No new/beta rooms or custom impulse responses are
+included. Audible room-transition clicks have not been measured.
+
 Sliders update the parameter on every drag, throttled at 30 Hz to avoid overwhelming the underlying `AVAudioUnit`'s parameter setter. The throttling uses Combine's `throttle(for: .milliseconds(33), scheduler: DispatchQueue.main, latest: true)`.
 
 Numeric readouts show the user's value, formatted appropriately (e.g., "800 Hz", "−12 dB", "70%"). Decibel parameters use a log mapping for the slider so the perceived range is intuitive.

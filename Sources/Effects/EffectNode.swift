@@ -63,9 +63,9 @@ public protocol EffectNode: AnyObject, Codable {
     /// property that cannot be observed). The UI uses this to seed the
     /// slider/picker/stepper with the live value on view appearance; a
     /// `nil` return is acceptable and means the UI falls back to
-    /// `parameter.defaultValue`. Concrete nodes with continuous parameters
-    /// should override; nodes with no parameters (e.g. `ReverbNode` in V1)
-    /// inherit the default.
+    /// `parameter.defaultValue`. Concrete nodes with readable continuous or
+    /// categorical parameters should override; nodes with no parameters or
+    /// no read-back path can inherit the default.
     func parameterValue(_ identifier: String) -> Float?
 
     /// Attach all underlying `AVAudioUnit`s and internal mixers to `engine`.
@@ -126,9 +126,9 @@ extension EffectNode {
     public static var showsWetDryByDefault: Bool { true }
 
     /// Default `parameterValue` returns `nil` for every identifier. Nodes
-    /// without continuous parameters (e.g. `ReverbNode` whose only knob is
-    /// the categorical preset stored in `EffectState.extras`) keep this
-    /// default. `EQNode` overrides with the concrete band reader.
+    /// with readable continuous or categorical parameters override this
+    /// method: `EQNode` reads band values and `ReverbNode` reads the room
+    /// index. Nodes without parameters or a read-back path keep the default.
     public func parameterValue(_ identifier: String) -> Float? { nil }
 
     /// Default `refreshMixState` is a no-op. `ReverbNode` and `EQNode`
