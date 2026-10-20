@@ -12,7 +12,8 @@ The workflow runs these steps in order:
 1. Record `git rev-parse HEAD`, Swift, and Xcode versions. Pull requests retain
    the actual synthetic merge checkout SHA separately from the PR head and base
    SHAs. Push/manual events record unavailable PR metadata as JSON null.
-2. Run `swift test -c debug --filter RenderedEvidenceStateTests` with full Xcode.
+2. Run `swift test -c debug --filter RenderedEvidence` with full Xcode, covering
+   both `RenderedEvidenceStateTests` and `RenderedEvidenceSourceReadinessTests`.
 3. Run `swift run -c debug tap-n-filter-render-evidence` in CI only.
 4. Run `python3 -B Tests/RenderedEvidenceTests/test_rendered_evidence.py` against
    the exported files. Any missing, empty, malformed, blank, or repeated-state
@@ -46,8 +47,16 @@ The output contains `manifest.json` and exactly these combinations:
 
 All images use the real `ControlPanelView`, with a canonical EQ/reverb chain,
 380pt width, and measured fitting height. The native host is kept in a
-borderless offscreen window. Two-second bounded waits assert state propagation
-and stable fitting height. Height must be at least 420pt and no more than 700pt
+borderless offscreen window. Two-second bounded waits assert state/error
+propagation, exact fake-source membership in the model's asynchronously refreshed
+available sources, and stable fitting height. The readiness loop always yields
+at least once, and its timeout reports the capture state and source-availability
+status. Validation, including validation before observations, rejects a missing
+source even if the selected source and capture state are already set. This
+matches the picker requirement that the selected PID have an enumerated row;
+the fixture additionally requires the entire fake source to match. Gated
+enumeration regressions cover running/error states and an empty completed list.
+Height must be at least 420pt and no more than 700pt
 (900pt with settings open). The measurement is taken before final window
 sizing; zero/collapsed height is rejected rather than clamped away. A final
 measurement rejects sizing-induced drift. The same host/model/node identities

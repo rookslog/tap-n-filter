@@ -68,12 +68,17 @@ final class EvidenceFixture {
         repeat {
             try await Task.sleep(for: .milliseconds(10))
             if model.captureState == expectedState,
-               model.lastError == (state == .multilineError ? .capture(Self.bannerError) : nil) {
+               model.lastError == (state == .multilineError ? .capture(Self.bannerError) : nil),
+               model.availableSources.contains(capture.source) {
                 try validate()
                 return
             }
         } while clock.now < deadline
-        throw EvidenceError.invalid("Fake state/error did not propagate: \(state.rawValue)")
+        throw EvidenceError.invalid(
+            "Fake state/error/source readiness timed out after two seconds: \(state.rawValue); "
+            + "captureState=\(model.captureState), "
+            + "sourceAvailable=\(model.availableSources.contains(capture.source))"
+        )
     }
 
     func validate() throws {
@@ -81,8 +86,9 @@ final class EvidenceFixture {
               model.lastError == (state == .multilineError ? .capture(Self.bannerError) : nil),
               model.showSettings == (state == .settingsOpen), !model.showDebugPanel,
               model.expandedEffectID == (state == .expandedEq ? eq?.id : nil),
+              model.availableSources.contains(capture.source),
               model.currentSource == capture.source, !engine.isRunning, !capture.operationAttempted else {
-            throw EvidenceError.invalid("State/identity/no-audio contract changed: \(state.rawValue)")
+            throw EvidenceError.invalid("State/source/identity/no-audio contract changed: \(state.rawValue)")
         }
     }
 

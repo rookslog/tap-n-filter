@@ -39,8 +39,8 @@ jobs:
           printf 'TNF_SWIFT_VERSION=%s\n' "$swift_version" >> "$GITHUB_ENV"
           printf 'TNF_XCODE_VERSION=%s\n' "$xcode_version" >> "$GITHUB_ENV"
 
-      - name: Check fake-state prerequisites
-        run: swift test -c debug --filter RenderedEvidenceStateTests
+      - name: Check fake-state and source-readiness prerequisites
+        run: swift test -c debug --filter RenderedEvidence
 
       - name: Render native offscreen panel evidence without audio
         id: render
