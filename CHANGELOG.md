@@ -30,6 +30,9 @@ Work toward v0.1.0. Nothing has been tagged or released yet.
   the limiter threshold, so it is not a hearing-safety guarantee.
 - Menubar control panel: source picker, chain editor with button-based reorder
   (ADR-013), power toggle, status pill, and a debug log panel.
+- One-level Undo Remove with a persistent recovery row and Command-Option-Z.
+  Restores the removed effect's state and position without rolling back edits
+  to other effects; successful add/reorder or preset replacement clears recovery.
 - Preset save and load as `.tnf` JSON files, plus the bundled `distant-engines`
   and `dry` factory presets.
 - "Preserve Bluetooth quality during capture" setting (ADR-019, Layer A).

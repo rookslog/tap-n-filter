@@ -101,7 +101,35 @@ public final class AppViewModel: ObservableObject {
 
     // MARK: Published state
 
-    @Published public private(set) var graph: Graph
+    @Published public private(set) var graph: Graph {
+        didSet {
+            if graph !== oldValue { lastRemoval = nil }
+        }
+    }
+
+    private struct RemovedEffect {
+        let state: EffectState
+        let index: Int
+    }
+
+    @Published private var lastRemoval: RemovedEffect?
+
+    /// Name of the last removed effect, retained while recovery is temporarily disabled.
+    public var lastRemovedEffectName: String? { lastRemoval?.state.displayName }
+
+    /// Whether the one-level removal can be recovered through the existing mutation lifecycle.
+    public var canUndoRemoval: Bool {
+        guard lastRemoval != nil, !engineStalled else { return false }
+        // A stopped but attached graph needs lifecycle recovery before structural edits.
+        guard !graph.isAttached || engineIsRunning else { return false }
+        if case .engine? = lastError { return false }
+        switch captureState {
+        case .idle, .running:
+            return true
+        case .starting, .stopping, .failed:
+            return false
+        }
+    }
 
     @Published public var currentSource: CaptureSource?
 
@@ -703,6 +731,7 @@ public final class AppViewModel: ObservableObject {
         mutateGraph { graph in
             let node = try registry.makeNode(typeIdentifier: typeIdentifier)
             try graph.add(node)
+            lastRemoval = nil
         }
         logger.info("addEffect: complete (chain size after: \(self.graph.nodes.count))")
     }
@@ -710,7 +739,12 @@ public final class AppViewModel: ObservableObject {
     public func removeEffect(at index: Int) {
         logger.info("removeEffect: at index \(index) (chain size before: \(self.graph.nodes.count))")
         mutateGraph { graph in
+            guard graph.nodes.indices.contains(index) else {
+                throw GraphError.invalidIndex(index)
+            }
+            let state = graph.nodes[index].snapshot()
             try graph.remove(at: index)
+            lastRemoval = RemovedEffect(state: state, index: index)
         }
         logger.info("removeEffect: complete (chain size after: \(self.graph.nodes.count))")
     }
@@ -718,7 +752,23 @@ public final class AppViewModel: ObservableObject {
     public func moveEffect(from: Int, to: Int) {
         logger.info("moveEffect: from \(from) to \(to)")
         mutateGraph { graph in
+            let previousOrder = graph.nodes.map { $0.id }
             try graph.move(from: from, to: to)
+            if graph.nodes.map({ $0.id }) != previousOrder { lastRemoval = nil }
+        }
+    }
+
+    /// Restore the last removed effect at its original index without replacing the graph.
+    /// Reconstruction or insertion failure leaves the record available for retry.
+    public func undoLastRemoval() {
+        guard canUndoRemoval, let removal = lastRemoval else { return }
+        mutateGraph { graph in
+            let node = try registry.makeNode(typeIdentifier: removal.state.typeIdentifier)
+            try node.restore(from: removal.state)
+            try graph.add(node, at: removal.index)
+            // Consume only after insertion. A later engine restart failure must not
+            // offer a second insertion of an effect already restored to the chain.
+            lastRemoval = nil
         }
     }
 

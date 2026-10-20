@@ -4,8 +4,8 @@ import SwiftUI
 import ViewModel
 
 /// Ordered editor for the effect chain. Renders one `EffectRow` per node
-/// followed by an `AddEffectButton` whose menu pulls available effect types
-/// from the view model's injected registry.
+/// followed by persistent removal recovery and an `AddEffectButton` whose menu
+/// pulls available effect types from the view model's injected registry.
 public struct ChainEditorView: View {
 
     @EnvironmentObject public var viewModel: AppViewModel
@@ -31,8 +31,40 @@ public struct ChainEditorView: View {
             // `maxHeight` still caps it so a long chain scrolls.
             .frame(minHeight: 200, maxHeight: 440)
 
+            if let name = viewModel.lastRemovedEffectName {
+                removalRecoveryRow(name: name)
+            }
+
             AddEffectButton()
         }
+    }
+
+    private func removalRecoveryRow(name: String) -> some View {
+        HStack(spacing: 6) {
+            Text("Removed \(name)")
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help("Removed \(name)")
+                .accessibilityLabel("Removed \(name)")
+            Spacer(minLength: 0)
+            Button {
+                viewModel.undoLastRemoval()
+            } label: {
+                HStack(spacing: 4) {
+                    Text("Undo Remove")
+                    Text("⌥⌘Z")
+                        .accessibilityHidden(true)
+                }
+            }
+            .fixedSize()
+            .controlSize(.small)
+            .disabled(!viewModel.canUndoRemoval)
+            .keyboardShortcut("z", modifiers: [.command, .option])
+            .help("Undo remove (⌥⌘Z)")
+            .accessibilityLabel("Undo Remove")
+            .accessibilityHint("Restore \(name) to its original position. Shortcut: Command-Option-Z.")
+        }
+        .font(.caption)
     }
 }
 
