@@ -41,6 +41,10 @@ Work toward v0.1.0. Nothing has been tagged or released yet.
   sessions do not inherit an exported-file identity.
 - Explicit Save (Cmd-S) to a known safe file and Save As (Shift-Cmd-S) with the
   current name prefilled. Receipts update only after a successful write.
+- Save synchronously includes the latest accepted slider edits through one
+  VM-owned delivery coalescer. Versioned readback acknowledgements preserve newer
+  drags and numeric drafts; unsubmitted text is never exported. Setter rejection
+  blocks export until the affected target is successfully edited or removed.
 - Nonblocking import-recovery notices for skipped effects, unsupported imported
   fields and clamped values. Recovered chains require explicit Save As before
   they become a known direct-Save target, protecting the original from a lossy

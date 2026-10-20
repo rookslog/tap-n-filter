@@ -5,7 +5,7 @@ import Presets
 @testable import ViewModel
 import XCTest
 
-/// Stage A new seam: missing scheduler/handle APIs are structural red only.
+/// Accepted-edit composition through the scoped VM queue/result seam.
 /// ALL editors use the DEFAULT production factory. No scheduleDrag override.
 @MainActor
 final class AcceptedParameterCompositionTests: XCTestCase {
@@ -331,6 +331,61 @@ final class AcceptedParameterCompositionTests: XCTestCase {
         XCTAssertEqual(editor.value, 7)
         model.savePreset(to: fixture.url("pending-echo.tnf"))
         XCTAssertEqual(try fixture.exportedValue("pending-echo.tnf"), 7)
+    }
+
+    func test_ordinary_default_fallback_echo_after_nil_readback_keeps_last_applied_value() throws {
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let editor = fixture.writer(node, model).makeEditor()
+        XCTAssertEqual(node.value, 2)
+        editor.drag(to: 0.4)
+        editor.finishDragging()
+        editor.receiveModelValue(try XCTUnwrap(node.parameterValue("amount")))
+        XCTAssertEqual(editor.value, 4)
+
+        node.readbackAvailable = false
+        editor.drag(to: 0.7)
+        editor.finishDragging()
+        XCTAssertEqual(node.value, 7)
+        XCTAssertNil(node.parameterValue("amount"))
+        XCTAssertEqual(editor.value, 7)
+
+        // EffectControlsView.currentValue changes the parent's initialValue
+        // from 4 to the catalog default when optional readback becomes nil.
+        let parentValue = node.parameterValue("amount") ?? node.parameters[0].defaultValue
+        XCTAssertEqual(parentValue, 2)
+        editor.receiveModelValue(parentValue)
+        XCTAssertEqual(editor.value, 7, "Nil verification must not turn a fallback model event into actual data")
+
+        model.savePreset(to: fixture.url("nil-adapter.tnf"))
+        XCTAssertEqual(try fixture.exportedValue("nil-adapter.tnf"), 7)
+        scheduler.runAll()
+        XCTAssertEqual(node.attempts, [4, 7], "Neither the fallback echo nor obsolete ticks may write the default")
+    }
+
+    func test_ordinary_external_readback_matching_old_own_echo_remains_authoritative() throws {
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let editor = fixture.writer(node, model).makeEditor()
+        editor.drag(to: 0.4)
+        editor.finishDragging()
+        // Deliver only the latest model echo, as SwiftUI may coalesce updates.
+        editor.drag(to: 0.7)
+        editor.finishDragging()
+        editor.receiveModelValue(try XCTUnwrap(node.parameterValue("amount")))
+        XCTAssertEqual(editor.value, 7)
+
+        model.updateParameter(nodeID: node.id, paramID: "amount", value: 4)
+        let actual = try XCTUnwrap(node.parameterValue("amount"))
+        XCTAssertEqual(actual, 4)
+        editor.receiveModelValue(actual)
+        XCTAssertEqual(editor.value, 4, "A real external change must not be swallowed as an older own echo")
+
+        model.savePreset(to: fixture.url("external-adapter.tnf"))
+        XCTAssertEqual(try fixture.exportedValue("external-adapter.tnf"), 4)
+        scheduler.runAll()
+        XCTAssertEqual(node.value, 4)
+        XCTAssertEqual(node.attempts, [4, 7, 4], "Model echoes and obsolete ticks must not replay accepted writes")
     }
 
     func test_normalized_A_result_and_delayed_echo_do_not_cancel_newer_B_then_save_exports_actual_B() throws {

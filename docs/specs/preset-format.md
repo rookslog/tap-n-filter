@@ -190,6 +190,14 @@ untouched. An explicit save writes the chosen basename into `name`, as before.
 Receipt/Modified/provenance state is memory-only and adds no schema fields.
 Restored sessions and factory presets have no known writable file target.
 
+Save drains valid VM-accepted parameter edits synchronously before snapshotting,
+writing or changing the receipt. It never submits uncommitted numeric editor text.
+A thrown setter rejection blocks export until that live target is successfully
+edited or removed/replaced; stale targets do not block unrelated saves. Actual
+native readback, including nonthrowing normalization, is authoritative. Disk-write
+failure retains the previous receipt/baseline but does not roll back graph edits
+already applied during the drain. No queue state is added to the file schema.
+
 Partial recovery skips unknown or failed effects and keeps a visible nonblocking
 warning. Imports also require recovery when unsupported fields/keys would be
 discarded or supported values require range clamping, even if no effects were

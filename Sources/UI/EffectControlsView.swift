@@ -10,8 +10,8 @@ import ViewModel
 /// - `.integer` → `Stepper`.
 /// - `.enumValue(cases:)` → `Picker`.
 ///
-/// Slider drags are coalesced at 30 Hz before calling `viewModel.updateParameter`.
-/// Exact numeric commits, reset, and the final drag value bypass that delay.
+/// Slider intent enters the VM synchronously; only native delivery is coalesced
+/// at 30 Hz. Exact numeric commits, reset, final drag and Save bypass the delay.
 public struct EffectControlsView: View {
 
     @EnvironmentObject public var viewModel: AppViewModel
@@ -245,7 +245,7 @@ private struct ParameterSlider: View {
             }
         }
         .onAppear {
-            editor.resync(value: initialValue)
+            editor.receiveModelValue(initialValue)
         }
         .onDisappear {
             editor.stop()
@@ -257,8 +257,9 @@ private struct ParameterSlider: View {
                 editor.cancel()
             }
         }
-        // The parent reads the node again after object/preset updates. Keep
-        // that readback authoritative without echoing it into the audio unit.
+        // The editor resolves pending accepted intent before this ordinary
+        // native readback and acknowledges its versioned application echoes.
+        // Truly unrelated readback remains authoritative without echo writes.
         // Unchanged NaN must not look like new model data during a recovery drag.
         .onChange(of: initialValue.isNaN ? nil : initialValue) { _, _ in
             editor.receiveModelValue(initialValue)

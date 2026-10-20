@@ -73,7 +73,7 @@ final class AcceptedParameterSaveBaselineTests: XCTestCase {
 }
 
 /// No real capture, rendering, panels, sleeps, or production defaults. Shared
-/// by the structural-red suites without depending on any new production API.
+/// by the queue/result suites without depending on their scheduling API.
 @MainActor
 final class AcceptedParameterFixture {
     let suiteName = "tnf.accepted-parameter.\(UUID().uuidString)"

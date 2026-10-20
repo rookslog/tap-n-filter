@@ -136,6 +136,25 @@ final class AcceptedParameterHandleTests: XCTestCase {
         XCTAssertEqual(try fixture.exportedValue("validated.tnf"), 7)
     }
 
+    func test_immediate_setter_reentrant_old_tick_is_invalid_before_native_application_finishes() throws {
+        let model = makeModel()
+        let node = try fixture.node(in: model)
+        let handle = try XCTUnwrap(model.makeParameterEditHandle(node: node, parameterID: "amount"))
+        XCTAssertTrue(model.acceptParameterValue(7, for: handle, intentRevision: 1))
+        let oldTick = try scheduler.takeNext()
+        node.afterAttempt = { [weak node] _ in
+            node?.afterAttempt = nil
+            oldTick()
+        }
+
+        model.updateParameter(nodeID: node.id, paramID: "amount", value: 3)
+
+        XCTAssertEqual(node.attempts, [3])
+        XCTAssertEqual(node.value, 3)
+        model.savePreset(to: fixture.url("reentrant-immediate.tnf"))
+        XCTAssertEqual(try fixture.exportedValue("reentrant-immediate.tnf"), 3)
+    }
+
     func test_failure_is_per_target_survives_retirement_and_other_parameter_success_cannot_clear_it() throws {
         let model = makeModel()
         let node = try fixture.node(in: model)

@@ -390,6 +390,19 @@ public final class AppViewModel: ObservableObject {
     private let registry: EffectNodeRegistry
     private let defaults: UserDefaults
     private let logger: TnfLogger
+    private let scheduleParameterEdit: (@escaping () -> Void) -> Void
+    private lazy var acceptedParameterEdits = AcceptedParameterEdits(
+        schedule: scheduleParameterEdit,
+        isCurrent: { [weak self] node in
+            self?.graph.nodes.contains {
+                ObjectIdentifier($0) == ObjectIdentifier(node) && $0.id == node.id
+            } ?? false
+        },
+        apply: { [weak self] node, parameter, value in
+            self?.applyParameterValue(node: node, parameterID: parameter, value: value)
+                ?? ParameterApplication(success: false, actual: nil)
+        }
+    )
 
     private var stateCancellable: AnyCancellable?
     private var sourceRefreshTimer: Timer?
@@ -437,13 +450,17 @@ public final class AppViewModel: ObservableObject {
         engine: AVAudioEngine,
         registry: EffectNodeRegistry = .shared,
         defaults: UserDefaults = .standard,
-        debugLog: DebugLogStore = DebugLogStore()
+        debugLog: DebugLogStore = DebugLogStore(),
+        scheduleParameterEdit: @escaping (@escaping () -> Void) -> Void = { action in
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(33)) { action() }
+        }
     ) {
         self.capture = capture
         self.engine = engine
         self.registry = registry
         self.defaults = defaults
         self.debugLog = debugLog
+        self.scheduleParameterEdit = scheduleParameterEdit
         self.showDebugPanel = defaults.bool(forKey: AppViewModelDefaultsKey.debugPanel)
         // Absent key → true (default ON per ADR-019).
         let storedPreserve = defaults.object(forKey: AppViewModelDefaultsKey.preserveBluetoothQuality)
@@ -805,16 +822,63 @@ public final class AppViewModel: ObservableObject {
             lastError = .parameter("Unknown node \(nodeID).")
             return
         }
+        acceptedParameterEdits.applyImmediate(node: node, parameter: paramID, value: value)
+    }
+
+    private func applyParameterValue(node: any EffectNode, parameterID paramID: String, value: Float)
+        -> ParameterApplication {
+        let shortID = String(node.id.uuidString.prefix(8))
         do {
             try node.setParameter(paramID, value: value)
             logger.info("updateParameter: \(type(of: node).typeIdentifier)/\(shortID) \(paramID)=\(value)")
             objectWillChange.send()
             schedulePersistence()
+            return ParameterApplication(success: true, actual: node.parameterValue(paramID))
         } catch {
             logger.error("updateParameter: \(type(of: node).typeIdentifier)/\(shortID) \(paramID)=\(value) failed: \(error.localizedDescription)")
             lastError = .parameter(error.localizedDescription)
+            return ParameterApplication(success: false, actual: node.parameterValue(paramID))
         }
     }
+
+    /// Bind accepted edits to this graph generation and concrete node object.
+    public func makeParameterEditHandle(node: any EffectNode, parameterID: String) -> ParameterEditHandle? {
+        acceptedParameterEdits.makeHandle(node: node, parameterID: parameterID)
+    }
+
+    /// Accept slider intent now; coalesce only delivery to the native setter.
+    @discardableResult
+    public func acceptParameterValue(
+        _ value: Float, for handle: ParameterEditHandle, intentRevision: UInt64
+    ) -> Bool {
+        acceptedParameterEdits.accept(value, for: handle, intentRevision: intentRevision)
+    }
+
+    /// Submit an explicit numeric/reset value immediately, superseding older drags.
+    @discardableResult
+    public func commitParameterValue(
+        _ value: Float, for handle: ParameterEditHandle, intentRevision: UInt64
+    ) -> Bool {
+        acceptedParameterEdits.commit(value, for: handle, intentRevision: intentRevision)
+    }
+
+    /// Read the target's latest accepted value, before native delivery if pending.
+    public func pendingParameterValue(for handle: ParameterEditHandle) -> Float? {
+        acceptedParameterEdits.pendingValue(for: handle)
+    }
+
+    /// Flush a control's final drag without retiring its session.
+    @discardableResult
+    public func finishParameterEditing(_ handle: ParameterEditHandle) -> Bool {
+        acceptedParameterEdits.finish(handle)
+    }
+
+    /// Flush accepted intent before retiring a disappearing control session.
+    public func retireParameterEditHandle(_ handle: ParameterEditHandle) {
+        acceptedParameterEdits.retire(handle)
+    }
+
+    private func flushAcceptedParameterEdits() -> Bool { acceptedParameterEdits.flushAll() }
 
     public func updateWetDryMix(nodeID: UUID, value: Float) {
         let shortID = String(nodeID.uuidString.prefix(8))
@@ -875,6 +939,13 @@ public final class AppViewModel: ObservableObject {
     // MARK: Presets
 
     public func savePreset(to url: URL) {
+        guard flushAcceptedParameterEdits() else {
+            lastError = .preset(
+                "Save failed: A parameter change could not be applied. "
+                    + "Adjust or remove the affected effect and try again."
+            )
+            return
+        }
         let snapshot = graph.snapshot(name: url.deletingPathExtension().lastPathComponent)
         do {
             try PresetStore.save(snapshot, to: url)
@@ -1118,6 +1189,7 @@ public final class AppViewModel: ObservableObject {
             }
             throw error
         }
+        acceptedParameterEdits.invalidateGeneration()
         graph = newGraph
         for warning in newGraph.lastLoadWarnings {
             logger.warning("Preset load warning: \(String(describing: warning))")

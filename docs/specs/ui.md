@@ -149,17 +149,56 @@ For each `EffectParameter` in the node's `parameters`:
 - `ParameterUnit.integer` → `Stepper` with the range.
 - `ParameterUnit.enumValue(cases: [String])` → `Picker`.
 
-Drag changes are coalesced to the latest value every 33 ms on the main queue to avoid overwhelming the underlying `AVAudioUnit`'s parameter setter. The final drag value is delivered immediately when editing ends. Exact numeric commits and reset are immediate; queued drag callbacks carry a generation check and cannot overwrite a later commit, reset, model resync, or disappearing control.
+Production drag intent enters the VM synchronously. One VM-owned coalescer
+delivers the latest accepted value per node-object/parameter every 33 ms on the
+main queue; the UI does not run a second production timer. Final drag, exact
+numeric commits, reset and Save flush without waiting for that timer. Finishing
+a drag leaves its control session usable for another drag. Disappearance flushes
+accepted input before retirement, then cancels any numeric draft.
 
 Frequency readouts use Hz below 1000 Hz and readable kHz at and above it (e.g., "800 Hz", "1 kHz", "1.5 kHz"). Other continuous readouts keep their unit conventions. Nonfinite readback is diagnosed as invalid; out-of-range readback retains its actual value with a warning. Only the thumb is constrained to the legal range; the readout never silently substitutes an endpoint.
 
 Each continuous parameter's expanded controls expose an **Exact value** field with a visible unit and a **Reset** button. The field seeds the full native Float precision rather than the rounded readout. Frequency entry is numeric Hz only; unit suffixes/group separators are rejected. The current locale's decimal separator is used for both seeding and parsing. Percent entry uses 0…100 display units and converts back to native 0…1 values. Inputs must be finite, wholly numeric, and within the declared range before Float rounding. Return applies; Escape or focus loss discards a draft; invalid submit shows an inline message and leaves the draft available for correction without writing. Reset writes the catalog default.
 
-Programmatic/preset updates resync the thumb, draft, and readout without echo writes. Replacing a node object, even with the same saved UUID, creates a new editor and retires the old queued drag. An acknowledgement of the control's own write does not cancel a newer pending drag. Each continuous-control write notifies view-model observers, uses the existing `updateParameter` callback, and checks actual node readback even if a refused write leaves the previous value unchanged; no persistence or DSP contract changes are introduced.
+Programmatic/preset updates resync the thumb, draft, and readout without echo
+writes. Replacing a node object, even with the same saved UUID, invalidates its
+old control generation before publishing the new graph. Removal discards stale
+targets; reorder preserves them and failed load preserves current accepted input.
+Each actual write uses the VM's shared immediate apply routine, notifies its
+observers and reads actual `Float?` state, without substituting a default for nil.
+The public immediate `updateParameter` API remains supported; successful writes
+supersede older queued input for the same target.
 
-The UI writer also checks the graph's current node object identity at actual delivery, so an old editor cannot write to a same-UUID preset replacement before SwiftUI teardown. When an audio unit normalizes a write, its actual readback is retained as the acknowledgement; a later parent echo does not discard a newer pending drag. Strict catalog validity is unchanged: even a one-ulp out-of-range readback remains a diagnostic, and cannot be submitted as valid input.
+The VM checks graph generation, UUID, object identity and parameter at actual
+delivery. Scheduling tickets are invalidated before draining, so already-delivered
+old closures cannot drain newer edits. Latest accepted intent wins across handles
+for the same target. Strict catalog validity is unchanged: even a one-ulp
+out-of-range readback remains a diagnostic and cannot be submitted as valid input.
 
-Repeated identical invalid readback, including NaN, does not republish diagnostic state or overwrite a correctable draft. Starting an exact edit discards a still-pending drag and rereads the actual parameter value; Cancel/focus loss restores actual readback without writing. When a slider takes over text editing, a delayed field focus-loss callback does not cancel that slider movement.
+Repeated identical invalid readback, including NaN, does not republish diagnostic
+state or overwrite a correctable draft. Starting/cancelling a production numeric
+draft does not discard already accepted VM drag intent. Save never parses or
+submits text; only valid explicit Return/reset crosses that boundary. Cancel
+restores current accepted intent or authoritative native readback without writing.
+When a slider takes over text editing, delayed field focus loss does not cancel
+that slider movement.
+
+One per-handle application-result handler reports session identity, caller intent
+revision, monotonic application serial, request, actual optional readback and
+setter outcome synchronously. It covers timer, immediate commit, finish, Save
+flush and retirement, even if native old→old readback cannot trigger onChange.
+The handler captures its editor weakly. Draft-start and submission revisions are
+recorded before callbacks; a result updates authoritative readback independently
+of visible text/focus/validation and never cancels the VM queue. Newer optimistic
+drag intent survives older results. Normalized own-model echoes are acknowledged
+with NaN-aware equality, including after a newer draft/drag. The ordinary model
+echo adapter and direct read both prefer accepted pending intent where applicable;
+unrelated model changes retain authoritative resync behavior.
+
+Standalone `ParameterValueEditor` clients without these production hooks retain
+their local coalescer and cancellation semantics: locally queued, not-yet-accepted
+drag input is discarded on exact-edit start, resync or stop. Standalone scheduling
+tests do not substitute for real default-factory/VM/Save composition tests.
 
 Sliders retain native arrow-key adjustment and accessibility values. Exact-value fields and Reset buttons have parameter-specific accessible labels. A focused numeric field publishes a UI-only focused value that removes Power's unmodified-Space shortcut for the duration of text focus, without changing Start/Retry readiness or mouse/button behavior. Runtime focus, VoiceOver, and current-macOS layout checks remain manual pre-merge gates alongside full-Xcode tests.
 
@@ -221,6 +260,14 @@ AppKit overwrite confirmation. A successful save establishes File provenance,
 the new baseline and safe URL, and clears all recovery warnings/notices. Save/write failure
 retains the previous receipt/baseline; failed load retains the graph and receipt.
 The write completes before the VM changes the receipt.
+
+Before any save snapshot or disk write, the VM synchronously drains valid accepted
+parameter edits. Throwing setter rejection is retained per live target, even after
+its control disappears, and aborts Save until a newer accepted application succeeds
+or that target is removed/replaced. Attempted queue entries are consumed once,
+without retry timers. Nonthrowing normalization/alteration is authoritative actual
+state, not proof of refusal. Failed disk writes retain the previous receipt and
+baseline without rolling back already applied graph edits.
 
 The file-import fidelity classifier uses decode diagnostics from the same bytes
 and compares migrated input to corresponding restored node occurrences by
