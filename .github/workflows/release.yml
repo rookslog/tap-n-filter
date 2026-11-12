@@ -1,0 +1,96 @@
+name: Tagged release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tagged-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  admit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      commit: ${{ steps.tag.outputs.commit }}
+      prerelease: ${{ steps.tag.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require exact tag on protected main
+        id: tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_COMMIT: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -B tools/release/release.py admit
+
+  build:
+    needs: admit
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.admit.outputs.commit }}
+          persist-credentials: false
+      - uses: maxim-lobanov/setup-xcode@1242409711ff5721add51979e9e11e23ebb7e5a4 # v1
+        with:
+          xcode-version: latest-stable
+      - name: Test release helpers without native actions
+        run: python3 -B -m unittest discover -s tools/release -p 'test_*.py' -v
+      - name: Build, default SwiftPM checks and ad-hoc package
+        env:
+          RELEASE_TAG: ${{ needs.admit.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.admit.outputs.commit }}
+          RELEASE_RUNNER: ${{ matrix.os }}
+          RUN_INTEGRATION_TESTS: '0'
+          TNF_RUN_NATIVE_TESTS: '0'
+        run: python3 -B tools/release/release.py build --runner "$RELEASE_RUNNER"
+      - name: Retain only release archive and public provenance
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ needs.admit.outputs.tag }}-${{ matrix.os }}
+          path: |
+            release-assets/*.zip
+            release-assets/*.json
+          if-no-files-found: error
+          overwrite: false
+          retention-days: 14
+
+  prerelease:
+    needs: [admit, build]
+    if: needs.admit.outputs.prerelease == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.admit.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-${{ needs.admit.outputs.tag }}-*
+          path: release-assets
+          merge-multiple: true
+      - name: Recheck protected-main identity and publish identical prerelease assets
+        env:
+          RELEASE_TAG: ${{ needs.admit.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.admit.outputs.commit }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -B tools/release/release.py publish
