@@ -38,9 +38,9 @@ extension LibraryProfiles {
         if type == "sizedReverb" {
             parameters = [("wetPercent", .linear(0, 100), 0), ("roomPreset", .linear(1, 3), 1), ("roomSize", .linear(0, 1), 0.5)]
         } else if profile == Self.filters, ["deviceEQ", "reverb", "dynamics", "gain"].contains(type) {
-            parameters = try Filters().authoringParameters(type: type)
+            parameters = try recipes.filters.authoringParameters(type: type)
         } else {
-            parameters = try Everyday().authoringParameters(type: type)
+            parameters = try recipes.everyday.authoringParameters(type: type)
         }
         return LibraryPartDescriptor(type: type, parameters: try parameters.map { key, domain, seed in
             let unit: String

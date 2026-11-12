@@ -50,6 +50,7 @@ struct ModelContract: Sendable {
     let run: @Sendable () async throws -> Void
 
     static let all: [ModelContract] = [
+        ModelContract(name: "DescriptorReuse.exact_legacy_facts", run: DescriptorReuseCases().test_exact_legacy_descriptor_facts),
         ModelContract(name: "MappingCurveCases.exact_constant_spans",
             run: MappingCurveCases().test_constant_spans_preserve_exact_endpoint_bits),
         ModelContract(name: "Bootstrap.existing_fresh_refusal", run: { try await LibraryBootstrapCases().test_existing_fresh_and_refusal() }),

@@ -61,11 +61,14 @@ enum BuiltinMigrationError: Error {
 
 // Fixed shipped set, not an extension/plugin registry.
 struct BuiltinSounds: Sendable {
+    let everyday: Everyday
+    let filters: Filters
     let all: [any BuiltinSound]
     let catalog: [PartDescriptor]
     init() throws {
-        let everyday = try Everyday()
-        all = [everyday, try Filters()]
+        everyday = try Everyday()
+        filters = try Filters()
+        all = [everyday, filters]
         catalog = everyday.catalog
     }
 
