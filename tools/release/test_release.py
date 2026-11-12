@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import plistlib
 import shlex
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -19,6 +20,8 @@ class SyntheticAPI:
     def __init__(self):
         self.calls = []
         self.release = None
+        self.releases = []
+        self.release_pages = None
         self.assets = []
         self.main_protected = True
         self.remote_commit = COMMIT
@@ -33,9 +36,13 @@ class SyntheticAPI:
         if path.startswith('/compare/'):
             return {'status': self.status}
         if path.startswith('/releases/tags/'):
-            return self.release
+            return self.release if self.release and not self.release['draft'] else None
+        if method == 'GET' and path.startswith('/releases?per_page=100&page='):
+            page = int(path.rsplit('=', 1)[1])
+            return self.release_pages.get(page, []) if self.release_pages is not None else self.releases[(page-1)*100:page*100]
         if method == 'POST' and path == '/releases':
-            self.release = dict(value, id=1)
+            self.release = dict(value, id=len(self.releases)+1)
+            self.releases.append(self.release)
             return self.release
         if method == 'GET' and '/assets?' in path:
             return self.assets
@@ -251,6 +258,54 @@ class PackageTests(unittest.TestCase):
             r.package(self.product, self.info, self.root / 'out', r.version(TAG), 'macos-15', refuse)
 
 
+class BuildCheckoutTests(unittest.TestCase):
+    def test_public_exact_commit_roots_and_owned_cleanup_on_success_or_refusal(self):
+        for failure in (None, 'build', 'HEAD', 'tag'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory(prefix='tnf-build-boundary-') as tmp:
+                calls = []
+                roots = []
+                registered = []
+                def fake_command(argv, cwd=None):
+                    argv = list(map(str, argv))
+                    calls.append((argv, cwd))
+                    if argv[:3] == ['git', 'worktree', 'add']:
+                        work = Path(argv[4])
+                        work.mkdir()
+                        (work / '.git').write_text('SYNTHETIC Git boundary, not a real checkout')
+                        registered.append(work)
+                        roots.append(work.parent)
+                        self.assertEqual(work.parent.stat().st_mode & 0o777, 0o700)
+                        self.assertTrue(str(work).startswith('/private/tmp/tnf-release-'))
+                        self.assertEqual(argv[-1], COMMIT)
+                    elif argv[:2] == ['git', 'rev-parse']:
+                        if failure == 'HEAD' and argv[2] == 'HEAD' or failure == 'tag' and argv[2] != 'HEAD':
+                            return 'b' * 40
+                        return COMMIT
+                    elif argv[:3] == ['git', 'worktree', 'list']:
+                        return '\n'.join('worktree ' + str(p) for p in registered)
+                    elif argv[:3] == ['git', 'worktree', 'remove']:
+                        self.assertEqual(Path(argv[-1]), registered[0])
+                        shutil.rmtree(registered.pop())
+                    else:
+                        self.fail('Unexpected boundary ' + str(argv))
+                    return ''
+                def fake_build(work, scratch, identity, runner, output):
+                    self.assertEqual(scratch, work.parent / 'build')
+                    self.assertEqual(identity['commit'], COMMIT)
+                    self.assertTrue(output.is_absolute())
+                    if failure == 'build':
+                        raise r.Refused('SYNTHETIC build refusal')
+                with patch('release.command', side_effect=fake_command), patch('release.build_at', side_effect=fake_build) as builder:
+                    if failure:
+                        with self.assertRaises(r.Refused):
+                            r.build(dict(r.version(TAG), commit=COMMIT), 'macos-15', Path(tmp) / 'assets')
+                    else:
+                        r.build(dict(r.version(TAG), commit=COMMIT), 'macos-15', Path(tmp) / 'assets')
+                    self.assertEqual(builder.call_count, 0 if failure in ('HEAD', 'tag') else 1)
+                self.assertTrue(roots and all(not p.exists() for p in roots))
+                self.assertFalse(any('prune' in argv for argv, _ in calls))
+
+
 class PublishTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='tnf-assets-synthetic-')
@@ -295,6 +350,54 @@ class PublishTests(unittest.TestCase):
         r.publish(api, TAG, COMMIT, self.assets)
         self.assertEqual(len([c for c in api.calls if c[0] == 'POST']), 1)
         self.assertFalse(api.release['draft'])
+
+    def test_draft_invisible_to_tag_lookup_is_resumed_without_second_release(self):
+        api = SyntheticAPI()
+        r.publish(api, TAG, COMMIT, self.assets)
+        api.release['draft'] = True
+        api.assets.pop()
+        self.assertIsNone(api.request('GET', '/releases/tags/' + TAG))
+        api.calls.clear()
+        r.publish(api, TAG, COMMIT, self.assets)
+        self.assertEqual(len(api.releases), 1)
+        self.assertFalse(any(c[0] == 'POST' and c[1] == '/releases' for c in api.calls))
+        self.assertFalse(api.release['draft'])
+        self.assertEqual(len(api.assets), 4)
+
+    def test_draft_lookup_checks_later_pages_and_refuses_ambiguous_matches(self):
+        api = SyntheticAPI()
+        r.publish(api, TAG, COMMIT, self.assets)
+        api.release['draft'] = True
+        unrelated = [{'id': 1000+i, 'tag_name': 'other-'+str(i), 'draft': True} for i in range(100)]
+        api.release_pages = {1: unrelated, 2: [api.release]}
+        api.calls.clear()
+        r.publish(api, TAG, COMMIT, self.assets)
+        self.assertTrue(any(c[1].endswith('page=2') for c in api.calls))
+        self.assertEqual(len(api.releases), 1)
+        api.release['draft'] = True
+        api.release_pages = {1: [api.release, dict(api.release, id=999)]}
+        api.calls.clear()
+        with self.assertRaises(r.Refused):
+            r.publish(api, TAG, COMMIT, self.assets)
+        self.assertTrue(all(c[0] == 'GET' for c in api.calls))
+
+    def test_draft_lookup_refuses_unavailable_or_repeated_pagination(self):
+        for first in (None, {'unexpected': True}, [{'id': 1, 'tag_name': TAG, 'draft': True}]*100):
+            api = SyntheticAPI()
+            api.release_pages = {1: first}
+            with self.subTest(page=first), self.assertRaises(r.Refused):
+                r.publish(api, TAG, COMMIT, self.assets)
+            self.assertTrue(all(c[0] == 'GET' for c in api.calls))
+
+    def test_published_plus_draft_and_metadata_drift_refuse_before_mutation(self):
+        api = SyntheticAPI()
+        r.publish(api, TAG, COMMIT, self.assets)
+        for rows in ([api.release, dict(api.release, id=999, draft=True)], [dict(api.release, target_commitish='b' * 40)]):
+            api.release_pages = {1: rows}
+            api.calls.clear()
+            with self.subTest(rows=rows), self.assertRaises(r.Refused):
+                r.publish(api, TAG, COMMIT, self.assets)
+            self.assertTrue(all(c[0] == 'GET' for c in api.calls))
 
     def test_stable_publishing_refuses_before_api_call(self):
         api = SyntheticAPI()

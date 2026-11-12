@@ -39,7 +39,7 @@ does not fix it, establish its cause, or qualify audio behavior on that OS.
 ## Release
 1. Pick a commit on `main`. Optionally tag a pre-release (`v1.0.0-beta.1`) for the operator to try; that replaces any "testing branch".
 2. Release checklist:
-   - performance check against the budget. The first beta tag requires Release drag CPU at most 25% of one core, idle at most 1%, menu-open at most 3%, and zero writes during drag;
+   - required performance measurements. The previous numeric beta target is withdrawn; no replacement budget is ratified. The first beta awaits the operator decision;
    - for an overnight prerelease, explicit lead acceptance of the sound-OFF UI surrogate only. This does not establish sound-playing, physical-input or audio-thread performance, or listening acceptance;
    - for a final stable release, operator listening acceptance and the full release disposition;
    - privacy pass on the release notes and assets;

@@ -9,6 +9,7 @@ import plistlib
 import re
 import shutil
 import subprocess
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -201,15 +202,33 @@ def archive(folder, output):
 
 def build(identity, runner, output):
     require(not output.exists(), 'release output exists; never overwrite')
-    scratch = Path('.build-release')
-    command(['swift', 'test', '--build-system', 'native', '--scratch-path', scratch, '-c', 'release', '-j', '2', '-Xswiftc', '-j2'])
-    mapping = str(Path.cwd()) + '=.'
-    command(['swift', 'build', '--build-system', 'native', '--product', 'tap-n-filter', '--scratch-path', scratch, '-c', 'release', '-j', '2', '-Xswiftc', '-j2', '-Xswiftc', '-file-prefix-map', '-Xswiftc', mapping, '-Xswiftc', '-gnone', '-Xcc', '-ffile-prefix-map=' + mapping])
-    product = Path(command(['swift', 'build', '--build-system', 'native', '--scratch-path', scratch, '-c', 'release', '--show-bin-path']))
+    origin = Path.cwd()
+    output = output.absolute()
+    root = Path(tempfile.mkdtemp(prefix='tnf-release-', dir='/private/tmp'))
+    require(root.resolve() == root and not root.is_symlink() and root.stat().st_uid == os.getuid() and root.stat().st_mode & 0o777 == 0o700, 'private owned public build root required')
+    work = root / 'source'
+    try:
+        command(['git', 'worktree', 'add', '--detach', work, identity['commit']], cwd=origin)
+        require(command(['git', 'rev-parse', 'HEAD'], cwd=work) == identity['commit'], 'detached release checkout differs')
+        require(command(['git', 'rev-parse', 'refs/tags/' + identity['tag'] + '^{commit}'], cwd=work) == identity['commit'], 'detached release tag differs')
+        build_at(work, root / 'build', identity, runner, output)
+    finally:
+        registered = command(['git', 'worktree', 'list', '--porcelain'], cwd=origin)
+        if 'worktree ' + str(work) in registered.splitlines():
+            command(['git', 'worktree', 'remove', '--force', work], cwd=origin)
+        require(not work.exists(), 'owned build checkout cleanup incomplete; root retained')
+        shutil.rmtree(root)
+
+
+def build_at(work, scratch, identity, runner, output):
+    command(['swift', 'test', '--build-system', 'native', '--scratch-path', scratch, '-c', 'release', '-j', '2', '-Xswiftc', '-j2'], cwd=work)
+    mapping = str(work) + '=.'
+    command(['swift', 'build', '--build-system', 'native', '--product', 'tap-n-filter', '--scratch-path', scratch, '-c', 'release', '-j', '2', '-Xswiftc', '-j2', '-Xswiftc', '-file-prefix-map', '-Xswiftc', mapping, '-Xswiftc', '-gnone', '-Xcc', '-ffile-prefix-map=' + mapping], cwd=work)
+    product = Path(command(['swift', 'build', '--build-system', 'native', '--scratch-path', scratch, '-c', 'release', '--show-bin-path'], cwd=work))
     command(['/usr/bin/strip', '-S', product / 'tap-n-filter'])
     output.mkdir()
     staging = output / 'staging'
-    app, arch, resources = package(product, Path('Sources/tap-n-filter/Resources/Info.plist'), staging, identity, runner)
+    app, arch, resources = package(product, work / 'Sources/tap-n-filter/Resources/Info.plist', staging, identity, runner)
     name = 'tap-n-filter-' + identity['tag'] + '-' + runner + '-' + arch
     zip_path = output / (name + '.zip')
     archive(staging, zip_path)
@@ -242,13 +261,39 @@ def asset_plan(folder, tag, commit):
     return {p.name: {'path': p, 'sha256': digest(p), 'size': p.stat().st_size} for p in files}
 
 
+def release_for_tag(api, tag):
+    published = api.request('GET', '/releases/tags/' + tag)
+    if published is not None:
+        require(type(published) is dict and published.get('tag_name') == tag and published.get('draft') is False, 'published tag lookup differs')
+    seen = set()
+    matches = []
+    for page in range(1, 101):
+        rows = api.request('GET', '/releases?per_page=100&page=' + str(page))
+        require(type(rows) is list and len(rows) <= 100, 'authenticated release listing unavailable or malformed')
+        for row in rows:
+            require(type(row) is dict and type(row.get('id')) is int and row['id'] > 0 and type(row.get('draft')) is bool and type(row.get('tag_name')) is str, 'release listing identity malformed')
+            require(row['id'] not in seen, 'release pagination repeated an identity; retry from unchanged artifacts')
+            seen.add(row['id'])
+            if row['tag_name'] == tag:
+                matches.append(row)
+        if len(rows) < 100:
+            break
+    else:
+        raise Refused('release pagination incomplete; no draft created')
+    require(len(matches) <= 1, 'ambiguous releases for tag; no draft created')
+    if published is not None:
+        require(len(matches) == 1 and matches[0]['id'] == published['id'], 'published/listed release identity differs')
+        require(all(matches[0].get(key) == published.get(key) for key in ('tag_name', 'draft', 'body', 'target_commitish', 'prerelease')), 'published/listed release metadata differs')
+    return matches[0] if matches else None
+
+
 def publish(api, tag, commit, assets):
     require(version(tag)['prerelease'], 'stable publishing requires separate deliberate owner action')
     body = 'Source commit `' + commit + '`.\n\nAd-hoc signed. Not Developer ID signed or notarized.\n\nSHA256\n' + '\n'.join(name + '  ' + row['sha256'] for name, row in sorted(assets.items()))
-    release = api.request('GET', '/releases/tags/' + tag)
+    release = release_for_tag(api, tag)
     if release is None:
         release = api.request('POST', '/releases', {'tag_name': tag, 'target_commitish': commit, 'name': tag, 'body': body, 'draft': True, 'prerelease': True, 'make_latest': 'false'})
-    require(release['tag_name'] == tag and release['prerelease'] is True and release['body'] == body, 'existing release identity differs; no replacement')
+    require(release['tag_name'] == tag and release['prerelease'] is True and release['body'] == body and release['target_commitish'] == commit, 'existing release identity differs; no replacement')
     release_id = str(release['id'])
     existing = api.request('GET', '/releases/' + release_id + '/assets?per_page=100')
     require(len(existing) < 100, 'unexpected release asset count')
