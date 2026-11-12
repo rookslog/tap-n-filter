@@ -39,11 +39,12 @@ does not fix it, establish its cause, or qualify audio behavior on that OS.
 ## Release
 1. Pick a commit on `main`. Optionally tag a pre-release (`v1.0.0-beta.1`) for the operator to try; that replaces any "testing branch".
 2. Release checklist:
-   - performance check against the budget;
-   - operator listening acceptance;
+   - required performance measurements. The previous numeric beta target is withdrawn; no replacement budget is ratified. The first beta awaits the operator decision;
+   - for an overnight prerelease, explicit lead acceptance of the sound-OFF UI surrogate only. This does not establish sound-playing, physical-input or audio-thread performance, or listening acceptance;
+   - for a final stable release, operator listening acceptance and the full release disposition;
    - privacy pass on the release notes and assets;
    - the working app's data path untouched, with rollback to the previous release possible.
-3. Tag `vX.Y.Z` on `main`. CI builds the app from the tag and attaches it to a GitHub Release. Signing and notarization are a later, separate decision.
+3. Deliberately tag a commit on protected `main`. The tagged workflow builds and checks both macOS runners. Eligible `vX.Y.Z-beta.N` tags publish prereleases with immutable checksummed assets. Stable `vX.Y.Z` tags retain workflow artifacts only; publishing stable remains a separate owner release action after listening acceptance. Packages use explicit ad-hoc signing only. Developer ID signing and notarization remain separate decisions. See [tagged automation](../tools/release/README.md) for artifact identity, reruns and the version-isolated launcher.
 
 ## Lanes
 - Light lane: work on a branch.
