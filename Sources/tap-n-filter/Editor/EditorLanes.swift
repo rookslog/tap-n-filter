@@ -99,7 +99,9 @@ struct TNFEditorLaneRow: View {
                                 do {
                                     try commands.validateCallback(token)
                                     if !commands.positionGestureActive { try commands.beginResponseGesture(binding) }
-                                    let receipt = try commands.admitResponse(binding, command: .sourceValue(binding: binding.id, selectorOption: option, sourceOption: source.id, value: min(1, max(0, 1 - drag.location.y / 64))))
+                                    let sourcePosition: Double = 1 - Double(drag.location.y) / 64
+                                    let sourceValue: Double = min(1, max(0, sourcePosition))
+                                    let receipt = try commands.admitResponse(binding, command: .sourceValue(binding: binding.id, selectorOption: option, sourceOption: source.id, value: sourceValue))
                                     commands.perform(token: token) { try await commands.consume(receipt) }
                                 } catch { commands.fail(error) }
                             }.onEnded { _ in

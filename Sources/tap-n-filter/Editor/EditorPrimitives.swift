@@ -152,7 +152,7 @@ extension View {
 enum TNFEditorLayout {
     static let sidebar: CGFloat = 250
     static let gap: CGFloat = 18
-    static let minimumWidth: CGFloat = 2 * 22 + (250 + 28 + 18) + 560 + 18 + 380
+    static let minimumWidth: CGFloat = 1298
     static let minimumHeight: CGFloat = 480
     static let name: CGFloat = 96
     static let trackX: CGFloat = 8 + 16 + 12 + name + 12
