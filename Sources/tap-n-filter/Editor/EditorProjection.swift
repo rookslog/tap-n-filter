@@ -66,18 +66,18 @@ enum TNFEditorControlKind: String, Identifiable { case slider, choice, switchCon
         try await previewUpdate(places: preview.places, replacements: replacements)
     }
     func placeName(_ place: LibraryUpdatePlace) -> String {
-        guard let use = app.snapshot?.uses.first(where: { $0.id == place.use }) else { return "Block" }
+        guard let use = app.presentation?.uses.first(where: { $0.id == place.use }) else { return "Block" }
         let names = (1...max(1, place.path.count)).compactMap { count -> String? in
             guard count <= place.path.count,
                   let ref = use.occurrences.first(where: { $0.path == Array(place.path.prefix(count)) })?.reference else { return nil }
-            return app.snapshot?.definitions.first { $0.id == ref.definition }?.name
+            return app.presentation?.definitions.first { $0.id == ref.definition }?.name
         }
         return ([appName(use.target), use.name] + names).joined(separator: " · ")
     }
     func placeName(_ place: LibraryChoicePlace) -> String {
         switch place {
         case .use(let app, _): return appName(app)
-        case .workspace(let id): return self.app.snapshot?.definitions.first { $0.id == id }?.name ?? "Block"
+        case .workspace(let id): return self.app.presentation?.definitions.first { $0.id == id }?.name ?? "Block"
         }
     }
 }
@@ -149,7 +149,7 @@ struct TNFEditorAppIdentity {
     func appName(_ bundle: String) -> String { appIdentity(bundle).name }
     func refreshAppIdentities() {
         guard let appIdentityResolver else { return }
-        let bundles = Set((app.snapshot?.uses.map(\.target) ?? []) + (app.snapshot?.assignments.map(\.target) ?? []))
+        let bundles = Set((app.presentation?.uses.map(\.target) ?? []) + (app.presentation?.assignments.map(\.target) ?? []))
         appIdentities = Dictionary(uniqueKeysWithValues: bundles.map { ($0, appIdentityResolver($0)) })
     }
     func settingIsReached(sourceControls: [UUID], path: [UUID]) -> Bool {

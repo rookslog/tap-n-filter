@@ -51,6 +51,16 @@ public final class EverydayMenu: NSObject, NSMenuDelegate {
             glyph: glyph, visibilityChanged: visibilityChanged, visualizationDemandChanged: visualizationDemandChanged, openEditor: openEditor)
     }
 
+    public convenience init(presentation: LibraryMenuState, glyph: NSImage,
+                visibilityChanged: @escaping (Bool) -> Void = { _ in },
+                visualizationDemandChanged: @escaping (MenuVisualizationMode?) -> Void = { _ in },
+                openEditor: ((String?) -> Void)? = nil,
+                perform: @escaping (EverydayMenuAction) -> Void) {
+        self.init(state: MenuPresentation(presentation: presentation, glyph: glyph, perform: perform),
+            glyph: glyph, visibilityChanged: visibilityChanged,
+            visualizationDemandChanged: visualizationDemandChanged, openEditor: openEditor)
+    }
+
     private init(state: MenuPresentation, glyph: NSImage, visibilityChanged: @escaping (Bool) -> Void,
                  visualizationDemandChanged: @escaping (MenuVisualizationMode?) -> Void, openEditor: ((String?) -> Void)?) {
         self.state = state
@@ -119,12 +129,20 @@ public final class EverydayMenu: NSObject, NSMenuDelegate {
         updateSourceRows()
     }
 
-    public func update(data: MenuSoundData, pendingApps: Set<String>, apps: [SourceAppInfo], comparing: Bool,
+    public func update(data: MenuSoundData, positionContext: MenuPositionContext? = nil,
+                       pendingApps: Set<String>, apps: [SourceAppInfo], comparing: Bool,
                        compareAvailable: Bool, problem: String?, levels: [UUID: MenuLevelFrame] = [:]) {
         librarySnapshot = nil
-        if state.snapshot != data { state.snapshot = data }
+        state.positionContext = positionContext
+        let current = positionContext.map { data.contextualized($0) } ?? data
+        if state.snapshot != current { state.snapshot = current }
         state.libraryPending = pendingApps
         updateCommon(apps: apps, comparing: comparing, compareAvailable: compareAvailable, problem: problem, levels: levels)
+    }
+
+    @discardableResult
+    public func applyPositions(_ delta: LibraryMenuDelta, context: MenuPositionContext) -> Bool {
+        state.applyPositions(delta, context: context)
     }
 
     public func updateVisualization(_ visualization: MenuVisualizationState) {

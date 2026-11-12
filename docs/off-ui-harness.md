@@ -83,14 +83,26 @@ The delegate bounds missing handshakes and records failures. Do not force-kill i
 or treat exit status alone as success. Inspect the final `finished` record:
 `failures` must be empty, sound must remain OFF, `drainedMutations`,
 `finalDrainSaved` and `saveReadbackChecked` must be true, and requested/observed/
-reopened values must agree when events were requested. Accounting version 2
-separates real owner executions, coalesced requests, refusals/failures and
-unaccounted work; it does not claim 900 owner applications. Successful committed
-writes and identical commit calls are distinct.
+reopened values must agree when events were requested. Accounting version 3 separates `liveEvaluations`/`liveDeliveries` and
+`liveEvaluationSeconds` from actual `documentCommands`, `documentCommandSeconds`
+and their outcomes. `executed` and `ownerMoveSeconds` retain document-command
+meaning; live ticks are not document moves. Qualified direct scalar drags use
+load-prepared complete mappings and explicit transient row/native state, then
+flush the final value through a real document command at release or an ordered
+boundary. Driven, custom and unknown controls keep their ordered full path.
+Successful committed writes and identical commit calls are distinct.
 
-No handshake polling runs during the active workload. Owner elapsed durations
-exclude actor-queue wait and UI publication, but can include OS descheduling;
-they are not pure CPU measurements. This entry provides no CPU/RSS collector,
+For the uninterrupted direct drag, require positive accounted live work, equal
+live evaluations and deliveries, one final document command, zero full reads or
+saves during dragging, one release full read and one committed release save.
+Check the final document value and fresh reopen, not just the transient row.
+Release-to-settled must be at most 100 ms; an interrupted or incomplete workload
+is not a successful sample.
+
+No handshake polling runs during the active workload. Document-command elapsed
+durations exclude actor-queue wait and UI publication. Live-evaluation elapsed
+durations include complete-part evaluation, admission and synchronous UI/delivery.
+Both can include OS descheduling and are not pure CPU or audio-thread measurements. This entry provides no CPU/RSS collector,
 matched baseline or performance-budget acceptance. Keep counters and profiler
 diagnostics separate and retain artifacts outside the public tree.
 

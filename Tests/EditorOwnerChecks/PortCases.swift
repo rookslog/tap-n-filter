@@ -4,7 +4,7 @@ import SessionStore
 
 @MainActor func ownerPortCases(_ root:URL)async throws {
     let f=try await Fixture(root.appendingPathComponent("selector"));_=try await f.publish();let binding=try await f.attach()
-    let coordinator=LibraryListeningCoordinator(publish:{_ in},admit:{_ in},apply:{_,_ in})
+    let coordinator=LibraryListeningCoordinator(publish:{_ in},admit:{_ in},apply:{_,_,_ in})
     await coordinator.start(persistence:f.port,limits:f.limits)
     let adapter=coordinator.editor;_=try await selected(adapter.select(.use(binding)));let token=adapter.token!
     let gain=try await selected(adapter.submit(token,command:.addPart(type:"gain",at:0))).parts[0].id,slider=id(830)

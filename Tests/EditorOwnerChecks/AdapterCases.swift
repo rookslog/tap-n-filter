@@ -34,7 +34,7 @@ actor OwnerReadGate {
     let binding=try await f.attach("test.editor"),other=try await f.attach("test.other")
     let gate=OwnerReadGate()
     var events:[LibraryConsumerEvent]=[],applied:[ListeningRenderSnapshot]=[]
-    let coordinator=LibraryListeningCoordinator(publish:{events.append($0)},admit:{_ in},apply:{state,_ in applied.append(state)},editRead:{try await gate.read($0,$1)})
+    let coordinator=LibraryListeningCoordinator(publish:{events.append($0)},admit:{_ in},apply:{state,_,_ in applied.append(state)},editRead:{try await gate.read($0,$1)})
     await coordinator.start(persistence:f.port,limits:f.limits)
     let adapter=coordinator.editor
     _=try await selected(adapter.select(.use(binding)))
@@ -114,8 +114,8 @@ actor OwnerControlledStore: LibraryPersistence {
         let binding=try await f.attach("test.editor"),other=try await f.attach("test.other")
         try await f.session.move(choice,on:"test.other",to:.scalar(0.5));try await f.save()
         let port=OwnerControlledStore(f.file)
-        var events:[LibraryConsumerEvent]=[],latest:LibrarySnapshot?
-        let coordinator=LibraryListeningCoordinator(publish:{event in events.append(event);if case .state(let state)=event{latest=state.snapshot}},admit:{_ in},apply:{_,_ in})
+        var events:[LibraryConsumerEvent]=[],latest:LibraryMenuState?
+        let coordinator=LibraryListeningCoordinator(publish:{event in events.append(event);if case .state(let state)=event{latest=state.presentation}},admit:{_ in},apply:{_,_,_ in})
         await coordinator.start(persistence:port,limits:f.limits)
         let adapter=coordinator.editor
         _=try await selected(adapter.select(.use(binding)))
@@ -196,7 +196,7 @@ actor OwnerControlledStore: LibraryPersistence {
 
 @MainActor func ownerGestureCases(_ root:URL)async throws {
     let f=try await Fixture(root);_=try await f.publish();let binding=try await f.attach()
-    let coordinator=LibraryListeningCoordinator(publish:{_ in},admit:{_ in},apply:{_,_ in})
+    let coordinator=LibraryListeningCoordinator(publish:{_ in},admit:{_ in},apply:{_,_,_ in})
     await coordinator.start(persistence:f.port,limits:f.limits)
     let adapter=coordinator.editor;_=try await selected(adapter.select(.use(binding)));let token=adapter.token!
     let gesture=UUID();_=try await selected(adapter.barrier(token,.begin(gesture)))

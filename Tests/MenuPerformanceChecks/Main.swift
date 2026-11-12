@@ -38,7 +38,7 @@ struct MenuPerformanceChecks {
         let limits = try LibraryAppSession.normalLimits()
         let app = LibraryAppSession(changed: {}, checkpointDelay: {})
         await app.start(persistence: store, limits: limits)
-        let snapshot = app.snapshot!, assignment = snapshot.assignments[0]
+        let snapshot = app.presentation!, assignment = snapshot.assignments[0]
         let use = snapshot.uses.first { $0.id == assignment.use }!
         let volume = use.controls.first { $0.title == "Volume" }!
         let address = LibraryControlAddress(path: [], control: volume.id)
@@ -55,7 +55,7 @@ struct MenuPerformanceChecks {
                     && during.compareOriginal, "final live value and comparison update during drag")
         app.send(.compare(false))
         app.send(.endGesture)
-        await app.coordinator.waitForIssuedSaves()
+        _ = await app.gestureSave?.value; await app.coordinator.waitForIssuedSaves()
         let reopened = try await SoundLibrarySession(persistence: LibrarySessionFile(url: file, maximumBytes: 4_000_000), limits: limits)
         let after = try await reopened.snapshot()
         try require(await store.writes == initialWrites + 1, "release flush commits once after the queued final move")
@@ -65,14 +65,14 @@ struct MenuPerformanceChecks {
         app.send(.beginGesture)
         app.send(.libraryMove(binding, address, .scalar(0.3)))
         app.send(.endGesture)
-        await app.coordinator.waitForIssuedSaves()
+        _ = await app.gestureSave?.value; await app.coordinator.waitForIssuedSaves()
         let (refused, _) = try await app.coordinator.editorQuery { try await $0.snapshot() }
         try require(app.problem != nil && refused.unsaved && refused.uses.first { $0.id == assignment.use }?.positions[volume.id] == .scalar(0.3),
                     "failed release save preserves unsaved final value and reports the failure")
         app.send(.beginGesture)
         app.send(.libraryMove(binding, address, .scalar(0.4)))
         app.send(.endGesture)
-        await app.coordinator.waitForIssuedSaves()
+        _ = await app.gestureSave?.value; await app.coordinator.waitForIssuedSaves()
         app.send(.beginGesture)
         app.send(.libraryMove(binding, address, .scalar(0.7)))
         app.beginDrain()

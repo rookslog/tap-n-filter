@@ -27,6 +27,11 @@ public struct ListeningRenderSnapshot: Equatable, Sendable {
             ListeningRenderAssignment(id: $0.id, bundleIdentifier: $0.target, isEnabled: $0.isEnabled, parts: $0.parts)
         })
     }
+    public init(menu: LibraryMenuState) {
+        self.init(isEnabled: menu.isEnabled, assignments: menu.assignments.map {
+            ListeningRenderAssignment(id: $0.id, bundleIdentifier: $0.target, isEnabled: $0.isEnabled, parts: $0.parts)
+        })
+    }
     /// Failure fallback can turn an admitted graph OFF, never turn it ON or substitute parts.
     public func restricting(to live: LibraryLiveState) -> Self {
         Self(isEnabled: isEnabled && live.isEnabled, assignments: assignments.map { old in

@@ -73,13 +73,13 @@ struct SliderCoalescingChecks {
         let url = root.appendingPathComponent("library.json"), store = SliderStore(root.appendingPathComponent("library.json"))
         let gate = SliderGate()
         let app = LibraryAppSession(changed: {}, read: { owner in
-            let snapshot = try await owner.snapshot()
+            let snapshot = try await owner.menuState()
             guard unknown else { return snapshot }
             var uses = snapshot.uses
             for index in uses.indices { uses[index].directSliderControls = nil }
-            return LibrarySnapshot(isEnabled: snapshot.isEnabled, compareOriginal: snapshot.compareOriginal,
-                unsaved: snapshot.unsaved, unresolved: snapshot.unresolved, writing: snapshot.writing,
-                definitions: snapshot.definitions, uses: uses, assignments: snapshot.assignments, pendingCommit: snapshot.pendingCommit)
+            return LibraryMenuState(ownerID: snapshot.ownerID, liveGeneration: snapshot.liveGeneration,
+                stateRevision: snapshot.stateRevision, live: snapshot.live,
+                definitions: snapshot.definitions, uses: uses, assignments: snapshot.assignments)
         }, checkpointDelay: { try await Task.sleep(for: .seconds(30)) },
             move: { try await gate.execute($0, $1, $2, $3, $4) })
         await app.start(persistence: store, limits: try LibraryAppSession.normalLimits())
@@ -88,12 +88,12 @@ struct SliderCoalescingChecks {
     @MainActor static func card(_ app: LibraryAppSession) -> MenuSoundCard { app.menuData!.assignments[0] }
     @MainActor static func settled(_ app: LibraryAppSession) async throws -> LibrarySnapshot {
         let (value, _) = try await app.coordinator.editorQuery { try await $0.snapshot() }
-        await app.coordinator.refresh()
+        while !(await app.coordinator.refresh()) { await Task.yield() }
         return value
     }
     @MainActor static func save(_ app: LibraryAppSession, _ url: URL) async throws -> LibrarySnapshot {
         app.send(.endGesture)
-        await app.coordinator.waitForIssuedSaves()
+        _ = await app.gestureSave?.value; await app.coordinator.waitForIssuedSaves()
         app.beginDrain()
         guard case .saved = await app.finishDrain(.save) else { throw SliderFailure(message: "final drain") }
         app.close()
@@ -101,11 +101,8 @@ struct SliderCoalescingChecks {
                                                   limits: try LibraryAppSession.normalLimits())
         return try await owner.snapshot()
     }
-    @MainActor static func main() async throws {
-        setbuf(stdout, nil)
-        try await run(URL(fileURLWithPath: CommandLine.arguments[1]))
-    }
     @MainActor static func run(_ root: URL) async throws {
+        setbuf(stdout, nil)
         do {
             let (app, gate, store, url) = try await fixture(root.appendingPathComponent("latest"))
             let card = card(app), slider = card.controls.first { $0.title == "Softer" }!, binding = card.binding!
@@ -119,7 +116,7 @@ struct SliderCoalescingChecks {
             try demand(coalesced == 898 && maxFlight == 1 && maxPending == 1,
                        "900 requested slow-owner scalar moves retain one flight/one latest pending with898 explicit replacements")
             app.send(.endGesture)
-            await gate.release(); await app.coordinator.waitForIssuedSaves()
+            await gate.release(); _ = await app.gestureSave?.value; await app.coordinator.waitForIssuedSaves()
             let value = try await settled(app), events = await gate.events
             try demand(events.map(\.position) == [.scalar(0.1), .scalar(0.9)] && events.allSatisfy { $0.outcome == .changed },
                        "release runs only original in-flight and latest final value, never pending old positions")
@@ -168,16 +165,16 @@ struct SliderCoalescingChecks {
         }
         do {
             let (app, _, _, url) = try await fixture(root.appendingPathComponent("shipped-classification"))
-            let use = app.snapshot!.uses[0]
+            let use = app.presentation!.uses[0]
             let sliders = use.controls.filter { if case .slider = $0.face { return true }; return false }
                 .map { LibraryControlAddress(path: [], control: $0.id) }
             try demand(sliders.count == 7 && use.directSliderControls?.count == sliders.count
                        && sliders.allSatisfy { use.directSliderControls!.contains($0) },
                        "coherent compiled facts prove both quick root sliders and all five child sliders are direct")
-            let filters = app.snapshot!.definitions.first { $0.builtin == .filters }!
+            let filters = app.presentation!.definitions.first { $0.builtin == .filters }!
             _ = await app.coordinator.submitSelect(filters.id, on: card(app).bundleIdentifier).value
             _ = try await settled(app)
-            let filterCard = card(app), filterUse = app.snapshot!.uses.first { $0.id == filterCard.binding!.use }!
+            let filterCard = card(app), filterUse = app.presentation!.uses.first { $0.id == filterCard.binding!.use }!
             try demand(filterCard.controls.count == 6 && filterUse.directSliderControls?.count == 6
                        && filterCard.controls.allSatisfy { app.coordinator.sliderCanCoalesce($0.address, expected: filterCard.binding!) },
                        "all six shipped Filters scalar controls have direct facts and coherent coalescing eligibility")
@@ -231,7 +228,7 @@ struct SliderCoalescingChecks {
                                                                limits: LibraryAppSession.normalLimits())
             for position in [0.9, 0.7, 0.8] { _ = try await referenceOwner.move(slider.address, expected: binding, to: .scalar(position)) }
             let referencePosition = try await referenceOwner.snapshot().uses.first { $0.id == binding.use }!.positions[slider.id]
-            try demand(app.snapshot!.uses.first { $0.id == binding.use }!.hasLocalDraft == false
+            try demand(app.presentation!.uses.first { $0.id == binding.use }!.hasLocalDraft == false
                        && !app.coordinator.sliderCanCoalesce(slider.address, expected: binding),
                        "new incoming link invalidates eligibility before stale UI snapshot or held structural mutation can be trusted")
             app.send(.libraryMove(binding, slider.address, .scalar(0.9)))
@@ -268,7 +265,7 @@ struct SliderCoalescingChecks {
             let gate = SliderGate(), address = LibraryControlAddress(path: [], control: target)
             let app = LibraryAppSession(changed: {}, move: { try await gate.execute($0, $1, $2, $3, $4) })
             await app.start(persistence: f.port, limits: f.limits)
-            try demand(app.snapshot!.uses.first { $0.id == binding.use }!.directSliderControls?.contains(address) == false
+            try demand(app.presentation!.uses.first { $0.id == binding.use }!.directSliderControls?.contains(address) == false
                        && !app.coordinator.sliderCanCoalesce(address, expected: binding),
                        "original counterexample target is authoritatively incoming, not a coalescible scalar")
             app.send(.beginGesture); await gate.arm()
@@ -287,7 +284,7 @@ struct SliderCoalescingChecks {
         }
         for index in 0..<5 {
             let (app, gate, _, url) = try await fixture(root.appendingPathComponent("child-\(index)"))
-            let relation = app.snapshot!.uses[0].optionControls[index]
+            let relation = app.presentation!.uses[0].optionControls[index]
             var card = card(app); let binding = card.binding!
             let parent = card.controls.first { $0.address == relation.parent }!
             guard case .choice(let options) = parent.face, let selected = options.firstIndex(where: { $0.id == relation.option }) else {

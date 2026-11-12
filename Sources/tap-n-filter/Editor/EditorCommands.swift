@@ -67,12 +67,12 @@ struct TNFEditorUpdatePlan {
         let id: UUID?
         switch target {
         case .definition(let value): id = value
-        case .use(let value): id = app.snapshot?.uses.first { $0.id == value.use }?.definition
+        case .use(let value): id = app.presentation?.uses.first { $0.id == value.use }?.definition
         case nil: id = nil
         }
-        return app.snapshot?.definitions.first { $0.id == id }
+        return app.presentation?.definitions.first { $0.id == id }
     }
-    var use: LibraryUseSummary? { binding.flatMap { b in app.snapshot?.uses.first { $0.id == b.use } } }
+    var use: LibraryUseSummary? { binding.flatMap { b in app.presentation?.uses.first { $0.id == b.use } } }
     var title: String { use?.name ?? definition?.name ?? "Library" }
     var controls: [LibraryControl] { edit?.controls ?? use?.controls ?? definition?.controls ?? [] }
     var isReadOnly: Bool { binding == nil && edit == nil && definition?.origin != "custom" }
@@ -82,7 +82,7 @@ struct TNFEditorUpdatePlan {
     func receiveOwnerChange() {
         if windowPresented { refreshAppIdentities() }
         objectWillChange.send()
-        for control in (app.snapshot?.definitions.flatMap(\.controls) ?? []) + (app.snapshot?.uses.flatMap(\.controls) ?? []) {
+        for control in (app.presentation?.definitions.flatMap(\.controls) ?? []) + (app.presentation?.uses.flatMap(\.controls) ?? []) {
             if controlNames[control.id] == nil { controlNames[control.id] = control.title }
             if case .choice(let options) = control.face { for option in options where optionNames[option.id] == nil { optionNames[option.id] = option.title } }
         }
@@ -166,7 +166,7 @@ struct TNFEditorUpdatePlan {
         try await refresh()
     }
     func selectInitial(preferredApp: String? = nil) async throws {
-        guard let snapshot = app.snapshot else { throw TNFEditorError.noSelection }
+        guard let snapshot = app.presentation else { throw TNFEditorError.noSelection }
         let assignment = snapshot.assignments.first { $0.target == (preferredApp ?? "com.apple.Safari") }
             ?? snapshot.assignments.first
         if let assignment {

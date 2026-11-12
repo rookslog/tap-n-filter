@@ -30,13 +30,21 @@ public struct MenuLibraryProjection: Equatable, Sendable {
     public let choices: [LibraryDefinitionSummary]
     public let cards: [Card]
     public let isEnabled: Bool
+    public private(set) var ownerID: UUID? = nil
     public init(_ snapshot: LibrarySnapshot) {
-        isEnabled = snapshot.isEnabled
-        choices = snapshot.definitions.filter(\.inTheMenu)
-        cards = snapshot.assignments.map { assignment in
+        self.init(isEnabled: snapshot.isEnabled, definitions: snapshot.definitions, uses: snapshot.uses, assignments: snapshot.assignments)
+    }
+    public init(_ presentation: LibraryMenuState) {
+        self.init(isEnabled: presentation.isEnabled, definitions: presentation.definitions, uses: presentation.uses, assignments: presentation.assignments)
+        ownerID = presentation.ownerID
+    }
+    private init(isEnabled: Bool, definitions: [LibraryDefinitionSummary], uses: [LibraryUseSummary], assignments: [LibraryAssignmentSummary]) {
+        self.isEnabled = isEnabled
+        choices = definitions.filter(\.inTheMenu)
+        cards = assignments.map { assignment in
             let binding = LibraryBinding(assignment: assignment.id, use: assignment.use, target: assignment.target)
-            guard let use = snapshot.uses.first(where: { $0.id == assignment.use && $0.target == assignment.target }) else {
-                return Card(definitionID: assignment.definition, head: snapshot.definitions.first { $0.id == assignment.definition },
+            guard let use = uses.first(where: { $0.id == assignment.use && $0.target == assignment.target }) else {
+                return Card(definitionID: assignment.definition, head: definitions.first { $0.id == assignment.definition },
                             heldNames: [], heldHelp: ["Controls unavailable"], binding: binding, isEnabled: assignment.isEnabled, use: nil,
                             controls: [], limitations: [.missingUse(assignment.use)])
             }
@@ -63,7 +71,7 @@ public struct MenuLibraryProjection: Equatable, Sendable {
             for control in controls where !control.isPositionedRow {
                 let occurrence = use.occurrences.first { $0.path == control.address.path }
                 let child = occurrence.flatMap { occurrence in
-                    snapshot.definitions.first { $0.id == occurrence.reference?.definition }?.name
+                    definitions.first { $0.id == occurrence.reference?.definition }?.name
                 }
                 let name = control.address.path.isEmpty ? control.metadata.title : child ?? control.metadata.title
                 if !heldNames.contains(name) { heldNames.append(name) }
@@ -71,7 +79,7 @@ public struct MenuLibraryProjection: Equatable, Sendable {
                 let detail = control.metadata.face == .xy ? "\(qualifier) (pad)" : qualifier
                 if !heldHelp.contains(detail) { heldHelp.append(detail) }
             }
-            return Card(definitionID: assignment.definition, head: snapshot.definitions.first { $0.id == assignment.definition },
+            return Card(definitionID: assignment.definition, head: definitions.first { $0.id == assignment.definition },
                         heldNames: heldNames, heldHelp: heldHelp, binding: binding, isEnabled: assignment.isEnabled, use: use,
                         controls: controls, limitations: limitations)
         }

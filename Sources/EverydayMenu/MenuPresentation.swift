@@ -14,6 +14,7 @@ public enum EverydayMenuAction: Sendable {
     case libraryPower(LibraryBinding, Bool)
     case libraryMove(LibraryBinding, LibraryControlAddress, LibraryPosition)
     case libraryOptionMove(LibraryBinding, LibraryControlAddress, LibraryOptionGesture, LibraryPosition)
+    case menuMove(LibraryMenuIdentity, UInt64, LibraryControlAddress, LibraryOptionGesture?, LibraryPosition)
     case compare(Bool)
     case showProblem
     case refreshSources
@@ -156,12 +157,54 @@ enum MenuCardMetrics {
 
 @MainActor
 final class MenuPresentation: ObservableObject {
-    @Published var snapshot: MenuSoundData {
-        didSet {
+    private var snapshotValue: MenuSoundData
+    var snapshot: MenuSoundData {
+        get { snapshotValue }
+        set {
+            objectWillChange.send()
+            snapshotValue = newValue
+            refreshPositions()
             var next = folds
             next.observe(snapshot)
             if next.entries != folds.entries { folds = next }
         }
+    }
+    var positionContext: MenuPositionContext? {
+        didSet {
+            if oldValue != positionContext {
+                positionGeneration = positionContext?.generation ?? 0
+                positionStateRevision = positionContext?.stateRevision ?? 0
+            }
+        }
+    }
+    private var rowPositions: [MenuRowPositionKey: MenuRowPosition] = [:]
+    private var positionGeneration: UInt64 = 0
+    private var positionStateRevision: UInt64 = 0
+    func rowPosition(_ control: MenuSoundControl, on card: MenuSoundCard) -> MenuRowPosition {
+        let key = MenuRowPositionKey(card: card, control: control)
+        if let current = rowPositions[key] { return current }
+        let current = MenuRowPosition(control.position); rowPositions[key] = current; return current
+    }
+    private func refreshPositions() {
+        var keys: Set<MenuRowPositionKey> = []
+        for card in snapshotValue.assignments {
+            for control in card.controls + card.optionTabs.flatMap(\.controls) {
+                let key = MenuRowPositionKey(card: card, control: control)
+                keys.insert(key); rowPositions[key]?.update(control.position)
+            }
+        }
+        rowPositions = rowPositions.filter { keys.contains($0.key) }
+    }
+    func applyPositions(_ delta: LibraryMenuDelta, context: MenuPositionContext) -> Bool {
+        guard positionContext == context, context.ownerID == delta.identity.ownerID,
+              context.identities.contains(delta.identity), delta.liveGeneration >= positionGeneration,
+              delta.baseGeneration == positionGeneration, delta.baseStateRevision == positionStateRevision,
+              let next = snapshotValue.applying(delta) else { return false }
+        snapshotValue = next
+        positionGeneration = delta.liveGeneration
+        positionStateRevision = delta.stateRevision
+        refreshPositions()
+        return true
     }
     @Published var folds = MenuFoldState()
     @Published var apps: [SourceAppInfo] = []
@@ -195,7 +238,7 @@ final class MenuPresentation: ObservableObject {
     }
 
     init(snapshot: ListeningSnapshot, glyph: NSImage, perform: @escaping (EverydayMenuAction) -> Void) {
-        self.snapshot = MenuSoundData(legacy: snapshot)
+        self.snapshotValue = MenuSoundData(legacy: snapshot)
         self.glyph = glyph
         self.perform = perform
         folds.observe(self.snapshot)
@@ -207,8 +250,15 @@ final class MenuPresentation: ObservableObject {
     }
 
     init(snapshot: LibrarySnapshot, glyph: NSImage, perform: @escaping (EverydayMenuAction) -> Void) {
-        self.snapshot = MenuSoundData(library: snapshot); self.glyph = glyph; self.perform = perform
+        self.snapshotValue = MenuSoundData(library: snapshot); self.glyph = glyph; self.perform = perform
         folds.observe(self.snapshot)
+    }
+    init(presentation: LibraryMenuState, glyph: NSImage, perform: @escaping (EverydayMenuAction) -> Void) {
+        let context = MenuPositionContext(presentation: presentation, epoch: 0)
+        snapshotValue = MenuSoundData(menu: presentation).contextualized(context); self.glyph = glyph; self.perform = perform
+        positionContext = context
+        positionGeneration = presentation.liveGeneration; positionStateRevision = presentation.stateRevision
+        folds.observe(snapshotValue)
     }
 
     func definition(_ assignment: MenuSoundCard) -> MenuSoundCard? { assignment }

@@ -174,6 +174,25 @@ public final class PlaybackController {
     apply(ListeningRenderSnapshot(legacy: snapshot), original: original)
   }
 
+  @discardableResult
+  public func updatePositions(_ snapshot: ListeningRenderSnapshot, original: Bool) -> PositionDeliveryResult {
+    guard !quitting else { return .closed }
+    let previous = desired
+    desired = snapshot
+    let original = original && compareAvailable
+    self.original = original
+    let known = Dictionary(uniqueKeysWithValues: (previous?.assignments ?? []).map { ($0.id, $0.bundleIdentifier) })
+    let plan = PlaybackPositionDelivery(snapshot: snapshot,
+      running: Set(lanes.filter { $0.value.state == .running }.map(\.key)), known: known)
+    return plan.apply(update: { [self] assignment in
+      guard let lane = lanes[assignment.id] else { return }
+      do { try lane.factory.update(assignment, original: original) }
+      catch { lane.failure = "The sound change could not be applied. \(error)"; throw error }
+    }, stop: { [self] id in
+      if let lane = lanes[id] { stop(id, lane: lane) }
+    })
+  }
+
   public func apply(_ snapshot: ListeningRenderSnapshot, original: Bool) {
     guard !quitting else { return }
     desired = snapshot
@@ -270,7 +289,9 @@ public final class PlaybackController {
       let result = await lane.runtime.start(request)
       guard lane.operation == operation else { return }
       switch result.event {
-      case .running: lane.state = .running
+      case .running:
+        lane.state = .running
+        if let desired = self.desired { _ = self.updatePositions(desired, original: self.original) }
       case .failed(let error, _, _):
         lane.state = .failed
         lane.failure = self.message(error)

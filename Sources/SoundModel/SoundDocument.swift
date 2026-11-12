@@ -166,7 +166,16 @@ actor SoundDocument {
     private let historyLimit: UndoHistoryLimit
     var content = DocumentContent()
     var libraryPublicationPlans: [UUID: LibraryPublicationPlan] = [:]
-    var libraryOwner: LibraryOwnerState?
+    var parameterLeases: [WeakLibraryParameterLease] = []
+    private var libraryOwnerValue: LibraryOwnerState?
+    private(set) var libraryStateRevision: UInt64 = 0
+    var libraryOwner: LibraryOwnerState? {
+        get { libraryOwnerValue }
+        set { for lease in parameterLeases { lease.lease?.invalidate() }; parameterLeases.removeAll(); libraryStateRevision &+= 1; libraryOwnerValue = newValue }
+    }
+    func cacheLibraryCoverageToken(_ committed: LibraryCommittedBytes) {
+        libraryOwnerValue?.committed = committed
+    }
     var libraryEdits: [UUID: LibraryEditContext] = [:]
     var libraryHistoryClock: UInt64 = 0
     var revision: UInt64 = 0

@@ -7,9 +7,15 @@ struct MenuControlRow: View {
     let assignment: MenuSoundCard
     let control: MenuSoundControl
     var reserveSymbol = false
+    @ObservedObject private var rowPosition: MenuRowPosition
+
+    init(state: MenuPresentation, assignment: MenuSoundCard, control: MenuSoundControl, reserveSymbol: Bool = false) {
+        self.state = state; self.assignment = assignment; self.control = control; self.reserveSymbol = reserveSymbol
+        self.rowPosition = state.rowPosition(control, on: assignment)
+    }
 
     private var position: Double {
-        control.position
+        rowPosition.value
     }
 
     private func move(_ value: Double) {
