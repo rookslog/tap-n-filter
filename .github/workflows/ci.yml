@@ -21,10 +21,10 @@ jobs:
         # GitHub rotates the fleet, which would turn a deliberate version
         # matrix into an accidental one (ADR-022 item 5).
         #
-        # macos-14 is the supported floor (ADR-005). There is no macos-27
-        # image and there will not be one for months, so the newest-OS check
-        # remains the manual pre-merge gate in docs/governance/review-tiers.md.
-        os: [macos-14, macos-15, macos-26]
+        # macos-14 retired on 2026-11-02. macOS 14.4 remains the deployment
+        # floor (ADR-005), not runtime coverage provided by this CI matrix.
+        # Results on newer runners do not establish macOS 14.4 acceptance.
+        os: [macos-15, macos-26]
 
     steps:
       - name: Check out
@@ -74,11 +74,10 @@ jobs:
             exit 1
           fi
 
-  # Integration tests are gated behind a workflow_dispatch trigger because
-  # they require real Core Audio devices and are slow on the CI runner.
+  # Real Core Audio qualification still requires a prepared native environment.
   integration-tests:
     name: Integration tests (manual)
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 60
     if: github.event_name == 'workflow_dispatch'
 
