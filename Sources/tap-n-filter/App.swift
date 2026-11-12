@@ -691,6 +691,24 @@ struct TapNFilterApp {
   @MainActor static func main() {
     setbuf(stdout, nil)
     signal(SIGPIPE, SIG_IGN)
+    let perf: PerfConfiguration?
+    do {
+      perf = try PerfConfiguration.parse(CommandLine.arguments,
+        required: Bundle.main.object(forInfoDictionaryKey: "TNFPerfOnly") as? Bool == true)
+      try perf?.claim()
+    } catch {
+      print(PerfConfiguration.refusalRecord(error))
+      exit(64)
+    }
+    if let perf {
+      let app = NSApplication.shared
+      _ = app.setActivationPolicy(.accessory)
+      let delegate = PerfAppDelegate(configuration: perf)
+      app.delegate = delegate
+      app.run()
+      withExtendedLifetime(delegate) {}
+      return
+    }
     let ownedProbe: OwnedProbeOptions?
     let requestedProbe: RequestedSafariOptions?
     do {

@@ -376,6 +376,22 @@ public final class EverydayMenu: NSObject, NSMenuDelegate {
         let item = NSMenuItem(title: "Open Editor", action: #selector(openEditorChosen), keyEquivalent: "")
         item.target = self; return item
     }
+
+    public func perfBeginDrag() { state.beginGesture() }
+    public func perfEndDrag() { state.endGesture() }
+    public func perfMove(target: String, title: String, value: Double) -> Bool {
+        guard let card = state.snapshot.assignments.first(where: { $0.bundleIdentifier == target }),
+              let control = card.controls.first(where: { $0.title == title }), case .slider = control.face else { return false }
+        state.move(control, on: card, to: value)
+        return true
+    }
+    public func perfSelect(target: String, title: String, index: Int) -> Double? {
+        guard let card = state.snapshot.assignments.first(where: { $0.bundleIdentifier == target }),
+              let control = card.controls.first(where: { $0.title == title }), case .choice(let options) = control.face,
+              options.indices.contains(index) else { return nil }
+        state.activate(options[index], control: control, on: card)
+        return options[index].position
+    }
     @objc private func openEditorChosen() { openEditor?(nil) }
 
     private func rebuildFallbacks() {

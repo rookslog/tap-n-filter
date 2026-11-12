@@ -48,3 +48,11 @@ does not fix it, establish its cause, or qualify audio behavior on that OS.
 ## Lanes
 - Light lane: work on a branch.
 - Full lane: a saved-format change, the realtime audio engine, anything public. A PR into `main` is the point where the full checks above run.
+
+## Silent OFF developer harness
+
+The [OFF UI protocol](off-ui-harness.md) uses a fresh owned library and the real
+menu/model path, with no audio path. It is not the sound-playing, physical-input,
+audio-thread or native restore qualification. Measurement artifacts/results stay
+outside the public source tree; deterministic tests do not establish timing or
+performance-budget acceptance.

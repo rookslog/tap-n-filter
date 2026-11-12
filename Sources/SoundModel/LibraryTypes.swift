@@ -173,6 +173,8 @@ public struct LibraryUseSummary: Equatable, Sendable {
     public var defaults: [LibraryOccurrenceSummary] = []
     public var builtin: BuiltinBlock? = nil
     public var optionControls: [LibraryOptionControl] = []
+    /// Ephemeral compiled eligibility; nil means unknown, never an archive field.
+    public var directSliderControls: [LibraryControlAddress]? = nil
 }
 public struct LibraryAssignmentSummary: Equatable, Sendable {
     public let isEnabled: Bool

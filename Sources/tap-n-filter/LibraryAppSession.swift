@@ -19,19 +19,29 @@ final class LibraryAppSession {
     private(set) var acceptedCreation: (command: UUID, commit: UUID, reference: LibraryReference)?
     var editor: LibraryEditorAdapter { coordinator.editor }
     private let changed: () -> Void
+    var perfMutationCompleted: ((LibraryLiveMutation) -> Void)?
+    var perfMutationFailed: (() -> Void)?
+    func perfRefresh(_ menu: EverydayMenu, apps: [SourceAppInfo]) {
+        guard let snapshot, let menuData else { return }
+        menu.update(data: menuData, pendingApps: [], apps: apps, comparing: snapshot.compareOriginal,
+                    compareAvailable: false, problem: nil)
+    }
     private let checkpointDelay: @Sendable () async throws -> Void
     private var debounce: Task<Void, Never>?
     private var gesturing = false
     private var saveEpoch: UInt64 = 0
     private let editRead: LibraryListeningCoordinator.EditRead
     private let read: LibraryListeningCoordinator.Read
+    private let move: LibraryListeningCoordinator.Move?
     private(set) lazy var coordinator = LibraryListeningCoordinator(
-        publish: { [weak self] in self?.receive($0) }, read: read, editRead: editRead)
+        publish: { [weak self] in self?.receive($0) }, read: read, editRead: editRead, move: move)
 
     init(changed: @escaping () -> Void,
          read: @escaping LibraryListeningCoordinator.Read = { try await $0.snapshot() },
          editRead: @escaping LibraryListeningCoordinator.EditRead = { try await $0.inspectEdit($1) },
-         checkpointDelay: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .milliseconds(200)) }) {
+         checkpointDelay: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .milliseconds(200)) },
+         move: LibraryListeningCoordinator.Move? = nil) {
+        self.move = move
         self.changed = changed; self.read = read; self.editRead = editRead; self.checkpointDelay = checkpointDelay
     }
     private func receive(_ event: LibraryConsumerEvent) {
@@ -99,6 +109,7 @@ final class LibraryAppSession {
         guard coordinator.lifecycle != .closed else { return }
         switch action {
         case .beginGesture:
+            coordinator.sealSliderMoves()
             gesturing = true
             saveEpoch &+= 1
             cancelPendingSave()
@@ -110,12 +121,41 @@ final class LibraryAppSession {
         case .selectBlock(let definition, let target): select(definition, on: target)
         case .setEnabled(let enabled): live { try $0.submitEnabled(enabled) }
         case .libraryPower(let binding, let enabled): live { try $0.submitEnabled(enabled, expected: binding) }
-        case .libraryMove(let binding, let address, let position): live { try $0.submitMove(address, expected: binding, to: position) }
+        case .libraryMove(let binding, let address, let position):
+            listen(binding, address, position, option: nil)
         case .libraryOptionMove(let binding, let address, let gesture, let position):
-            live { try $0.submitMove(address, expected: binding, to: position, optionGesture: gesture) }
+            listen(binding, address, position, option: gesture)
         case .compare(let comparing): live(save: false) { try $0.submitCompare(comparing) }
         default: break
         }
+    }
+    private func listen(_ binding: LibraryBinding, _ address: LibraryControlAddress,
+                        _ position: LibraryPosition, option: LibraryOptionGesture?) {
+        let card = menuData?.assignments.first { $0.binding == binding }
+        let controls = (card?.controls ?? []) + (card?.optionTabs.flatMap(\.controls) ?? [])
+        let slider = controls.contains { control in
+            guard control.address == address, control.optionGesture == option, case .slider = control.face else { return false }
+            return true
+        }
+        guard slider, case .scalar = position else {
+            live { try $0.submitMove(address, expected: binding, to: position, optionGesture: option) }
+            return
+        }
+        do {
+            let task = try coordinator.submitSliderMove(address, expected: binding, to: position, optionGesture: option)
+            let epoch = saveEpoch
+            Task {
+                do {
+                    switch try await task.value {
+                    case .coalesced: break
+                    case .executed(let result):
+                        perfMutationCompleted?(result)
+                        coordinator.requestRefresh()
+                        if !gesturing && epoch == saveEpoch { scheduleSave() }
+                    }
+                } catch { perfMutationFailed?(); record(error) }
+            }
+        } catch { perfMutationFailed?(); record(error) }
     }
     private func live(save: Bool = true,
                       _ action: (LibraryListeningCoordinator) throws -> Task<LibraryLiveMutation, Error>) {
@@ -124,13 +164,14 @@ final class LibraryAppSession {
             let epoch = saveEpoch
             Task {
                 do {
-                    _ = try await task.value
+                    let result = try await task.value
+                    perfMutationCompleted?(result)
                     coordinator.requestRefresh()
                     if save && !gesturing && epoch == saveEpoch { scheduleSave() }
                 }
-                catch { record(error) }
+                catch { perfMutationFailed?(); record(error) }
             }
-        } catch { record(error) }
+        } catch { perfMutationFailed?(); record(error) }
     }
     private func record(_ error: Error) {
         guard coordinator.lifecycle != .closed else { return }

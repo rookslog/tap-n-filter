@@ -655,7 +655,7 @@ extension SoundDocument {
                     profiles: state.profiles, limits: state.limits).occurrences,
                 builtin: state.metadata.revisions.first(where: { $0.definition.reference == use.definition })
                     .flatMap { builtinDecoration($0, profiles: state.profiles) },
-                optionControls: sound.optionControls)
+                optionControls: sound.optionControls, directSliderControls: sound.directSliderControls)
         }
         let assignments = try content.assignments.map { binding in
             let sound = try state.effectiveMetadata.compile(root: binding.root, listening: content.listening[binding.root] ?? UseListeningState(positions: [:]), profiles: state.profiles, limits: state.limits)

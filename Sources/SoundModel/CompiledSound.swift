@@ -37,6 +37,16 @@ struct CompiledSound: Equatable, Sendable {
     let controlSchemas: [OccurrenceControlKey: SoundControl]
     let occurrences: [LibraryOccurrenceSummary]
     let optionControls: [LibraryOptionControl]
+    private let incomingControls: Set<OccurrenceControlKey>?
+    var directSliderControls: [LibraryControlAddress]? {
+        guard let incomingControls else { return nil }
+        return controlSchemas.keys.filter { key in
+            guard let control = controlSchemas[key], case .slider = control.face else { return false }
+            return !incomingControls.contains(key)
+        }.sorted { $0.orderBytes.lexicographicallyPrecedes($1.orderBytes) }.map {
+            LibraryControlAddress(path: $0.path.map(\.rawValue), control: $0.control.rawValue)
+        }
+    }
 
     init(block: SoundBlock, root: RootUseID, catalog: [PartDescriptor]) throws {
         try self.init(block: block, root: root, catalog: catalog, context: nil, payload: nil,
@@ -204,5 +214,6 @@ struct CompiledSound: Equatable, Sendable {
         unadjusted = raw; self.bypassed = bypassed; self.authoredParts = authoredParts
         profiles = partProfiles; controlSchemas = schemas; occurrences = projections
         optionControls = graph?.optionControls ?? []
+        incomingControls = context == nil ? nil : Set(graph?.incoming.map(\.controlKey) ?? [])
     }
 }
