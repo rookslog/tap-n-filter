@@ -36,8 +36,9 @@ This is important for review framing:
 - **Codex Cloud runs Linux containers, so the review environment cannot
   exercise the code.** Reviews are diff-reading + reasoning, not build-or-test.
 - The CI workflow at `.github/workflows/ci.yml` runs `swift build` and
-  `swift test` on a `macos-14` runner with full Xcode. That's the
-  authoritative build/test signal.
+  `swift test` on the `macos-15` and `macos-26` matrix with full Xcode.
+  Those runs are the authoritative CI build/test signal. The declared
+  macOS 14.4 deployment floor is not runtime coverage supplied by that matrix.
 - A specific consequence of the macOS-only constraint is documented in
   [ADR-010](docs/decisions/ADR-010-live-render-check-environment-deviation.md):
   live-audio integration tests can't run in autonomous environments, so the

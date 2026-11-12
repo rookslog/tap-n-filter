@@ -1,5 +1,9 @@
 # Phase 1 Rework 1 Verification
 
+Public-copy privacy edit: `LOCAL_SIGNING_IDENTITY` and angle-bracket values below
+replace local identity, certificate or path metadata. Redacted command excerpts
+are historical records, not literal output from the current scripts.
+
 **Verifier**: Claude (verification subagent, cold context)
 **Date**: 2026-05-27
 **Phase**: 1 (rework 1) — Audio Capture Architecture Refactor
@@ -283,7 +287,7 @@ returns exit code 0. Output:
 ==> Building (swift build -c debug)…
 Build complete! (0.21s)
 ==> Assembling Build/tap-n-filter.app…
-==> Signing with identity 'VIGIL Dev'…
+==> Signing with identity 'LOCAL_SIGNING_IDENTITY'…
 Build/tap-n-filter.app: replacing existing signature
 ==> Done: Build/tap-n-filter.app
 ```

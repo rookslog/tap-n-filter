@@ -1,4 +1,5 @@
 import AVFoundation
+import NativeTestSupport
 import XCTest
 @testable import Effects
 
@@ -102,6 +103,7 @@ final class ReverbNodeTests: XCTestCase {
         bypass: Bool = false,
         seconds: Double = 0.1
     ) throws -> Float {
+        try requireNativeTests()
         let engine = AVAudioEngine()
         let player = AVAudioPlayerNode()
         let format = AVAudioFormat(standardFormatWithSampleRate: 48_000.0, channels: 2)!

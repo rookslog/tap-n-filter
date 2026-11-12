@@ -1,0 +1,1473 @@
+{
+  "assignments" : [
+    {
+      "assignment" : {
+        "app" : "test.v4.filters.end",
+        "id" : {
+          "rawValue" : "27CF589D-D7F2-4C16-8993-0E33405B94D0"
+        },
+        "isEnabled" : false,
+        "root" : {
+          "rawValue" : "544E4602-0000-0000-0000-000000000003"
+        }
+      },
+      "positions" : [
+        {
+          "control" : {
+            "rawValue" : "544E4602-0000-0000-0000-000000000011"
+          },
+          "value" : {
+            "scalar" : {
+              "_0" : 1
+            }
+          }
+        }
+      ]
+    },
+    {
+      "assignment" : {
+        "app" : "test.v4.filters.middle",
+        "id" : {
+          "rawValue" : "C3427F47-9C11-4CAF-8E1B-48E686689906"
+        },
+        "isEnabled" : true,
+        "root" : {
+          "rawValue" : "544E4602-0000-0000-0000-000000000003"
+        }
+      },
+      "positions" : [
+        {
+          "control" : {
+            "rawValue" : "544E4602-0000-0000-0000-000000000011"
+          },
+          "value" : {
+            "scalar" : {
+              "_0" : 0.5
+            }
+          }
+        }
+      ]
+    },
+    {
+      "assignment" : {
+        "app" : "test.v4.everyday",
+        "id" : {
+          "rawValue" : "C4B7F4D9-7733-4203-B378-02916415A1A3"
+        },
+        "isEnabled" : true,
+        "root" : {
+          "rawValue" : "544E4601-0000-0000-0000-000000000003"
+        }
+      },
+      "positions" : [
+        {
+          "control" : {
+            "rawValue" : "544E4601-0000-0000-0000-000000000010"
+          },
+          "value" : {
+            "scalar" : {
+              "_0" : 1
+            }
+          }
+        },
+        {
+          "control" : {
+            "rawValue" : "544E4601-0000-0000-0000-000000000011"
+          },
+          "value" : {
+            "scalar" : {
+              "_0" : 1
+            }
+          }
+        },
+        {
+          "control" : {
+            "rawValue" : "544E4601-0000-0000-0000-000000000012"
+          },
+          "value" : {
+            "scalar" : {
+              "_0" : 0.67000000000000004
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "definitions" : [
+    {
+      "content" : {
+        "controls" : [
+          {
+            "face" : {
+              "choice" : {
+                "_0" : [
+                  {
+                    "rawValue" : "544E4601-0000-0000-0000-000000000040"
+                  },
+                  {
+                    "rawValue" : "544E4601-0000-0000-0000-000000000041"
+                  },
+                  {
+                    "rawValue" : "544E4601-0000-0000-0000-000000000042"
+                  },
+                  {
+                    "rawValue" : "544E4601-0000-0000-0000-000000000043"
+                  }
+                ]
+              }
+            },
+            "id" : {
+              "rawValue" : "544E4601-0000-0000-0000-000000000010"
+            },
+            "position" : {
+              "scalar" : {
+                "_0" : 0
+              }
+            },
+            "waypoints" : {
+              "scalar" : {
+                "_0" : [
+                  0,
+                  0.33333333333333331,
+                  0.66666666666666663,
+                  1
+                ]
+              }
+            }
+          },
+          {
+            "face" : {
+              "choice" : {
+                "_0" : [
+                  {
+                    "rawValue" : "544E4601-0000-0000-0000-000000000044"
+                  },
+                  {
+                    "rawValue" : "544E4601-0000-0000-0000-000000000045"
+                  },
+                  {
+                    "rawValue" : "544E4601-0000-0000-0000-000000000046"
+                  },
+                  {
+                    "rawValue" : "544E4601-0000-0000-0000-000000000047"
+                  }
+                ]
+              }
+            },
+            "id" : {
+              "rawValue" : "544E4601-0000-0000-0000-000000000011"
+            },
+            "position" : {
+              "scalar" : {
+                "_0" : 0
+              }
+            },
+            "waypoints" : {
+              "scalar" : {
+                "_0" : [
+                  0,
+                  0.33333333333333331,
+                  0.66666666666666663,
+                  1
+                ]
+              }
+            }
+          },
+          {
+            "face" : {
+              "slider" : {
+
+              }
+            },
+            "id" : {
+              "rawValue" : "544E4601-0000-0000-0000-000000000012"
+            },
+            "position" : {
+              "scalar" : {
+                "_0" : 0
+              }
+            },
+            "waypoints" : {
+              "scalar" : {
+                "_0" : [
+                  0,
+                  0.02,
+                  1
+                ]
+              }
+            }
+          }
+        ],
+        "mappings" : [
+          {
+            "axis" : "value",
+            "control" : {
+              "rawValue" : "544E4601-0000-0000-0000-000000000011"
+            },
+            "curve" : {
+              "segments" : [
+                {
+                  "first" : 0.086461250042627072,
+                  "jump" : 0.5,
+                  "second" : 0.17292250008525417,
+                  "shape" : "straight"
+                },
+                {
+                  "first" : 0.27894944557851248,
+                  "jump" : 0.5,
+                  "second" : 0.29851514102914373,
+                  "shape" : "straight"
+                },
+                {
+                  "first" : 0.34273069754825902,
+                  "jump" : 0.5,
+                  "second" : 0.36738055861674307,
+                  "shape" : "straight"
+                }
+              ],
+              "waypoints" : [
+                {
+                  "position" : 0,
+                  "value" : 0
+                },
+                {
+                  "position" : 0.33333333333333331,
+                  "value" : 0.25938375012788123
+                },
+                {
+                  "position" : 0.66666666666666663,
+                  "value" : 0.31808083647977498
+                },
+                {
+                  "position" : 1,
+                  "value" : 0.39203041968522712
+                }
+              ]
+            },
+            "parameter" : "highPassHz",
+            "part" : {
+              "rawValue" : "544E4601-0000-0000-0000-000000000020"
+            }
+          },
+          {
+            "axis" : "value",
+            "control" : {
+              "rawValue" : "544E4601-0000-0000-0000-000000000011"
+            },
+            "curve" : {
+              "segments" : [
+                {
+                  "first" : 0.96407706773609625,
+                  "jump" : 0.5,
+                  "second" : 0.92815413547219261,
+                  "shape" : "straight"
+                },
+                {
+                  "first" : 0.88082427633082805,
+                  "jump" : 0.5,
+                  "second" : 0.86941734945336713,
+                  "shape" : "straight"
+                },
+                {
+                  "first" : 0.81983460631485694,
+                  "jump" : 0.5,
+                  "second" : 0.78165879005380745,
+                  "shape" : "straight"
+                }
+              ],
+              "waypoints" : [
+                {
+                  "position" : 0,
+                  "value" : 1
+                },
+                {
+                  "position" : 0.33333333333333331,
+                  "value" : 0.89223120320828886
+                },
+                {
+                  "position" : 0.66666666666666663,
+                  "value" : 0.85801042257590632
+                },
+                {
+                  "position" : 1,
+                  "value" : 0.74348297379275807
+                }
+              ]
+            },
+            "parameter" : "lowPassHz",
+            "part" : {
+              "rawValue" : "544E4601-0000-0000-0000-000000000020"
+            }
+          },
+          {
+            "axis" : "value",
+            "control" : {
+              "rawValue" : "544E4601-0000-0000-0000-000000000011"
+            },
+            "curve" : {
+              "segments" : [
+                {
+                  "first" : 0,
+                  "jump" : 0.5,
+                  "second" : 0,
+                  "shape" : "straight"
+                },
+                {
+                  "first" : 0,
+                  "jump" : 0.5,
+                  "second" : 0,
+                  "shape" : "straight"
+                },
+                {
+                  "first" : 0.083333333333333329,
+                  "jump" : 0.5,
+                  "second" : 0.16666666666666669,
+                  "shape" : "straight"
+                }
+              ],
+              "waypoints" : [
+                {
+                  "position" : 0,
+                  "value" : 0
+                },
+                {
+                  "position" : 0.33333333333333331,
+                  "value" : 0
+                },
+                {
+                  "position" : 0.66666666666666663,
+                  "value" : 0
+                },
+                {
+                  "position" : 1,
+                  "value" : 0.25
+                }
+              ]
+            },
+            "parameter" : "wetPercent",
+            "part" : {
+              "rawValue" : "544E4601-0000-0000-0000-000000000021"
+            }
+          },
+          {
+            "axis" : "value",
+            "control" : {
+              "rawValue" : "544E4601-0000-0000-0000-000000000011"
+            },
+            "curve" : {
+              "segments" : [
+                {
+                  "first" : 1,
+                  "jump" : 0.5,
+                  "second" : 1,
+                  "shape" : "straight"
+                },
+                {
+                  "first" : 1,
+                  "jump" : 0.5,
+                  "second" : 1,
+                  "shape" : "straight"
+                },
+                {
+                  "first" : 0.99305555555555558,
+                  "jump" : 0.5,
+                  "second" : 0.98611111111111105,
+                  "shape" : "straight"
+                }
+              ],
+              "waypoints" : [
+                {
+                  "position" : 0,
+                  "value" : 1
+                },
+                {
+                  "position" : 0.33333333333333331,
+                  "value" : 1
+                },
+                {
+                  "position" : 0.66666666666666663,
+                  "value" : 1
+                },
+                {
+                  "position" : 1,
+                  "value" : 0.97916666666666663
+                }
+              ]
+            },
+            "parameter" : "gainDb",
+            "part" : {
+              "rawValue" : "544E4601-0000-0000-0000-000000000025"
+            }
+          },
+          {
+            "axis" : "value",
+            "control" : {
+              "rawValue" : "544E4601-0000-0000-0000-000000000010"
+            },
+            "curve" : {
+              "segments" : [
+                {
+                  "first" : 0.86423902782040485,
+                  "jump" : 0.5,
+                  "second" : 0.7284780556408097,
+                  "shape" : "straight"
+                },
+                {
+                  "first" : 0.69503027834481179,
+                  "jump" : 0.5,
+                  "second" : 0.79734347322840904,
+                  "shape" : "straight"
+                },
+                {
+                  "first" : 0.87500680704352229,
+                  "jump" : 0.5,
+                  "second" : 0.85035694597503819,
+                  "shape" : "straight"
+                }
+              ],
+              "waypoints" : [
+                {
+                  "position" : 0,
+                  "value" : 1
+                },
+                {
+                  "position" : 0.33333333333333331,
+                  "value" : 0.59271708346121454
+                },
+                {
+                  "position" : 0.66666666666666663,
+                  "value" : 0.89965666811200629
+                },
+                {
+                  "position" : 1,
+                  "value" : 0.8257070849065542
+                }
+              ]
+            },
+            "parameter" : "lowPassHz",
+            "part" : {
+              "rawValue" : "544E4601-0000-0000-0000-000000000022"
+            }
+          },
+          {
+            "axis" : "value",
+            "control" : {
+              "rawValue" : "544E4601-0000-0000-0000-000000000010"
+            },
+            "curve" : {
+              "segments" : [
+                {
+                  "first" : 0.040000000000000001,
+                  "jump" : 0.5,
+                  "second" : 0.079999999999999988,
+                  "shape" : "straight"
+                },
+                {
+                  "first" : 0.10666666666666666,
+                  "jump" : 0.5,
+                  "second" : 0.093333333333333338,
+                  "shape" : "straight"
+                },
+                {
+                  "first" : 0.13666666666666666,
+                  "jump" : 0.5,
+                  "second" : 0.19333333333333333,
+                  "shape" : "straight"
+                }
+              ],
+              "waypoints" : [
+                {
+                  "position" : 0,
+                  "value" : 0
+                },
+                {
+                  "position" : 0.33333333333333331,
+                  "value" : 0.12
+                },
+                {
+                  "position" : 0.66666666666666663,
+                  "value" : 0.080000000000000002
+                },
+                {
+                  "position" : 1,
+                  "value" : 0.25
+                }
+              ]
+            },
+            "parameter" : "wetPercent",
+            "part" : {
+              "rawValue" : "544E4601-0000-0000-0000-000000000023"
+            }
+          },
+          {
+            "axis" : "value",
+            "control" : {
+              "rawValue" : "544E4601-0000-0000-0000-000000000010"
+            },
+            "curve" : {
+              "segments" : [
+                {
+                  "first" : 0,
+                  "jump" : 0.5,
+                  "second" : 0,
+                  "shape" : "straight"
+                },
+                {
+                  "first" : 0.16666666666666666,
+                  "jump" : 0.5,
+                  "second" : 0.33333333333333337,
+                  "shape" : "straight"
+                },
+                {
+                  "first" : 0.66666666666666663,
+                  "jump" : 0.5,
+                  "second" : 0.83333333333333337,
+                  "shape" : "straight"
+                }
+              ],
+              "waypoints" : [
+                {
+                  "position" : 0,
+                  "value" : 0
+                },
+                {
+                  "position" : 0.33333333333333331,
+                  "value" : 0
+                },
+                {
+                  "position" : 0.66666666666666663,
+                  "value" : 0.5
+                },
+                {
+                  "position" : 1,
+                  "value" : 1
+                }
+              ]
+            },
+            "parameter" : "roomPreset",
+            "part" : {
+              "rawValue" : "544E4601-0000-0000-0000-000000000023"
+            }
+          },
+          {
+            "axis" : "value",
+            "control" : {
+              "rawValue" : "544E4601-0000-0000-0000-000000000010"
+            },
+            "curve" : {
+              "segments" : [
+                {
+                  "first" : 0.97222222222222221,
+                  "jump" : 0.5,
+                  "second" : 0.94444444444444442,
+                  "shape" : "straight"
+                },
+                {
+                  "first" : 0.92361111111111105,
+                  "jump" : 0.5,
+                  "second" : 0.93055555555555558,
+                  "shape" : "straight"
+                },
+                {
+                  "first" : 0.92708333333333337,
+                  "jump" : 0.5,
+                  "second" : 0.91666666666666663,
+                  "shape" : "straight"
+                }
+              ],
+              "waypoints" : [
+                {
+                  "position" : 0,
+                  "value" : 1
+                },
+                {
+                  "position" : 0.33333333333333331,
+                  "value" : 0.91666666666666663
+                },
+                {
+                  "position" : 0.66666666666666663,
+                  "value" : 0.9375
+                },
+                {
+                  "position" : 1,
+                  "value" : 0.90625
+                }
+              ]
+            },
+            "parameter" : "gainDb",
+            "part" : {
+              "rawValue" : "544E4601-0000-0000-0000-000000000025"
+            }
+          },
+          {
+            "axis" : "value",
+            "control" : {
+              "rawValue" : "544E4601-0000-0000-0000-000000000012"
+            },
+            "curve" : {
+              "segments" : [
+                {
+                  "first" : 0.99965577342225387,
+                  "jump" : 0.5,
+                  "second" : 0.99931154684450785,
+                  "shape" : "straight"
+                },
+                {
+                  "first" : 0.98210021795720304,
+                  "jump" : 0.5,
+                  "second" : 0.96523311564764425,
+                  "shape" : "straight"
+                }
+              ],
+              "waypoints" : [
+                {
+                  "position" : 0,
+                  "value" : 1
+                },
+                {
+                  "position" : 0.02,
+                  "value" : 0.99896732026676172
+                },
+                {
+                  "position" : 1,
+                  "value" : 0.94836601333808557
+                }
+              ]
+            },
+            "parameter" : "lowPassHz",
+            "part" : {
+              "rawValue" : "544E4601-0000-0000-0000-000000000022"
+            }
+          },
+          {
+            "axis" : "value",
+            "control" : {
+              "rawValue" : "544E4601-0000-0000-0000-000000000012"
+            },
+            "curve" : {
+              "segments" : [
+                {
+                  "first" : 0.99986111111111109,
+                  "jump" : 0.5,
+                  "second" : 0.99972222222222218,
+                  "shape" : "straight"
+                },
+                {
+                  "first" : 0.99277777777777776,
+                  "jump" : 0.5,
+                  "second" : 0.98597222222222214,
+                  "shape" : "straight"
+                }
+              ],
+              "waypoints" : [
+                {
+                  "position" : 0,
+                  "value" : 1
+                },
+                {
+                  "position" : 0.02,
+                  "value" : 0.99958333333333327
+                },
+                {
+                  "position" : 1,
+                  "value" : 0.97916666666666663
+                }
+              ]
+            },
+            "parameter" : "gainDb",
+            "part" : {
+              "rawValue" : "544E4601-0000-0000-0000-000000000025"
+            }
+          },
+          {
+            "axis" : "value",
+            "control" : {
+              "rawValue" : "544E4601-0000-0000-0000-000000000012"
+            },
+            "curve" : {
+              "segments" : [
+                {
+                  "first" : 0.82222222222222219,
+                  "jump" : 0.5,
+                  "second" : 0.64444444444444449,
+                  "shape" : "straight"
+                },
+                {
+                  "first" : 0.43888888888888888,
+                  "jump" : 0.5,
+                  "second" : 0.41111111111111115,
+                  "shape" : "straight"
+                }
+              ],
+              "waypoints" : [
+                {
+                  "position" : 0,
+                  "value" : 1
+                },
+                {
+                  "position" : 0.02,
+                  "value" : 0.46666666666666667
+                },
+                {
+                  "position" : 1,
+                  "value" : 0.38333333333333336
+                }
+              ]
+            },
+            "parameter" : "thresholdDb",
+            "part" : {
+              "rawValue" : "544E4601-0000-0000-0000-000000000024"
+            }
+          },
+          {
+            "axis" : "value",
+            "control" : {
+              "rawValue" : "544E4601-0000-0000-0000-000000000012"
+            },
+            "curve" : {
+              "segments" : [
+                {
+                  "first" : 0.83291562238930661,
+                  "jump" : 0.5,
+                  "second" : 0.66583124477861322,
+                  "shape" : "straight"
+                },
+                {
+                  "first" : 0.37343358395989973,
+                  "jump" : 0.5,
+                  "second" : 0.24812030075187969,
+                  "shape" : "straight"
+                }
+              ],
+              "waypoints" : [
+                {
+                  "position" : 0,
+                  "value" : 1
+                },
+                {
+                  "position" : 0.02,
+                  "value" : 0.49874686716791977
+                },
+                {
+                  "position" : 1,
+                  "value" : 0.12280701754385966
+                }
+              ]
+            },
+            "parameter" : "headroomDb",
+            "part" : {
+              "rawValue" : "544E4601-0000-0000-0000-000000000024"
+            }
+          }
+        ],
+        "pieces" : [
+          {
+            "part" : {
+              "_0" : {
+                "id" : {
+                  "rawValue" : "544E4601-0000-0000-0000-000000000020"
+                },
+                "settings" : [
+                  {
+                    "key" : "highPassHz",
+                    "position" : 0
+                  },
+                  {
+                    "key" : "lowPassHz",
+                    "position" : 1
+                  }
+                ],
+                "type" : "deviceEQ"
+              }
+            }
+          },
+          {
+            "part" : {
+              "_0" : {
+                "id" : {
+                  "rawValue" : "544E4601-0000-0000-0000-000000000021"
+                },
+                "settings" : [
+                  {
+                    "key" : "wetPercent",
+                    "position" : 0
+                  },
+                  {
+                    "key" : "preGainDb",
+                    "position" : 0.80000000000000004
+                  },
+                  {
+                    "key" : "factoryPreset",
+                    "position" : 0
+                  }
+                ],
+                "type" : "deviceColour"
+              }
+            }
+          },
+          {
+            "part" : {
+              "_0" : {
+                "id" : {
+                  "rawValue" : "544E4601-0000-0000-0000-000000000022"
+                },
+                "settings" : [
+                  {
+                    "key" : "lowPassHz",
+                    "position" : 1
+                  }
+                ],
+                "type" : "placeEQ"
+              }
+            }
+          },
+          {
+            "part" : {
+              "_0" : {
+                "id" : {
+                  "rawValue" : "544E4601-0000-0000-0000-000000000023"
+                },
+                "settings" : [
+                  {
+                    "key" : "wetPercent",
+                    "position" : 0
+                  },
+                  {
+                    "key" : "roomPreset",
+                    "position" : 0
+                  }
+                ],
+                "type" : "reverb"
+              }
+            }
+          },
+          {
+            "part" : {
+              "_0" : {
+                "id" : {
+                  "rawValue" : "544E4601-0000-0000-0000-000000000024"
+                },
+                "settings" : [
+                  {
+                    "key" : "thresholdDb",
+                    "position" : 1
+                  },
+                  {
+                    "key" : "headroomDb",
+                    "position" : 1
+                  },
+                  {
+                    "key" : "expansionRatio",
+                    "position" : 0
+                  },
+                  {
+                    "key" : "expansionThresholdDb",
+                    "position" : 0
+                  },
+                  {
+                    "key" : "attackSeconds",
+                    "position" : 0.059529764882441216
+                  },
+                  {
+                    "key" : "releaseSeconds",
+                    "position" : 0.10367892976588627
+                  },
+                  {
+                    "key" : "makeupDb",
+                    "position" : 0.5
+                  }
+                ],
+                "type" : "dynamics"
+              }
+            }
+          },
+          {
+            "part" : {
+              "_0" : {
+                "id" : {
+                  "rawValue" : "544E4601-0000-0000-0000-000000000025"
+                },
+                "settings" : [
+                  {
+                    "key" : "gainDb",
+                    "position" : 1
+                  }
+                ],
+                "type" : "gain"
+              }
+            }
+          }
+        ]
+      },
+      "id" : {
+        "rawValue" : "544E4601-0000-0000-0000-000000000001"
+      },
+      "inTheMenu" : true,
+      "name" : "Everyday",
+      "version" : {
+        "rawValue" : "544E4601-0000-0000-0000-000000000004"
+      }
+    },
+    {
+      "content" : {
+        "controls" : [
+          {
+            "face" : {
+              "slider" : {
+
+              }
+            },
+            "id" : {
+              "rawValue" : "544E4602-0000-0000-0000-000000000010"
+            },
+            "position" : {
+              "scalar" : {
+                "_0" : 0
+              }
+            },
+            "waypoints" : {
+              "scalar" : {
+                "_0" : [
+                  0,
+                  1
+                ]
+              }
+            }
+          },
+          {
+            "face" : {
+              "slider" : {
+
+              }
+            },
+            "id" : {
+              "rawValue" : "544E4602-0000-0000-0000-000000000011"
+            },
+            "position" : {
+              "scalar" : {
+                "_0" : 0
+              }
+            },
+            "waypoints" : {
+              "scalar" : {
+                "_0" : [
+                  0,
+                  1
+                ]
+              }
+            }
+          },
+          {
+            "face" : {
+              "slider" : {
+
+              }
+            },
+            "id" : {
+              "rawValue" : "544E4602-0000-0000-0000-000000000012"
+            },
+            "position" : {
+              "scalar" : {
+                "_0" : 0
+              }
+            },
+            "waypoints" : {
+              "scalar" : {
+                "_0" : [
+                  0,
+                  1
+                ]
+              }
+            }
+          },
+          {
+            "face" : {
+              "slider" : {
+
+              }
+            },
+            "id" : {
+              "rawValue" : "544E4602-0000-0000-0000-000000000013"
+            },
+            "position" : {
+              "scalar" : {
+                "_0" : 0.80000000000000004
+              }
+            },
+            "waypoints" : {
+              "scalar" : {
+                "_0" : [
+                  0,
+                  1
+                ]
+              }
+            }
+          },
+          {
+            "face" : {
+              "slider" : {
+
+              }
+            },
+            "id" : {
+              "rawValue" : "544E4602-0000-0000-0000-000000000014"
+            },
+            "position" : {
+              "scalar" : {
+                "_0" : 0.40000000000000002
+              }
+            },
+            "waypoints" : {
+              "scalar" : {
+                "_0" : [
+                  0,
+                  0.5,
+                  1
+                ]
+              }
+            }
+          },
+          {
+            "face" : {
+              "slider" : {
+
+              }
+            },
+            "id" : {
+              "rawValue" : "544E4602-0000-0000-0000-000000000015"
+            },
+            "position" : {
+              "scalar" : {
+                "_0" : 0
+              }
+            },
+            "waypoints" : {
+              "scalar" : {
+                "_0" : [
+                  0,
+                  0.02,
+                  1
+                ]
+              }
+            }
+          }
+        ],
+        "mappings" : [
+          {
+            "axis" : "value",
+            "control" : {
+              "rawValue" : "544E4602-0000-0000-0000-000000000010"
+            },
+            "curve" : {
+              "segments" : [
+                {
+                  "first" : 0.22222222222222224,
+                  "jump" : 0.5,
+                  "second" : 0.44444444444444453,
+                  "shape" : "straight"
+                }
+              ],
+              "waypoints" : [
+                {
+                  "position" : 0,
+                  "value" : 0
+                },
+                {
+                  "position" : 1,
+                  "value" : 0.66666666666666674
+                }
+              ]
+            },
+            "parameter" : "highPassHz",
+            "part" : {
+              "rawValue" : "544E4602-0000-0000-0000-000000000020"
+            }
+          },
+          {
+            "axis" : "value",
+            "control" : {
+              "rawValue" : "544E4602-0000-0000-0000-000000000011"
+            },
+            "curve" : {
+              "segments" : [
+                {
+                  "first" : 0.85544111159289093,
+                  "jump" : 0.5,
+                  "second" : 0.71088222318578198,
+                  "shape" : "straight"
+                }
+              ],
+              "waypoints" : [
+                {
+                  "position" : 0,
+                  "value" : 1
+                },
+                {
+                  "position" : 1,
+                  "value" : 0.56632333477867292
+                }
+              ]
+            },
+            "parameter" : "lowPassHz",
+            "part" : {
+              "rawValue" : "544E4602-0000-0000-0000-000000000020"
+            }
+          },
+          {
+            "axis" : "value",
+            "control" : {
+              "rawValue" : "544E4602-0000-0000-0000-000000000012"
+            },
+            "curve" : {
+              "segments" : [
+                {
+                  "first" : 0.16666666666666666,
+                  "jump" : 0.5,
+                  "second" : 0.33333333333333337,
+                  "shape" : "straight"
+                }
+              ],
+              "waypoints" : [
+                {
+                  "position" : 0,
+                  "value" : 0
+                },
+                {
+                  "position" : 1,
+                  "value" : 0.5
+                }
+              ]
+            },
+            "parameter" : "wetPercent",
+            "part" : {
+              "rawValue" : "544E4602-0000-0000-0000-000000000021"
+            }
+          },
+          {
+            "axis" : "value",
+            "control" : {
+              "rawValue" : "544E4602-0000-0000-0000-000000000013"
+            },
+            "curve" : {
+              "segments" : [
+                {
+                  "first" : 0.33333333333333331,
+                  "jump" : 0.5,
+                  "second" : 0.66666666666666674,
+                  "shape" : "straight"
+                }
+              ],
+              "waypoints" : [
+                {
+                  "position" : 0,
+                  "value" : 0
+                },
+                {
+                  "position" : 1,
+                  "value" : 1
+                }
+              ]
+            },
+            "parameter" : "gainDb",
+            "part" : {
+              "rawValue" : "544E4602-0000-0000-0000-000000000023"
+            }
+          },
+          {
+            "axis" : "value",
+            "control" : {
+              "rawValue" : "544E4602-0000-0000-0000-000000000014"
+            },
+            "curve" : {
+              "segments" : [
+                {
+                  "first" : 0,
+                  "jump" : 0.5,
+                  "second" : 0.5,
+                  "shape" : "step"
+                },
+                {
+                  "first" : 0.5,
+                  "jump" : 0.5,
+                  "second" : 1,
+                  "shape" : "step"
+                }
+              ],
+              "waypoints" : [
+                {
+                  "position" : 0,
+                  "value" : 0
+                },
+                {
+                  "position" : 0.5,
+                  "value" : 0.5
+                },
+                {
+                  "position" : 1,
+                  "value" : 1
+                }
+              ]
+            },
+            "parameter" : "roomPreset",
+            "part" : {
+              "rawValue" : "544E4602-0000-0000-0000-000000000021"
+            }
+          },
+          {
+            "axis" : "value",
+            "control" : {
+              "rawValue" : "544E4602-0000-0000-0000-000000000015"
+            },
+            "curve" : {
+              "segments" : [
+                {
+                  "first" : 0.82222222222222219,
+                  "jump" : 0.5,
+                  "second" : 0.64444444444444449,
+                  "shape" : "straight"
+                },
+                {
+                  "first" : 0.43888888888888888,
+                  "jump" : 0.5,
+                  "second" : 0.41111111111111115,
+                  "shape" : "straight"
+                }
+              ],
+              "waypoints" : [
+                {
+                  "position" : 0,
+                  "value" : 1
+                },
+                {
+                  "position" : 0.02,
+                  "value" : 0.46666666666666667
+                },
+                {
+                  "position" : 1,
+                  "value" : 0.38333333333333336
+                }
+              ]
+            },
+            "parameter" : "thresholdDb",
+            "part" : {
+              "rawValue" : "544E4602-0000-0000-0000-000000000022"
+            }
+          },
+          {
+            "axis" : "value",
+            "control" : {
+              "rawValue" : "544E4602-0000-0000-0000-000000000015"
+            },
+            "curve" : {
+              "segments" : [
+                {
+                  "first" : 0.83291562238930661,
+                  "jump" : 0.5,
+                  "second" : 0.66583124477861322,
+                  "shape" : "straight"
+                },
+                {
+                  "first" : 0.37343358395989973,
+                  "jump" : 0.5,
+                  "second" : 0.24812030075187969,
+                  "shape" : "straight"
+                }
+              ],
+              "waypoints" : [
+                {
+                  "position" : 0,
+                  "value" : 1
+                },
+                {
+                  "position" : 0.02,
+                  "value" : 0.49874686716791977
+                },
+                {
+                  "position" : 1,
+                  "value" : 0.12280701754385966
+                }
+              ]
+            },
+            "parameter" : "headroomDb",
+            "part" : {
+              "rawValue" : "544E4602-0000-0000-0000-000000000022"
+            }
+          }
+        ],
+        "pieces" : [
+          {
+            "part" : {
+              "_0" : {
+                "id" : {
+                  "rawValue" : "544E4602-0000-0000-0000-000000000020"
+                },
+                "settings" : [
+                  {
+                    "key" : "highPassHz",
+                    "position" : 0
+                  },
+                  {
+                    "key" : "lowPassHz",
+                    "position" : 1
+                  }
+                ],
+                "type" : "deviceEQ"
+              }
+            }
+          },
+          {
+            "part" : {
+              "_0" : {
+                "id" : {
+                  "rawValue" : "544E4602-0000-0000-0000-000000000021"
+                },
+                "settings" : [
+                  {
+                    "key" : "wetPercent",
+                    "position" : 0
+                  },
+                  {
+                    "key" : "roomPreset",
+                    "position" : 0.5
+                  }
+                ],
+                "type" : "reverb"
+              }
+            }
+          },
+          {
+            "part" : {
+              "_0" : {
+                "id" : {
+                  "rawValue" : "544E4602-0000-0000-0000-000000000022"
+                },
+                "settings" : [
+                  {
+                    "key" : "thresholdDb",
+                    "position" : 1
+                  },
+                  {
+                    "key" : "headroomDb",
+                    "position" : 1
+                  },
+                  {
+                    "key" : "expansionRatio",
+                    "position" : 0
+                  },
+                  {
+                    "key" : "expansionThresholdDb",
+                    "position" : 0
+                  },
+                  {
+                    "key" : "attackSeconds",
+                    "position" : 0.055276381909547735
+                  },
+                  {
+                    "key" : "releaseSeconds",
+                    "position" : 0.10367892976588627
+                  },
+                  {
+                    "key" : "makeupDb",
+                    "position" : 0.5
+                  }
+                ],
+                "type" : "dynamics"
+              }
+            }
+          },
+          {
+            "part" : {
+              "_0" : {
+                "id" : {
+                  "rawValue" : "544E4602-0000-0000-0000-000000000023"
+                },
+                "settings" : [
+                  {
+                    "key" : "gainDb",
+                    "position" : 0.80000000000000004
+                  }
+                ],
+                "type" : "gain"
+              }
+            }
+          }
+        ]
+      },
+      "id" : {
+        "rawValue" : "544E4602-0000-0000-0000-000000000001"
+      },
+      "inTheMenu" : true,
+      "name" : "Filters",
+      "version" : {
+        "rawValue" : "544E4602-0000-0000-0000-000000000004"
+      }
+    }
+  ],
+  "isEnabled" : false,
+  "listening" : [
+    {
+      "positions" : [
+
+      ],
+      "root" : {
+        "rawValue" : "544E4601-0000-0000-0000-000000000003"
+      }
+    },
+    {
+      "positions" : [
+        {
+          "control" : {
+            "rawValue" : "544E4602-0000-0000-0000-000000000011"
+          },
+          "value" : {
+            "scalar" : {
+              "_0" : 0.5
+            }
+          }
+        }
+      ],
+      "root" : {
+        "rawValue" : "544E4602-0000-0000-0000-000000000003"
+      }
+    }
+  ],
+  "uses" : [
+    {
+      "definition" : {
+        "id" : {
+          "rawValue" : "544E4601-0000-0000-0000-000000000001"
+        },
+        "version" : {
+          "rawValue" : "544E4601-0000-0000-0000-000000000004"
+        }
+      },
+      "id" : {
+        "rawValue" : "544E4601-0000-0000-0000-000000000003"
+      },
+      "name" : {
+        "library" : {
+
+        }
+      }
+    },
+    {
+      "definition" : {
+        "id" : {
+          "rawValue" : "544E4602-0000-0000-0000-000000000001"
+        },
+        "version" : {
+          "rawValue" : "544E4602-0000-0000-0000-000000000004"
+        }
+      },
+      "id" : {
+        "rawValue" : "544E4602-0000-0000-0000-000000000003"
+      },
+      "name" : {
+        "library" : {
+
+        }
+      }
+    }
+  ],
+  "version" : 1
+}

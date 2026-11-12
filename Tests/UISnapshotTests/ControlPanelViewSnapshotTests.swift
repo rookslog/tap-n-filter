@@ -9,6 +9,7 @@ import Graph
 import SwiftUI
 @testable import UI
 @testable import ViewModel
+import NativeTestSupport
 import XCTest
 
 /// Snapshot tests for `ControlPanelView` in three states: idle, running,
@@ -16,6 +17,11 @@ import XCTest
 /// and committed alongside the test code per the Phase 3 spec.
 @MainActor
 final class ControlPanelViewSnapshotTests: XCTestCase {
+
+    override func setUp() async throws {
+        try requireNativeTests()
+        try await super.setUp()
+    }
 
     func test_snapshot_idle() async throws {
         let model = try await makeModel(state: .idle)

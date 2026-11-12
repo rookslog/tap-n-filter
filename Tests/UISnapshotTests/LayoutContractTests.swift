@@ -6,6 +6,7 @@ import Graph
 import SwiftUI
 @testable import UI
 @testable import ViewModel
+import NativeTestSupport
 import XCTest
 
 /// Layout-contract guard for the macOS-27 panel-collapse regression.
@@ -38,6 +39,11 @@ import XCTest
 /// `minHeight` floor would fail them everywhere.
 @MainActor
 final class LayoutContractTests: XCTestCase {
+
+    override func setUp() async throws {
+        try requireNativeTests()
+        try await super.setUp()
+    }
 
     // MARK: - Empty chain
 

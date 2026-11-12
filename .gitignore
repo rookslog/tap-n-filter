@@ -60,3 +60,8 @@ tools/review-journal/__pycache__/
 
 # Claude Code agent worktrees (transient session state)
 .claude/worktrees/
+
+# Private local development inputs and review evidence
+.audit/
+.impeccable/review/
+.developer-fixtures/

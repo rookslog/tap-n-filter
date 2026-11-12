@@ -1,4 +1,5 @@
 import AVFoundation
+import NativeTestSupport
 import XCTest
 @testable import Effects
 
@@ -139,6 +140,7 @@ final class EQNodeTests: XCTestCase {
     /// Offline-render `node` against a 1 kHz sine and return the mean square
     /// energy of the rendered output.
     private func renderEnergy(through node: any EffectNode) throws -> Float {
+        try requireNativeTests()
         let engine = AVAudioEngine()
         let player = AVAudioPlayerNode()
         let format = AVAudioFormat(standardFormatWithSampleRate: 48_000.0, channels: 2)!
@@ -221,6 +223,7 @@ final class EQNodeTests: XCTestCase {
     // MARK: Snapshot / restore roundtrip
 
     func test_snapshot_restore_roundtrip_preserves_state() throws {
+        try requireNativeTests()
         let original = EQNode()
         original.displayName = "Custom EQ"
         original.bypass = false

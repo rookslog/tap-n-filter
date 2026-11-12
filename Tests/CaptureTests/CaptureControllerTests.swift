@@ -2,6 +2,7 @@ import AVFoundation
 import Combine
 import CoreAudio
 import Darwin
+import NativeTestSupport
 import XCTest
 @testable import Capture
 
@@ -63,6 +64,7 @@ final class CaptureControllerTests: XCTestCase {
     // MARK: T3.1 — start transitions through starting to running
 
     func test_start_transitions_through_starting_to_running_and_attaches_source_node() throws {
+        try requireNativeTests()
         let fake = makeFake()
         let controller = CaptureController(coreAudio: fake)
         let recorder = StateRecorder(controller)
@@ -83,7 +85,8 @@ final class CaptureControllerTests: XCTestCase {
 
     // MARK: T3.2 — start failure at createTap surfaces and unwinds
 
-    func test_start_failure_at_createTap_transitions_to_failed() {
+    func test_start_failure_at_createTap_transitions_to_failed() throws {
+        try requireNativeTests()
         let fake = makeFake()
         let failure: OSStatus = -10_875
         fake.createTapResult = { _ in throw CaptureError.tapCreationFailed(failure) }
@@ -108,6 +111,7 @@ final class CaptureControllerTests: XCTestCase {
     // MARK: T3.3 — stop after start: source node detached, tap destroyed
 
     func test_stop_after_start_tears_down_reader_and_detaches_source_node() throws {
+        try requireNativeTests()
         let fake = makeFake()
         let controller = CaptureController(coreAudio: fake)
         let source = makeSource()
@@ -132,6 +136,7 @@ final class CaptureControllerTests: XCTestCase {
     // MARK: T3.4 — start → stop → start works without leaks
 
     func test_start_then_stop_then_start_works() throws {
+        try requireNativeTests()
         let fake = makeFake()
         let controller = CaptureController(coreAudio: fake)
         let source = makeSource()
@@ -188,7 +193,8 @@ final class CaptureControllerTests: XCTestCase {
 
     // MARK: Source resolution
 
-    func test_start_with_unknown_audio_process_throws_sourceNotFound() {
+    func test_start_with_unknown_audio_process_throws_sourceNotFound() throws {
+        try requireNativeTests()
         let fake = FakeCoreAudioInterface()
         let controller = CaptureController(coreAudio: fake)
         let source = makeSource(pid: 9_999, audioProcessID: 7)
@@ -227,7 +233,8 @@ final class CaptureControllerTests: XCTestCase {
 
     // MARK: Permission denial surfacing
 
-    func test_permission_denied_surfaces_typed_error() {
+    func test_permission_denied_surfaces_typed_error() throws {
+        try requireNativeTests()
         let fake = makeFake()
         fake.createTapResult = { _ in throw CaptureError.permissionDenied }
         let controller = CaptureController(coreAudio: fake)
@@ -243,6 +250,7 @@ final class CaptureControllerTests: XCTestCase {
     // MARK: Stop from .failed clears state
 
     func test_stop_from_failed_returns_to_idle_without_throwing() throws {
+        try requireNativeTests()
         let fake = makeFake()
         fake.createTapResult = { _ in throw CaptureError.tapCreationFailed(-1) }
         let controller = CaptureController(coreAudio: fake)
@@ -259,6 +267,7 @@ final class CaptureControllerTests: XCTestCase {
     // MARK: Idempotency
 
     func test_start_while_running_same_source_and_engine_is_noop() throws {
+        try requireNativeTests()
         let fake = makeFake()
         let controller = CaptureController(coreAudio: fake)
         let source = makeSource()
@@ -273,6 +282,7 @@ final class CaptureControllerTests: XCTestCase {
     }
 
     func test_start_while_running_different_source_throws_alreadyRunning() throws {
+        try requireNativeTests()
         let fake = makeFake()
         fake.audioProcessIDsByPID = [
             knownPID: knownAudioProcessID,
@@ -297,6 +307,7 @@ final class CaptureControllerTests: XCTestCase {
     }
 
     func test_start_while_running_different_engine_throws_alreadyRunning() throws {
+        try requireNativeTests()
         let fake = makeFake()
         let controller = CaptureController(coreAudio: fake)
         let source = makeSource()
@@ -314,6 +325,7 @@ final class CaptureControllerTests: XCTestCase {
     // MARK: Concurrent transition guards
 
     func test_start_during_starting_throws_transitionInProgress() throws {
+        try requireNativeTests()
         let fake = makeFake()
         let inTapCreation = expectation(description: "background thread reached createTap")
         let proceedFromTap = DispatchSemaphore(value: 0)
@@ -346,6 +358,7 @@ final class CaptureControllerTests: XCTestCase {
     }
 
     func test_stop_during_starting_throws_transitionInProgress() throws {
+        try requireNativeTests()
         let fake = makeFake()
         let inTapCreation = expectation(description: "background thread reached createTap")
         let proceedFromTap = DispatchSemaphore(value: 0)
@@ -381,6 +394,7 @@ final class CaptureControllerTests: XCTestCase {
     // MARK: Deinit cleanup
 
     func test_deinit_while_running_tears_down_resources() throws {
+        try requireNativeTests()
         let fake = makeFake()
         let source = makeSource()
         let engine = AVAudioEngine()

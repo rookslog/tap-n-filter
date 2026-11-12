@@ -1,5 +1,9 @@
 # ADR-017: Ad-hoc signing for v0.1.0; Developer ID deferred
 
+Public-copy privacy edit: `LOCAL_SIGNING_IDENTITY` and angle-bracket values below
+replace local identity, certificate or path metadata. Redacted command excerpts
+are historical records, not literal output from the current scripts.
+
 ## Status
 
 Accepted
@@ -11,11 +15,11 @@ ADR-003 commits V1 to direct distribution as a signed, notarized DMG, with code 
 `security find-identity -v -p codesigning` on the build machine at the start of Phase 4 shows only one identity:
 
 ```
-1) 61AA3A6DD970BDE850BC38B5C937936E83D5E1F9 "VIGIL Dev"
+1) <local certificate fingerprint> "LOCAL_SIGNING_IDENTITY"
    1 valid identities found
 ```
 
-`VIGIL Dev` is a self-signed certificate, not an Apple-issued Developer ID Application certificate. Apple-issued certificates have the form `Developer ID Application: <Name> (<10-char Team ID>)`. Self-signed certificates satisfy `codesign` locally but produce signatures macOS Gatekeeper does not trust for distribution, and `xcrun notarytool` rejects them outright.
+`LOCAL_SIGNING_IDENTITY` is a self-signed certificate, not an Apple-issued Developer ID Application certificate. Apple-issued certificates have the form `Developer ID Application: <Name> (<10-char Team ID>)`. Self-signed certificates satisfy `codesign` locally but produce signatures macOS Gatekeeper does not trust for distribution, and `xcrun notarytool` rejects them outright.
 
 The Developer ID Application certificate requires enrollment in the Apple Developer Program ($99 USD/year, 24–48 hour enrollment typical). The user has decided not to enroll for the v0.1.0 release window; enrollment may happen later, in which case v0.1.1+ can re-sign with the real Developer ID.
 
@@ -35,9 +39,9 @@ The v0.1.0 release proceeds with ad-hoc signing under the constraint that distri
 
 The straightforward path. $99 USD/year, 24–48 hour enrollment. Produces a Gatekeeper-clean install experience. Rejected because the user explicitly chose to defer enrollment; the decision is theirs and the deferral is reversible.
 
-### Sign with the existing self-signed VIGIL Dev certificate
+### Sign with the existing self-signed certificate
 
-Produces a signature that says "VIGIL Dev" — looks like an obscure organization rather than an obviously-unsigned binary. Some users might find this more confusing than a clean ad-hoc signature, because they'd see a real-looking identity and assume it should be trusted. Ad-hoc signing (`--sign -`) is the more honest signal: "this is not signed by a recognized authority; treat with appropriate caution."
+Produces a signature that says "LOCAL_SIGNING_IDENTITY" — looks like an obscure organization rather than an obviously-unsigned binary. Some users might find this more confusing than a clean ad-hoc signature, because they'd see a real-looking identity and assume it should be trusted. Ad-hoc signing (`--sign -`) is the more honest signal: "this is not signed by a recognized authority; treat with appropriate caution."
 
 ### Skip signing entirely
 

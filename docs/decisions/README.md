@@ -82,3 +82,9 @@ The dissent and uncertainty logs are append-only. Entries are never deleted. Whe
 - `ADR-005-min-macos-version.md` — macOS 14.4 minimum.
 
 Additional ADRs are written during build as decisions surface. They use ADR-006 onward.
+
+## Proposed on the block-runtime branch
+
+- [ADR-023](ADR-023-apple-silicon-audio-execution.md) records the Apple Silicon
+  scheduling, DSP, native-build and live-analysis direction and its measurement
+  gates. It is not a completed runtime optimization or a change to ADR-006.

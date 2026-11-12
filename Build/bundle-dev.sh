@@ -7,7 +7,7 @@
 #
 # Usage: ./Build/bundle-dev.sh [--clean]
 #
-# Output: Build/tap-n-filter.app (ad-hoc signed, runnable locally)
+# Output: Build/tap-n-filter.app (ad-hoc signed by default, runnable locally)
 
 set -euo pipefail
 
@@ -46,19 +46,11 @@ for bundle in .build/debug/*.bundle; do
     fi
 done
 
-# Try signing with a stable identity if one is available. Ad-hoc
-# signing (`-`) gives the binary a different signature on every build,
-# which TCC re-prompts on, and may also gate HAL-level callbacks like
-# AudioDeviceCreateIOProcIDWithBlock. A stable identity is a strict
-# improvement for development.
-SIGNING_IDENTITY="VIGIL Dev"
-if security find-identity -v -p codesigning | grep -q "$SIGNING_IDENTITY"; then
-    echo "==> Signing with identity '$SIGNING_IDENTITY'…"
-    codesign --force --deep --sign "$SIGNING_IDENTITY" "$APP"
-else
-    echo "==> Ad-hoc signing (identity '$SIGNING_IDENTITY' not found)…"
-    codesign --force --deep --sign - "$APP"
-fi
+# Set TNF_SIGNING_IDENTITY explicitly to use a local signing identity.
+# Unset or empty uses ad-hoc signing. An explicit signer's failure stops here.
+SIGNING_IDENTITY="${TNF_SIGNING_IDENTITY:--}"
+echo "==> Signing with identity '$SIGNING_IDENTITY'…"
+codesign --force --deep --sign "$SIGNING_IDENTITY" "$APP"
 
 echo "==> Done: $APP"
 echo "Launch with: open \"$APP\""

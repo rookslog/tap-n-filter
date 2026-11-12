@@ -1,5 +1,9 @@
 # Phase 1 Rework 1 Verification
 
+Public-copy privacy edit: `LOCAL_SIGNING_IDENTITY` and angle-bracket values below
+replace local identity, certificate or path metadata. Redacted command excerpts
+are historical records, not literal output from the current scripts.
+
 **Verifier**: Claude (verification subagent, cold context)
 **Date**: 2026-05-27
 **Phase**: 1 (rework 1) — Audio Capture Architecture Refactor
@@ -228,8 +232,8 @@ evidence on CI.
 
 **Evidence**: Local run of `./Build/bundle-dev.sh` at HEAD returns exit
 code 0. `swift build -c debug` completes ("Build complete! (1.45s)").
-The script signs with the "VIGIL Dev" identity ("==> Signing with
-identity 'VIGIL Dev'… replacing existing signature") and produces
+The script signs with the redacted local identity ("==> Signing with
+identity 'LOCAL_SIGNING_IDENTITY'… replacing existing signature") and produces
 `Build/tap-n-filter.app/Contents/MacOS/tap-n-filter` plus copied
 `Info.plist` and SPM resource bundles.
 
