@@ -463,33 +463,39 @@ extension SoundDocument {
     func mappingMove(_ draft: LibraryWorkingDraft, key: OccurrenceControlKey, value: ControlValue) throws -> UseListeningState {
         let current = positions(draft), graph = try mappingGraph(draft, listening: current)
         let sound = try compileDraft(draft, listening: current)
-        guard let schema = sound.controlSchemas[key], let manual = graph.manual[key] else { throw LibraryError.unknownTarget }
-        let requested = try libraryValue(value, control: schema)
-        var memory = current.setting(key, to: manual), adjustments = current.adjustments
-        let axes: [ControlAxis] = schema.face == .xy ? [.x, .y] : [.value]
-        for axis in axes {
-            let address = MappingAxisKey(path: key.path, control: key.control, axis: axis)
-            let requestedControl = SoundControl(id: schema.id, face: schema.face, position: requested, waypoints: schema.waypoints)
-            if graph.incoming.contains(address) {
-                let delta: Double
-                let isChoice: Bool
-                if case .choice = schema.face {
-                    guard let raw = graph.rawSums[address] else { throw LibraryError.invalidCanonical }
-                    delta = try requestedControl.position(on: axis).value - raw
-                    isChoice = true
-                } else {
-                    let prior = adjustments.first { $0.key == address }?.value ?? 0
-                    delta = try requestedControl.position(on: axis).value - schema.position(on: axis).value + prior
-                    isChoice = false
-                }
-                adjustments.removeAll { $0.key == address }
-                if delta != 0 || isChoice {
-                    adjustments.append(MappingAdjustment(key: address, value: delta))
-                }
-            } else { memory = memory.setting(key, to: requested) }
-        }
-        return UseListeningState(values: memory.values, adjustments: adjustments, dormant: current.dormant)
+        guard let schema = sound.controlSchemas[key] else { throw LibraryError.unknownTarget }
+        return try movedMappingValue(value, key: key, current: current, graph: graph, schema: schema)
     }
+}
+
+func movedMappingValue(_ value: ControlValue, key: OccurrenceControlKey, current: UseListeningState,
+                       graph: MappingEvaluation, schema: SoundControl) throws -> UseListeningState {
+    guard let manual = graph.manual[key] else { throw LibraryError.unknownTarget }
+    let requested = try libraryValue(value, control: schema)
+    var memory = current.setting(key, to: manual), adjustments = current.adjustments
+    let axes: [ControlAxis] = schema.face == .xy ? [.x, .y] : [.value]
+    for axis in axes {
+        let address = MappingAxisKey(path: key.path, control: key.control, axis: axis)
+        let requestedControl = SoundControl(id: schema.id, face: schema.face, position: requested, waypoints: schema.waypoints)
+        if graph.incoming.contains(address) {
+            let delta: Double
+            let isChoice: Bool
+            if case .choice = schema.face {
+                guard let raw = graph.rawSums[address] else { throw LibraryError.invalidCanonical }
+                delta = try requestedControl.position(on: axis).value - raw
+                isChoice = true
+            } else {
+                let prior = adjustments.first { $0.key == address }?.value ?? 0
+                delta = try requestedControl.position(on: axis).value - schema.position(on: axis).value + prior
+                isChoice = false
+            }
+            adjustments.removeAll { $0.key == address }
+            if delta != 0 || isChoice {
+                adjustments.append(MappingAdjustment(key: address, value: delta))
+            }
+        } else { memory = memory.setting(key, to: requested) }
+    }
+    return UseListeningState(values: memory.values, adjustments: adjustments, dormant: current.dormant)
 }
 
 extension SoundBlock {

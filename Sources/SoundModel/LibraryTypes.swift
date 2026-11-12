@@ -362,12 +362,26 @@ struct LibraryPending: Sendable {
     let task: Task<LibraryWriteOutcome, Never>
     var publication: LibraryPublicationMigration? = nil
 }
+struct LibraryCommittedBytes: Sendable {
+    let data: Data
+    private(set) var cachedToken: UUID?
+
+    init(data: Data, token: UUID? = nil) {
+        self.data = data; cachedToken = token
+    }
+    mutating func token() throws -> UUID {
+        if let cachedToken { return cachedToken }
+        let decoded = try JSONDecoder().decode(LibraryArchive.self, from: data).commit
+        cachedToken = decoded
+        return decoded
+    }
+}
 struct LibraryOwnerState: Sendable {
     let port: any LibraryPersistence
     let limits: LibraryLimits
     let profiles: LibraryProfiles
     var metadata: LibraryMetadata
-    var committed: Data?
+    var committed: LibraryCommittedBytes?
     var pending: LibraryPending?
     var uncertain: LibraryPending?
     var liveGeneration: UInt64 = 0

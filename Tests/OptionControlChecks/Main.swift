@@ -152,6 +152,18 @@ struct OptionControlChecks {
         let neutralEdit = try await session.beginEdit(.use(binding),admission:{ _ in })
         let neutralSetting = neutralEdit.parts.first { $0.id == f.part.rawValue }!.settings.first { $0.parameter == "gainDb" }!
         try check(try neutralSetting.specification.normalized(neutralSetting.physicalValue) == 0.5,"fresh children preserve exact authored native setting")
+        let beforeInvalid = try await session.snapshot(), invalidBytes = try Data(contentsOf: file)
+        let invalidGeneration = try await session.saveCoverage().liveGeneration
+        for proposed in [LibraryPosition.xy(0.2, 0.8), .scalar(-0.1), .scalar(.infinity)] {
+            try await refuses("invalid proposed live value") {
+                _ = try await session.move(child, expected: binding, to: proposed)
+            }
+            let refusedSnapshot = try await session.snapshot(), refusedCoverage = try await session.saveCoverage()
+            try check(try refusedSnapshot == beforeInvalid
+                && refusedCoverage.liveGeneration == invalidGeneration
+                && Data(contentsOf: file) == invalidBytes,
+                "invalid proposed move preserves complete live state, generation and exact file bytes")
+        }
         _ = try await session.move(child, expected: binding, optionGesture: gesture, to: .scalar(0.2))
         try await session.move(f.parent.rawValue,on:"test.safari",to:.scalar(0.5))
         try await session.move(f.b.rawValue,on:"test.safari",to:.scalar(0.8))

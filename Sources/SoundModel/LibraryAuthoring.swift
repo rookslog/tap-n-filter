@@ -230,7 +230,7 @@ extension SoundDocument {
         let durability: LibraryDraftDurability
         if let uncertain = state.uncertain { durability = .unresolved(token: uncertain.token, digest: libraryDigest(uncertain.data)) }
         else if let reason = draft.refusal { durability = .refused(reason) }
-        else if let data = state.committed, try durableMatches(draft, data: data) {
+        else if let data = state.committed?.data, try durableMatches(draft, data: data) {
             let archive = try JSONDecoder().decode(LibraryArchive.self, from: data)
             durability = .saved(token: archive.commit, digest: libraryDigest(data))
         } else { durability = .unsaved }
@@ -448,7 +448,7 @@ extension SoundDocument {
         var (context, draft) = try editContext(handle, generation: generation)
         let state = try owner()
         guard state.pending == nil, state.uncertain == nil else { throw LibraryError.durableStateUnresolved }
-        guard let committed = state.committed else { throw LibraryError.unsupportedEdit }
+        guard let committed = state.committed?.data else { throw LibraryError.unsupportedEdit }
         let durable = try JSONDecoder().decode(LibraryArchive.self, from: committed)
         var restored = try next(draft)
         let base = state.metadata.revisions.first { $0.definition.reference == draft.base }
