@@ -556,17 +556,24 @@ extension SoundDocument {
     }
     func libraryMove(target: ApplicationKey, key: OccurrenceControlKey, value: ControlValue) throws {
         var state = try owner()
+        let metadata = state.effectiveMetadata
         let binding = try active(target)
         let listening = content.listening[binding.root] ?? UseListeningState(positions: [:])
-        let sound = try state.effectiveMetadata.compile(root: binding.root, listening: listening, profiles: state.profiles, limits: state.limits)
+        let sound = try metadata.compile(root: binding.root, listening: listening, profiles: state.profiles, limits: state.limits)
         guard let control = sound.controlSchemas[key] else { throw DocumentError.unknownControl(key.control) }
         let canonical = try libraryValue(value, control: control)
-        let payload = try state.effectiveMetadata.payload(root: binding.root)
+        let payload = try metadata.payload(root: binding.root)
         let transient = LibraryWorkingDraft(owner: .use(binding.root), base: content.uses[try content.useIndex(binding.root)].definition,
             payload: payload, info: LibraryDraftInfo(id: UUID(), generation: 0, structural: false), positions: listening)
-        let next = try mappingMove(transient, key: key, value: canonical)
+        let next: UseListeningState
+        if metadata.owned.first(where: { $0.use.id == binding.root })?.use.definition == transient.base {
+            let graph = try mappingGraph(transient, listening: listening)
+            next = try movedMappingValue(canonical, key: key, current: listening, graph: graph, schema: control)
+        } else {
+            next = try mappingMove(transient, key: key, value: canonical)
+        }
         guard next != listening else { return }
-        _ = try state.effectiveMetadata.compile(root: binding.root, listening: next, profiles: state.profiles, limits: state.limits)
+        _ = try metadata.compile(root: binding.root, listening: next, profiles: state.profiles, limits: state.limits)
         content.listening[binding.root] = next
         state.liveGeneration &+= 1; libraryOwner = state
     }
