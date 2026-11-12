@@ -114,7 +114,7 @@ final class NativeOutputHub {
     bus: AVAudioNodeBus = 0, format: AVAudioFormat?
   ) throws {
     if #available(macOS 27, *) {
-      try engine.connectNode(source, to: destination, fromBus: 0, toBus: bus, format: format)
+      try engine.connectNode(source, to: destination, fromBus: 0, toBus: numericCast(bus), format: format)
     } else {
       engine.connect(source, to: destination, fromBus: 0, toBus: bus, format: format)
     }
