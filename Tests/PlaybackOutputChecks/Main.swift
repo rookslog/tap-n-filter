@@ -155,17 +155,19 @@ import SoundModel
       let planes = [
         UnsafePointer(input.floatChannelData![0]), UnsafePointer(input.floatChannelData![1]),
       ]
-      let source = AVAudioSourceNode(format: format) { silence, time, frames, buffers in
+      let renderBlock: AVAudioSourceNodeRenderBlock = { silence, time, frames, buffers in
         precondition(frames <= 4096)
         for channel in 0..<2 {
           for i in 0..<Int(frames) {
-            input.floatChannelData![channel][i] = Float(
-              0.1 * sin((time.pointee.mSampleTime + Double(i)) * 997 * 2 * .pi / 48000))
+            let sampleTime: Double = time.pointee.mSampleTime + Double(i)
+            let phase: Double = sampleTime * 997 * 2 * Double.pi / 48000
+            input.floatChannelData![channel][i] = Float(0.1 * sin(phase))
           }
         }
         _ = ring.write(from: planes, frames: Int(frames))
         return context.render(silence: silence, frames: frames, buffers: buffers)
       }
+      let source = AVAudioSourceNode(format: format, renderBlock: renderBlock)
       engine.attach(source)
       let limiter = try FinalMixLimiter.make(); engine.attach(limiter)
       try connect(engine, source, engine.mainMixerNode, format: format)
@@ -252,17 +254,20 @@ import SoundModel
     let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
     try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 512)
     for bus in 0..<2 {
-      let source = AVAudioSourceNode(format: format) { silence, timestamp, frames, buffers in
+      let renderBlock: AVAudioSourceNodeRenderBlock = { silence, timestamp, frames, buffers in
         silence.pointee = false
-        let start = timestamp.pointee.mSampleTime
+        let start: Double = timestamp.pointee.mSampleTime
         for buffer in UnsafeMutableAudioBufferListPointer(buffers) {
           guard let data = buffer.mData?.assumingMemoryBound(to: Float.self) else { continue }
           for frame in 0..<Int(frames) {
-            data[frame] = Float(0.8 * sin((start + Double(frame)) * 997 * 2 * .pi / 48000))
+            let sampleTime: Double = start + Double(frame)
+            let phase: Double = sampleTime * 997 * 2 * Double.pi / 48000
+            data[frame] = Float(0.8 * sin(phase))
           }
         }
         return noErr
       }
+      let source = AVAudioSourceNode(format: format, renderBlock: renderBlock)
       engine.attach(source)
       try connect(engine, source, engine.mainMixerNode, bus: AVAudioNodeBus(bus), format: format)
     }
@@ -297,7 +302,7 @@ import SoundModel
     bus: AVAudioNodeBus = 0, format: AVAudioFormat
   ) throws {
     if #available(macOS 27, *) {
-      try engine.connectNode(source, to: destination, fromBus: 0, toBus: bus, format: format)
+      try engine.connectNode(source, to: destination, fromBus: 0, toBus: numericCast(bus), format: format)
     } else {
       engine.connect(source, to: destination, fromBus: 0, toBus: bus, format: format)
     }
