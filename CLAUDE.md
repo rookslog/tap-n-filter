@@ -84,11 +84,7 @@ This is a public repo. Code is written for other people to read, not just for th
 
 ## PR workflow
 
-Each phase ends with a PR. Branch naming: `phase-<N>-<short-description>`.
-
-Open the PR via `gh pr create`. CodeRabbit reviews automatically. Comment `@codex review` to trigger a Codex review pass. Address review comments before requesting human acceptance (Phase 4 only; earlier phases self-merge after PR review).
-
-See `docs/governance/review-protocol.md` for the full review flow.
+Follow [the branch, PR and release flow](docs/RELEASE.md).
 
 ## What you do not do without explicit user instruction
 
