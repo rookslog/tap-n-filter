@@ -23,9 +23,43 @@ let package = Package(
         .library(name: "UI", targets: ["UI"])
     ],
     targets: [
+        .target(name: "NativeTestSupport", path: "Tests/NativeTestSupport"),
+        .executableTarget(name: "tnf-output-check", dependencies: ["PlaybackOutput", "Capture", "OutputGate", "PlaybackRenderBridge", "SoundModel"], path: "Tests/PlaybackOutputChecks"),
+        .target(name: "PlaybackDSP", dependencies: ["FixedRender"], publicHeadersPath: "include", cxxSettings: [.unsafeFlags(["-std=c++20"])]),
+        .target(name: "PlaybackRenderBridge", dependencies: ["SoundModel", "PlaybackDSP"], swiftSettings: [.unsafeFlags(["-swift-version", "6"])]),
+        .target(name: "PlaybackOutput", dependencies: ["Capture", "OutputGate", "PlaybackDSP", "PlaybackRenderBridge", "PlaybackLifecycle", "PlaybackRuntime", "PlaybackRuntimeCaptureAdapters", "SoundModel"], linkerSettings: [.linkedFramework("Accelerate")]),
+        .target(name: "PlaybackLifecycle", dependencies: ["PlaybackRuntime", "SoundModel"]),
+        .executableTarget(name: "tnf-playback-lifecycle-check", dependencies: ["PlaybackLifecycle", "PlaybackRuntime", "SoundModel"], path: "Tests/PlaybackLifecycleChecks"),
+        .target(name: "OutputGate", path: "Sources/OutputGate", publicHeadersPath: "include", cxxSettings: [.unsafeFlags(["-std=c++20"])]),
+        .executableTarget(name: "tnf-output-gate-check", dependencies: ["OutputGate"], path: "Tests/OutputGateChecks", cxxSettings: [.unsafeFlags(["-std=c++20"])]),
+        .executableTarget(name: "tnf-menu-check", dependencies: ["SoundModel", "SessionStore", "EverydayMenu"], path: "Sources/MenuFixture", resources: [.copy("Resources")]),
+        .target(name: "FixedRender", path: "Sources/FixedRender", publicHeadersPath: "include",
+                cxxSettings: [.unsafeFlags(["-std=c++20", "-fno-objc-arc"])],
+                linkerSettings: [.linkedFramework("AVFAudio"), .linkedFramework("Foundation"), .linkedFramework("AudioToolbox")]),
+        .target(name: "EverydayMenu", dependencies: ["SoundModel"], path: "Sources/EverydayMenu"),
+        .target(name: "SessionStore", dependencies: ["SoundModel"], path: "Sources/SessionStore"),
+        .target(name: "SessionStoreCheckCore", dependencies: ["SoundModel", "SessionStore"], path: "Tests/SessionStoreChecks"),
+        .executableTarget(name: "tnf-session-check", dependencies: ["SessionStoreCheckCore"], path: "Tests/SessionStoreDriver"),
+        .testTarget(name: "SessionStoreTests", dependencies: ["SessionStoreCheckCore"], path: "Tests/SessionStoreTests"),
+        .testTarget(name: "MappingOwnerTests", dependencies: ["SoundModel", "SessionStore"], path: "Tests/MappingOwnerChecks"),
+        .testTarget(name: "ChoiceOptionTests", dependencies: ["SoundModel", "SessionStore"], path: "Tests/ChoiceOptionChecks"),
+        .testTarget(name: "MenuPerformanceTests", dependencies: ["tap-n-filter", "SoundModel", "SessionStore"], path: "Tests/MenuPerformanceChecks"),
+        .testTarget(name: "CompatibilityWitnessTests", dependencies: ["SoundModel"], path: "Tests/CompatibilityWitnessChecks", resources: [.copy("Fixtures")]),
+        .target(name: "PlaybackRuntime", path: "Sources/PlaybackRuntime", swiftSettings: [.unsafeFlags(["-swift-version", "6"])]),
+        .target(name: "PlaybackRuntimeCaptureAdapters", dependencies: ["PlaybackRuntime", "Capture"],
+                path: "Sources/PlaybackRuntimeCaptureAdapters", swiftSettings: [.unsafeFlags(["-swift-version", "6"])]),
+        .target(name: "SoundModel", path: "Sources/SoundModel"),
+        .testTarget(name: "OptionControlTests", dependencies: ["SoundModel", "SessionStore", "EverydayMenu", "PlaybackRenderBridge"], path: "Tests/OptionControlChecks"),
+        .testTarget(
+            name: "SoundModelTests",
+            dependencies: ["SoundModel"],
+            path: "Tests/SoundModelTests",
+            exclude: ["ContractMain.swift"],
+            resources: [.copy("Fixtures")]
+        ),
         .executableTarget(
             name: "tap-n-filter",
-            dependencies: ["Capture", "Graph", "Effects", "Presets", "ViewModel", "UI"],
+            dependencies: ["Capture", "SoundModel", "SessionStore", "EverydayMenu", "PlaybackOutput", "PlaybackRuntime", "PlaybackRuntimeCaptureAdapters"],
             path: "Sources/tap-n-filter",
             resources: [
                 .copy("Resources")
@@ -79,7 +113,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CaptureTests",
-            dependencies: ["Capture"],
+            dependencies: ["Capture", "NativeTestSupport"],
             path: "Tests/CaptureTests"
         ),
         .testTarget(
@@ -93,12 +127,12 @@ let package = Package(
         ),
         .testTarget(
             name: "GraphTests",
-            dependencies: ["Graph", "Effects"],
+            dependencies: ["Graph", "Effects", "NativeTestSupport"],
             path: "Tests/GraphTests"
         ),
         .testTarget(
             name: "EffectsTests",
-            dependencies: ["Effects"],
+            dependencies: ["Effects", "NativeTestSupport"],
             path: "Tests/EffectsTests"
         ),
         .testTarget(
@@ -108,12 +142,12 @@ let package = Package(
         ),
         .testTarget(
             name: "ViewModelTests",
-            dependencies: ["ViewModel", "Capture", "Graph", "Effects", "Presets"],
+            dependencies: ["ViewModel", "Capture", "Graph", "Effects", "Presets", "NativeTestSupport"],
             path: "Tests/ViewModelTests"
         ),
         .testTarget(
             name: "UISnapshotTests",
-            dependencies: ["UI", "ViewModel", "Capture", "Graph", "Effects", "Presets"],
+            dependencies: ["UI", "ViewModel", "Capture", "Graph", "Effects", "Presets", "NativeTestSupport"],
             path: "Tests/UISnapshotTests",
             resources: [
                 .copy("__Snapshots__")

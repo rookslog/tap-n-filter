@@ -4,6 +4,27 @@ tap-n-filter is a macOS menubar app that captures audio from a selected applicat
 
 This document describes the overall structure. Sub-specs cover each layer in more detail.
 
+## Current Quick Menu branch
+
+The current app uses the library owner and session store, coherent menu snapshots,
+per-app playback assignments, and the fixed native renderer. The earlier Graph
+and preset modules remain in the package for legacy consumers and tests. They
+are not the Quick Menu app's authoring or audio owner.
+
+The current delivery is a built-in-only Quick Menu candidate. Its enhanced
+Everyday sound has option-qualified sub-controls; Filters remains available.
+The normal Quick Menu does not offer an editor entry. Editor source remains in
+the package, but this candidate is not a full-editor release.
+
+See [Quick Menu development](../quick-menu-development.md) for the current source,
+data and test boundaries. The [first model unit](block-model.md) and
+[document-command slice](document-commands.md) are historical implementation
+snapshots, not the current library API or archive contract.
+[ADR-023](../decisions/ADR-023-apple-silicon-audio-execution.md) records proposed
+Apple Silicon scheduling and analysis policy with unmeasured comparisons.
+
+The remaining sections describe the earlier Graph-based application.
+
 ## System overview
 
 ```

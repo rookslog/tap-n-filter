@@ -3,6 +3,9 @@ import Effects
 import SwiftUI
 import ViewModel
 
+// Select the property-wrapper type, not SDK 27's same-named State macro.
+private typealias ViewState<Value> = SwiftUI.State<Value>
+
 /// Renders one control per `EffectParameter` exposed by the node.
 ///
 /// The unit→control mapping is:
@@ -183,9 +186,9 @@ private struct ParameterSlider: View {
     let initialValue: Float
     let onChange: (Float) -> Void
 
-    @State private var liveValue: Float
-    @State private var subject = PassthroughSubject<Float, Never>()
-    @State private var cancellable: AnyCancellable?
+    @ViewState private var liveValue: Float
+    @ViewState private var subject = PassthroughSubject<Float, Never>()
+    @ViewState private var cancellable: AnyCancellable?
 
     init(parameter: EffectParameter, initialValue: Float, onChange: @escaping (Float) -> Void) {
         self.parameter = parameter

@@ -1,5 +1,6 @@
 import AVFoundation
 import Effects
+import NativeTestSupport
 import XCTest
 @testable import Graph
 
@@ -8,6 +9,7 @@ final class GraphTests: XCTestCase {
     // MARK: Attach with no nodes
 
     func test_empty_graph_attach_passthrough() throws {
+        try requireNativeTests()
         let engine = AVAudioEngine()
         let player = AVAudioPlayerNode()
         engine.attach(player)
@@ -194,6 +196,7 @@ final class GraphTests: XCTestCase {
     }
 
     func test_mutations_against_attached_graph_throw() throws {
+        try requireNativeTests()
         let engine = AVAudioEngine()
         let player = AVAudioPlayerNode()
         engine.attach(player)
@@ -212,6 +215,7 @@ final class GraphTests: XCTestCase {
     // MARK: Attach with engine stopped — assert lifecycle (ADR-006)
 
     func test_attach_succeeds_on_stopped_engine() throws {
+        try requireNativeTests()
         let engine = AVAudioEngine()
         let player = AVAudioPlayerNode()
         engine.attach(player)
@@ -228,6 +232,7 @@ final class GraphTests: XCTestCase {
     }
 
     func test_repeat_attach_throws_alreadyAttached() throws {
+        try requireNativeTests()
         let engine = AVAudioEngine()
         let player = AVAudioPlayerNode()
         engine.attach(player)
@@ -245,6 +250,7 @@ final class GraphTests: XCTestCase {
     /// peak output magnitude over the steady-state region (after the limiter's
     /// ~12 ms attack settles).
     private func renderSteadyStatePeak(through graph: Graph) throws -> Float {
+        try requireNativeTests()
         let engine = AVAudioEngine()
         let player = AVAudioPlayerNode()
         let format = AVAudioFormat(standardFormatWithSampleRate: 48_000.0, channels: 2)!

@@ -1,4 +1,5 @@
 import AVFoundation
+import NativeTestSupport
 import XCTest
 @testable import Effects
 
@@ -76,6 +77,7 @@ final class GainNodeTests: XCTestCase {
     /// Offline-render a 0.5-amplitude 1 kHz sine through `node` and return the
     /// mean-square energy of the output. Mirrors `EQNodeTests.renderEnergy`.
     private func renderEnergy(through node: GainNode) throws -> Float {
+        try requireNativeTests()
         let engine = AVAudioEngine()
         let player = AVAudioPlayerNode()
         let format = AVAudioFormat(standardFormatWithSampleRate: 48_000.0, channels: 2)!

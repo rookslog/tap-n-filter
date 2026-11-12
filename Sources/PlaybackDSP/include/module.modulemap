@@ -1,0 +1,4 @@
+module PlaybackDSP {
+    header "PlaybackDSP.h"
+    export *
+}

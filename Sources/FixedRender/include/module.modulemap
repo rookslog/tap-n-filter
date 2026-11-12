@@ -1,0 +1,4 @@
+module FixedRender {
+    header "FixedRender.h"
+    export *
+}

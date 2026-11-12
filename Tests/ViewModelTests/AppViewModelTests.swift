@@ -5,6 +5,7 @@ import Effects
 import Foundation
 import Graph
 @testable import ViewModel
+import NativeTestSupport
 import XCTest
 
 /// Unit tests for `AppViewModel`. The capture controller is a mock; the
@@ -18,13 +19,14 @@ final class AppViewModelTests: XCTestCase {
     private var suiteName: String = ""
 
     override func setUp() async throws {
+        try requireNativeTests()
         try await super.setUp()
         suiteName = "tnf.tests.\(UUID().uuidString)"
         defaults = UserDefaults(suiteName: suiteName)
     }
 
     override func tearDown() async throws {
-        defaults.removePersistentDomain(forName: suiteName)
+        defaults?.removePersistentDomain(forName: suiteName)
         defaults = nil
         try await super.tearDown()
     }
