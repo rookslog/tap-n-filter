@@ -60,6 +60,88 @@ struct LibraryPowerCases {
         _ = try await session.checkpoint()
         return (session, port, try await session.snapshot())
     }
+    func test_repeated_dirty_snapshot_commit_coherence() async throws {
+        let (session, port, initial) = try await setup()
+        let originalBytes = await port.data, originalWrites = await port.writes
+        for _ in 0..<3 { try requireEqual(try await session.snapshot(), initial) }
+        try requireTrue(try await session.saveCoverage().isSaved)
+        await session.setEnabled(false)
+        let dirty = try await session.snapshot()
+        try requireTrue(dirty.unsaved && !dirty.isEnabled)
+        try requireTrue(try await !session.saveCoverage().isSaved)
+        for _ in 0..<3 { try requireEqual(try await session.snapshot(), dirty) }
+        try requireEqual(await port.data, originalBytes)
+        try requireEqual(await port.writes, originalWrites)
+        await session.setEnabled(true)
+        try requireEqual(try await session.snapshot(), initial, "return to exact saved bytes is clean despite newer live generation")
+        await session.setEnabled(false)
+        let committed = try await session.checkpoint()
+        try requireEqual(committed.outcome, .committed)
+        let saved = try await session.snapshot()
+        var savedBytes = await port.data
+        try requireTrue(!saved.unsaved && !saved.isEnabled)
+        try requireTrue(try await session.saveCoverage().isSaved)
+        for _ in 0..<3 { try requireEqual(try await session.snapshot(), saved) }
+        let identical = try await session.checkpoint()
+        try requireEqual(identical.outcome, .identical)
+        try requireEqual(identical.token, committed.token)
+        try requireEqual(await port.data, savedBytes)
+        try requireEqual(await port.writes, originalWrites + 1)
+        let reopened = try await SoundLibrarySession(persistence: port, limits: limits)
+        try requireEqual(try await reopened.snapshot(), saved)
+
+        for mode in [PowerGatePort.Mode.unchanged, .candidate, .old, .neither] {
+            await session.setEnabled(true)
+            try requireTrue(try await session.snapshot().unsaved)
+            await port.arm(mode)
+            let write = Task { try await session.checkpoint() }
+            await port.entered()
+            for _ in 0..<3 {
+                let pending = try await session.snapshot()
+                try requireTrue(pending.unsaved && pending.writing)
+            }
+            await port.release()
+            let receipt = try await write.value
+            if mode == .unchanged {
+                try requireEqual(receipt.outcome, .refused(.io("injected unchanged")))
+            } else {
+                try requireEqual(receipt.outcome, .unresolved("injected uncertain replacement"))
+            }
+            for _ in 0..<3 { try requireTrue(try await session.snapshot().unsaved) }
+            if mode == .neither {
+                _ = try await session.reconcile()
+                try requireTrue(try await session.snapshot().unresolved)
+                await port.replaceReadback(savedBytes)
+            }
+            if mode == .candidate {
+                try requireEqual(try await session.reconcile(), .committed)
+                let accepted = try await session.snapshot()
+                try requireTrue(!accepted.unsaved && !accepted.unresolved && accepted.isEnabled)
+                let fresh = try await SoundLibrarySession(persistence: port, limits: limits)
+                try requireEqual(try await fresh.snapshot(), accepted)
+                await session.setEnabled(false)
+                _ = try await session.checkpoint()
+                savedBytes = await port.data
+            } else {
+                if mode != .unchanged { try requireEqual(try await session.reconcile(), .refused(.previousRetained)) }
+                await session.setEnabled(false)
+                let restored = try await session.snapshot()
+                try requireTrue(!restored.unsaved && !restored.unresolved)
+                try requireEqual(await port.data, savedBytes)
+            }
+        }
+        let object = try JSONSerialization.jsonObject(with: try requireValue(savedBytes))
+        let spaced = try JSONSerialization.data(withJSONObject: object, options: .prettyPrinted)
+        let external = LibraryMemoryPort(spaced)
+        let admitted = try await SoundLibrarySession(persistence: external, limits: limits)
+        let noncanonical = try await admitted.snapshot()
+        try requireTrue(noncanonical.unsaved, "same decoded state is not exact encoded-byte equality")
+        for _ in 0..<3 { try requireEqual(try await admitted.snapshot(), noncanonical) }
+        try requireEqual(await external.data, spaced)
+        try requireEqual(await external.writes, 0)
+        try requireEqual(try await admitted.checkpoint().outcome, .committed)
+        try requireTrue(try await !admitted.snapshot().unsaved)
+    }
     func test_power_setter_and_restart() async throws {
         let (session, port, initial) = try await setup()
         let bytes = await port.data, count = await port.writes

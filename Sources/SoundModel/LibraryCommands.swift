@@ -6,7 +6,7 @@ extension SoundDocument {
                      limits: LibraryLimits, committed: Data?) {
         self.content = content; isEnabled = enabled
         libraryOwner = LibraryOwnerState(port: persistence, limits: limits, profiles: profiles,
-                                        metadata: metadata, committed: committed)
+                                        metadata: metadata, committed: committed.map { LibraryCommittedBytes(data: $0) })
     }
 
     func owner() throws -> LibraryOwnerState {
@@ -177,7 +177,7 @@ extension SoundDocument {
             guard capturedDraftIsCurrent(key, info: info, pending: pending, state: state),
                   let draft = state.drafts[key] else { continue }
             // A failed publication is not a failed local save of an already-saved draft.
-            if let data = state.committed, try durableMatches(draft, data: data) { continue }
+            if let data = state.committed?.data, try durableMatches(draft, data: data) { continue }
             state.drafts[key]?.refusal = reason
         }
     }
@@ -275,7 +275,7 @@ extension SoundDocument {
                       try publicationCacheBytes(state) + report.retainedBytes <= state.limits.maximumBytes else { throw LibraryOptionError.reportCapacity }
                 state.updateReports[pending.token] = report
             }
-            state.committed = pending.data
+            state.committed = LibraryCommittedBytes(data: pending.data, token: pending.token)
             for (key, info) in pending.capturedDrafts
                 where capturedDraftIsCurrent(key, info: info, pending: pending, state: original) {
                 state.drafts[key]?.refusal = nil
@@ -301,7 +301,7 @@ extension SoundDocument {
         let archive = effectiveMetadata.archive(content: candidate, enabled: isEnabled, token: token)
         _ = try archive.validated(profiles: state.profiles, limits: state.limits)
         let data = try archive.encoded(limits: state.limits)
-        if let committed = state.committed {
+        if let committed = state.committed?.data {
             var comparable = archive
             let old = try JSONDecoder().decode(LibraryArchive.self, from: committed)
             comparable = LibraryArchive(format: archive.format, schema: archive.schema, commit: old.commit,
@@ -313,7 +313,7 @@ extension SoundDocument {
         }
         let port = state.port
         let task = Task { await port.commit(data) }
-        let committedArchive = try state.committed.map { try JSONDecoder().decode(LibraryArchive.self, from: $0) }
+        let committedArchive = try state.committed.map { try JSONDecoder().decode(LibraryArchive.self, from: $0.data) }
         let captured = try state.drafts.filter { key, draft in
             // Opening an untouched owner creates an ephemeral generation-zero context,
             // not unsaved authored work. Do not label it for another operation's failure.
@@ -358,7 +358,7 @@ extension SoundDocument {
             try finish(uncertain, outcome: .committed, resolving: true)
             return .committed
         }
-        if observed == current.committed {
+        if observed == current.committed?.data {
             try markCapturedRefusal(uncertain, reason: .previousRetained, state: &current)
             current.uncertain = nil; libraryOwner = current
             return .refused(.previousRetained)
@@ -445,7 +445,7 @@ extension SoundDocument {
     }
 
     private func unchangedMetadataReceipt(_ state: LibraryOwnerState) throws -> LibraryCommit? {
-        guard let data = state.committed else { return nil }
+        guard let data = state.committed?.data else { return nil }
         let archive = try JSONDecoder().decode(LibraryArchive.self, from: data)
         guard archive.heads == state.metadata.heads else { return nil }
         return LibraryCommit(token: archive.commit, digest: libraryDigest(data), outcome: .identical)
@@ -615,10 +615,12 @@ extension SoundDocument {
     }
     private func libraryUnsaved(_ state: LibraryOwnerState) throws -> Bool {
         var unsaved = true
-        if let data = state.committed {
-            let archived = try JSONDecoder().decode(LibraryArchive.self, from: data)
-            let current = state.effectiveMetadata.archive(content: content, enabled: isEnabled, token: archived.commit)
-            unsaved = try current.encoded() != data
+        if var committed = state.committed {
+            let wasCached = committed.cachedToken != nil
+            let token = try committed.token()
+            if !wasCached { libraryOwner?.committed = committed }
+            let current = state.effectiveMetadata.archive(content: content, enabled: isEnabled, token: token)
+            unsaved = try current.encoded() != committed.data
         }
         return unsaved
     }

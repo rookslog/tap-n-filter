@@ -57,6 +57,7 @@ struct ModelContract: Sendable {
         ModelContract(name: "Bootstrap.import_interruption", run: { try await LibraryBootstrapCases().test_import_commit_and_interruption() }),
         ModelContract(name: "Bootstrap.typed_commands", run: { try await LibraryBootstrapCases().test_typed_command_outcomes() }),
         ModelContract(name: "LibraryPower.setter_restart", run: { try await LibraryPowerCases().test_power_setter_and_restart() }),
+        ModelContract(name: "LibraryPower.repeated_dirty_commit", run: { try await LibraryPowerCases().test_repeated_dirty_snapshot_commit_coherence() }),
         ModelContract(name: "LibraryPower.durable_matrix", run: { try await LibraryPowerCases().test_suspended_writes_and_reconciliation() }),
         ModelContract(name: "LibraryPower.identity", run: { try await LibraryPowerCases().test_identity_and_power_only_generation() }),
         ModelContract(name: "RangeCompatibilityCases.v5_archives", run: { try await RangeCompatibilityCases().test_v5_library_reopens_without_retune() }),
