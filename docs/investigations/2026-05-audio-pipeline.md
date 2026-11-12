@@ -1,5 +1,9 @@
 # 2026-05 Audio Pipeline Investigation
 
+Public-copy privacy edit: `LOCAL_SIGNING_IDENTITY` and angle-bracket values below
+replace local identity, certificate or path metadata. Redacted command excerpts
+are historical records, not literal output from the current scripts.
+
 ## Status
 
 **Last updated**: 2026-05-29 (post-EXP-036; H15/HFP mitigation found —
@@ -227,7 +231,7 @@ intended as a validation harness for one possible H2 fix.
   different route. [EXP-002…011]
 - Bluetooth is **not** the variable. Built-in speakers fail the same way;
   audiotee returns all zeros regardless of BT state. [EXP-008, EXP-009]
-- Self-signed `VIGIL Dev` cert is **sufficient** for TCC persistence on
+- Self-signed `LOCAL_SIGNING_IDENTITY` cert is **sufficient** for TCC persistence on
   macOS 26.3. CDHash is stable across same-source rebuilds; permission
   re-prompts are driven by rebuilds (binary hash drift), not by cert
   type. No paid Apple Developer Program membership needed. [EXP-010,
@@ -255,17 +259,17 @@ and update this section if a value drifts.
 
 - **Branch**: `fix/live-app-bugs`
 - **Main branch**: `main`
-- **Working directory**: `/Users/rookslog/Development/tap-n-filter`
+- **Working directory**: `<checkout>`
 - **Build output**: `Build/tap-n-filter.app` (assembled by
   `Build/bundle-dev.sh`)
 
 ### Signing
 
-- **Identity**: `VIGIL Dev` (self-signed; not Developer ID)
-- **Cert fingerprint**: `61AA3A6DD970BDE850BC38B5C937936E83D5E1F9`
+- **Identity**: `LOCAL_SIGNING_IDENTITY` (self-signed; not Developer ID)
+- **Cert fingerprint**: `<local certificate fingerprint>`
 - **Designated requirement** (what TCC matches on):
   `identifier "com.loganrooks.tap-n-filter" and certificate leaf =
-  H"61aa3a6dd970bde850bc38b5c937936e83d5e1f9"`
+  H"<local certificate fingerprint>"`
 - **Current CDHash**: `8300e352289df015fd9b3567d418b95daff102a5`
 - **TeamIdentifier**: not set (consequence of self-signed)
 - **Format**: app bundle with Mach-O thin (arm64), Sealed Resources v2,
@@ -298,7 +302,7 @@ IOProc machinery works mechanically.
   when connected; default input device too (mic enabled)
 - **MacBook built-in speakers**: default output when BT disconnected
 - **MacBook built-in microphone**: not used
-- **"HiHaveYouHeardOfOurLordAndSaviorJesusChrist Microphone"**: listed
+- **an unrelated virtual microphone**: listed
   by `system_profiler SPAudioDataType`; ignored
 
 ### Bluetooth profile observed
@@ -1031,7 +1035,7 @@ on speakers (user-reported).
 **Resurrection condition**: discovering that the speaker-mode logs
 were stale and we actually only tested BT.
 
-#### R2 — Self-signed `VIGIL Dev` cert is insufficient for TCC persistence on macOS 26
+#### R2 — Self-signed `LOCAL_SIGNING_IDENTITY` cert is insufficient for TCC persistence on macOS 26
 
 **Type**: behavior-inferred.
 **Refuted by**: EXP-011 — unchanged binary did not re-prompt across
@@ -1157,8 +1161,7 @@ macOS into HFP voice mode, and what's the canonical architecture for
 process-tap capture + playback through a user's chosen output device?
 
 **Method**: invoked `/codex:rescue` with the full architecture context.
-The full prompt is in the previous-session transcript at
-`/Users/rookslog/.claude/projects/-Users-rookslog-Development-tap-n-filter/683a502d-7bc3-4ea3-8430-0019e4eee041.jsonl`.
+The original local session transcript is not part of the public source tree.
 
 **Artifacts**: Codex's reply summary (lives in conversation history).
 
@@ -1401,7 +1404,7 @@ confirmed at the system level.
 
 **Date**: 2026-05-25 (current session)
 **Author**: current session
-**Question**: Does `swift build` + `codesign --force --sign 'VIGIL Dev'`
+**Question**: Does `swift build` + `codesign --force --sign 'LOCAL_SIGNING_IDENTITY'`
 produce a stable CDHash when source is unchanged, or does the hash
 drift between builds (which would explain TCC re-prompting)?
 
@@ -1438,7 +1441,7 @@ unchanged since the last grant, does macOS re-prompt on launch?
 **Observations**: user reports: "it didn't this time" (no permission
 prompt).
 
-**Conclusion**: VIGIL Dev's self-signed cert is sufficient to persist
+**Conclusion**: LOCAL_SIGNING_IDENTITY's self-signed cert is sufficient to persist
 TCC grants on macOS 26.3 for unchanged binaries. We do **not** need a
 paid Apple Developer Program membership. The frequent re-prompts in
 this session are rebuild-driven; minimizing rebuilds (or batching them)
@@ -1574,7 +1577,7 @@ And if it does, do effects actually process audible audio?
   OR Spotify playing audibly (user's choice).
 - Default output: built-in MacBook speakers (BT disconnected to isolate
   H2 from H1).
-- Signing identity: VIGIL Dev, cert hash unchanged.
+- Signing identity: LOCAL_SIGNING_IDENTITY, cert hash unchanged.
 - TCC grant for `tap-n-filter.app` ("System Audio Recording Only"):
   already granted, no rebuild between grant and test if possible.
 
@@ -1794,7 +1797,7 @@ capture?
 - Source process: Safari with YouTube playing
 - Default output: BT (Bose QC) — same as EXP-013
 - All other code unchanged from post-EXP-013 state
-- Signing identity: VIGIL Dev
+- Signing identity: LOCAL_SIGNING_IDENTITY
 
 **Variables changed**:
 - `AppViewModel.swift:325-329`: insert `self.graph.detach()` between
@@ -1877,7 +1880,7 @@ isolates the question to: setup → IOProc → audio data, nothing more.
   Outcomes A/B/C all assume setup succeeds.
 
 **Variables held constant**:
-- Same TCC grant, same VIGIL Dev cert, same source process (Safari
+- Same TCC grant, same LOCAL_SIGNING_IDENTITY cert, same source process (Safari
   72409), same BT (Bose QC connected).
 - All production code unchanged from post-EXP-014 state.
 
@@ -4633,7 +4636,7 @@ disables HFP for ALL apps not just ours).
 
 ## Open questions
 
-- **Q1** (resolved by EXP-011): does VIGIL Dev cert persist TCC grants
+- **Q1** (resolved by EXP-011): does LOCAL_SIGNING_IDENTITY cert persist TCC grants
   across launches? **Yes**, as long as the binary doesn't change.
 - **Q2** (resolved by EXP-012): why does production "fail" on built-in
   speakers? **Because `pinEngineOutputToDefault` throws -10851 every
@@ -4688,8 +4691,8 @@ disables HFP for ALL apps not just ours).
   work. Each TCC service (Microphone, Screen Recording, Screen &
   System Audio Recording, System Audio Recording Only, …) is a
   separate grant tied to a specific app's designated requirement.
-- **VIGIL Dev**: the user's self-signed code signing identity, finger-
-  print `61AA3A6DD970BDE850BC38B5C937936E83D5E1F9`. Self-signed →
+- **LOCAL_SIGNING_IDENTITY**: the user's self-signed code signing identity, finger-
+  print `<local certificate fingerprint>`. Self-signed →
   `TeamIdentifier=not set`. Sufficient for TCC persistence on macOS
   26.3, as proved by EXP-010 + EXP-011.
 

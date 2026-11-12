@@ -16,7 +16,7 @@
 # System Settings → Privacy & Security → Open Anyway.
 #
 # To upgrade to Developer ID signing (ADR-017 §upgrade):
-#   Replace SIGNING_IDENTITY="-" with
+#   Set TNF_SIGNING_IDENTITY to
 #   "Developer ID Application: <Your Name> (<TEAMID>)"
 #   and add the notarytool + stapler steps.
 #
@@ -198,27 +198,19 @@ cp "Sources/tap-n-filter/Resources/Info.plist" "$PLIST"
 # ---------------------------------------------------------------------------
 # 5. Code-sign the .app
 #
-# Ad-hoc signing per ADR-017. VIGIL Dev is a self-signed certificate that
-# produces a stable signature for development; ad-hoc ('-') is used when it
-# is absent. Neither satisfies Gatekeeper for unsigned-software users; the
-# README install instructions document the right-click → Open workaround.
+# Ad-hoc signing per ADR-017 is the default when TNF_SIGNING_IDENTITY is
+# unset or empty. An explicit local identity is passed without discovery.
 #
 # Hardened runtime is enabled (--options=runtime) per ADR-003.
 # ---------------------------------------------------------------------------
 
 echo "==> Signing…"
 # v0.1.0: ad-hoc signing per ADR-017.
-# To upgrade to Developer ID: replace SIGNING_IDENTITY with
+# To select a local identity, set TNF_SIGNING_IDENTITY to
 # "Developer ID Application: <Your Name> (<TEAMID>)".
-SIGNING_IDENTITY="-"
-SIGN_LABEL="ad-hoc"
+SIGNING_IDENTITY="${TNF_SIGNING_IDENTITY:--}"
 
-if security find-identity -v -p codesigning | grep -q "VIGIL Dev"; then
-    SIGNING_IDENTITY="VIGIL Dev"
-    SIGN_LABEL="VIGIL Dev (self-signed)"
-fi
-
-echo "    Using identity: $SIGN_LABEL"
+echo "    Using identity: $SIGNING_IDENTITY"
 codesign --force --deep --options=runtime --sign "$SIGNING_IDENTITY" "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP" 2>&1 | grep -v "^$" || true
 echo "    Signature verified."

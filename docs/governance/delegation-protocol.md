@@ -106,7 +106,7 @@ Swift code that captures audio from a chosen application via Core Audio
 process taps and routes it through AVAudioEngine.
 
 ## Working directory
-/Users/rookslog/Development/tap-n-filter
+<checkout>
 Branch: phase-1-capture (already checked out)
 
 ## Required reading FIRST
@@ -148,7 +148,7 @@ You are the verification subagent for tap-n-filter Phase 1. Evaluate
 whether the orchestrator's work meets the gate criteria in the phase spec.
 
 ## Working directory
-/Users/rookslog/Development/tap-n-filter
+<checkout>
 Branch: phase-1-capture
 
 ## Required reading FIRST
