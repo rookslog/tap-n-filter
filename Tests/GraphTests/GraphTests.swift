@@ -63,6 +63,7 @@ final class GraphTests: XCTestCase {
     // MARK: Snapshot / restore
 
     func test_snapshot_restore_roundtrip_preserves_chain() throws {
+        try requireNativeTests()
         let eq = EQNode()
         try eq.setParameter("hp.frequency", value: 100.0)
         let reverb = ReverbNode(preset: .mediumHall)

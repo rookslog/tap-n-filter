@@ -14,6 +14,28 @@ Operator decision, 2026-11-12: trunk-based ("yes, go with trunk-based"). This dr
 4. Large PRs: a try build for the operator. The designer reviews design scope; the lead accepts engineering and privacy.
 5. Merge (squash or merge, never rebase-rewrite `main`). Delete the branch.
 
+## Native restore qualification
+
+Default `swift test` retains exact public `EffectState` JSON and `GraphPreset`/
+`PresetStore` ordered-chain roundtrips, including a lost-parameter corruption
+control. Existing registry/type admission checks remain enabled.
+
+The two AU-backed restore/readback cases below require explicit opt-in before
+constructing any Audio Unit in those methods. Run them only in a prepared,
+explicitly authorized native qualification environment:
+
+```sh
+TNF_RUN_NATIVE_TESTS=1 swift test -c debug --filter 'EQNodeTests/test_snapshot_restore_roundtrip_preserves_state'
+TNF_RUN_NATIVE_TESTS=1 swift test -c debug --filter 'GraphTests/test_snapshot_restore_roundtrip_preserves_chain'
+```
+
+The native assertions and tolerances are unchanged. [Run 43190465399](https://github.com/rookslog/tap-n-filter/actions/runs/43190465399)
+built both runners and passed macOS 26 tests, but macOS 15 restored EQ frequency 80
+instead of 100 and Q 0.707 instead of 1.5. The graph diagnostic retained 100 in the
+snapshot and decoded preset before native readback returned 80. That native
+restore failure remains unresolved; opting in or passing deterministic DTO tests
+does not fix it, establish its cause, or qualify audio behavior on that OS.
+
 ## Release
 1. Pick a commit on `main`. Optionally tag a pre-release (`v1.0.0-beta.1`) for the operator to try; that replaces any "testing branch".
 2. Release checklist:

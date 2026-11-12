@@ -223,6 +223,7 @@ final class EQNodeTests: XCTestCase {
     // MARK: Snapshot / restore roundtrip
 
     func test_snapshot_restore_roundtrip_preserves_state() throws {
+        try requireNativeTests()
         let original = EQNode()
         original.displayName = "Custom EQ"
         original.bypass = false
