@@ -19,8 +19,10 @@ struct MenuHead: View {
     let compare: (Bool) -> Void
 
     var body: some View {
+        let enabled = state.snapshot.assignments.filter(\.isEnabled)
+        let appName = enabled.count == 1 ? enabled.first.map { state.source($0.bundleIdentifier).name } : nil
         HStack(spacing: 10) {
-            MenuVisualization(state: state.visualization,
+            MenuVisualization(state: state.visualization, appName: appName,
                 tint: state.snapshot.assignments.first { $0.isEnabled && $0.bundleIdentifier == "com.apple.Safari" }?.block.tint ?? .accentColor,
                 comparing: state.comparing)
             capsule

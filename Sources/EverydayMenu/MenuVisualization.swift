@@ -35,7 +35,6 @@ public enum MenuVisualizationState: Equatable, Sendable {
     func accessibilityValue(for mode: MenuVisualizationMode) -> String {
         statusName.isEmpty ? mode.title : "\(mode.title), \(statusName.lowercased())"
     }
-    var helpPrefix: String { statusName.isEmpty ? "" : "\(statusName). " }
 }
 
 @MainActor
@@ -62,6 +61,7 @@ private struct VisualizationWellStyle: ButtonStyle {
 
 struct MenuVisualization: View {
     @ObservedObject var state: MenuVisualizationPresentation
+    let appName: String?
     let tint: Color
     let comparing: Bool
     var body: some View {
@@ -77,10 +77,10 @@ struct MenuVisualization: View {
         }.buttonStyle(VisualizationWellStyle(hovered: state.hovered))
             .background(MenuAnchor("visualization"))
             .onHover { state.hovered = $0 }
-            .accessibilityLabel("Safari sound")
+            .accessibilityLabel(appName.map { "\($0) sound" } ?? state.mode.title)
             .accessibilityValue(state.frame.accessibilityValue(for: state.mode))
-            .accessibilityHint("Shows \(state.mode.next.title). Safari input and chain output before the final limiter.")
-            .help("\(state.mode.title) of Safari’s processing chain — click for \(state.mode.next.title). \(state.frame.helpPrefix)Input and chain output before the final limiter.")
+            .accessibilityHint("Shows \(state.mode.next.title)")
+            .help(state.mode.title)
     }
     private var plot: some View {
         Canvas { context, size in
