@@ -1,5 +1,6 @@
 import AVFoundation
 import Capture
+import FixedRender
 import OutputGate
 import PlaybackDSP
 import PlaybackRuntimeCaptureAdapters

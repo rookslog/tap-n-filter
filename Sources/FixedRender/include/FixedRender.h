@@ -2,6 +2,7 @@
 #define FIXED_RENDER_H
 
 #include <stdint.h>
+#include "AudioEngineSDKCompatibility.h"
 
 #ifdef __cplusplus
 extern "C" {

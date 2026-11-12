@@ -27,7 +27,7 @@ let package = Package(
         .executableTarget(name: "tnf-output-check", dependencies: ["PlaybackOutput", "Capture", "OutputGate", "PlaybackRenderBridge", "SoundModel"], path: "Tests/PlaybackOutputChecks"),
         .target(name: "PlaybackDSP", dependencies: ["FixedRender"], publicHeadersPath: "include", cxxSettings: [.unsafeFlags(["-std=c++20"])]),
         .target(name: "PlaybackRenderBridge", dependencies: ["SoundModel", "PlaybackDSP"], swiftSettings: [.unsafeFlags(["-swift-version", "6"])]),
-        .target(name: "PlaybackOutput", dependencies: ["Capture", "OutputGate", "PlaybackDSP", "PlaybackRenderBridge", "PlaybackLifecycle", "PlaybackRuntime", "PlaybackRuntimeCaptureAdapters", "SoundModel"], linkerSettings: [.linkedFramework("Accelerate")]),
+        .target(name: "PlaybackOutput", dependencies: ["Capture", "OutputGate", "PlaybackDSP", "PlaybackRenderBridge", "PlaybackLifecycle", "PlaybackRuntime", "PlaybackRuntimeCaptureAdapters", "SoundModel", "FixedRender"], linkerSettings: [.linkedFramework("Accelerate")]),
         .target(name: "PlaybackLifecycle", dependencies: ["PlaybackRuntime", "SoundModel"]),
         .executableTarget(name: "tnf-playback-lifecycle-check", dependencies: ["PlaybackLifecycle", "PlaybackRuntime", "SoundModel"], path: "Tests/PlaybackLifecycleChecks"),
         .target(name: "OutputGate", path: "Sources/OutputGate", publicHeadersPath: "include", cxxSettings: [.unsafeFlags(["-std=c++20"])]),
