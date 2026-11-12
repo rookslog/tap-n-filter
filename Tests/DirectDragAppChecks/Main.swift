@@ -99,8 +99,10 @@ struct DirectDragAppChecks {
         try await parameterBarriers()
         try await externalRevisions()
         try await childParentBarrier()
+        try await optionRowObservation()
         try await heldWrite()
         try controllerPolicy()
+        try controllerStopResumePolicy()
         print("PASS direct-drag coordinator/row/controller pure fakes; no native App/window/audio/device path")
     }
     @MainActor static func rowsAndRelease() async throws {
@@ -234,6 +236,31 @@ struct DirectDragAppChecks {
         }
         app.close()
     }
+    @MainActor static func optionRowObservation() async throws {
+        let f = try await Fixture(), app = f.app
+        let initial = try await f.owner.snapshot(), binding = f.card().binding!
+        let use = initial.uses.first { $0.id == binding.use }!, relation = use.optionControls.first!
+        let parent = use.controls.first { $0.id == relation.parent.control }!
+        guard case .choice(let options) = parent.face else { throw Failure.check("parent choice") }
+        _ = try await f.owner.move(relation.parent, expected: binding, to: .scalar(options.first { $0.id == relation.option }!.position))
+        await app.coordinator.refresh(mode: .positions)
+        _ = await app.flushSave()?.value
+        let card = f.card()
+        guard let tab = card.optionTabs.first, let child = tab.controls.first else { throw Failure.check("active option child") }
+        let view = f.surface.view!
+        let row = MenuOptionControlRow(state: view, assignment: card, tab: tab, control: child, index: 0)
+        let old = child.position, value = old == 0.8 ? 0.2 : 0.8
+        var global = 0
+        let observation = view.objectWillChange.sink { global += 1 }
+        app.send(.beginGesture)
+        guard case .live = try await f.move(child, card: card, to: value).value else { throw Failure.check("child live") }
+        let actual = row.position, text = row.readout, updates = global
+        let expected = (try? child.readout?.text(at: value)) ?? "\(Int((value * 100).rounded()))%"
+        app.send(.endGesture); _ = await app.gestureSave?.value
+        observation.cancel(); app.close()
+        try demand(actual == value && text == expected && updates == 0,
+            "visible option child row and readout observe live patch without global publication")
+    }
     @MainActor static func heldWrite() async throws {
         let f = try await Fixture(), app = f.app, card = f.card(), control = f.slider()
         app.send(.beginGesture); _ = try await f.move(control, card: card, to: 0.6).value
@@ -241,8 +268,14 @@ struct DirectDragAppChecks {
         app.send(.endGesture)
         await f.port.entered()
         let first = app.gestureSave!
+        let retired = try await f.move(control, card: card, to: 0.1).value
+        guard case .executed(.superseded) = retired else { throw Failure.check("retired checkpoint callback admitted") }
+        let held = try await f.owner.snapshot()
+        try demand(held.uses.first { $0.id == card.binding!.use }!.positions[control.id] == .scalar(0.6),
+            "retired gesture epoch stays rejected until a fresh begin during checkpoint")
         app.send(.beginGesture)
-        app.send(.libraryMove(card.binding!, control.address, .scalar(0.9)))
+        guard let newer = f.card().movement(for: control, to: 0.9), case .menuMove = newer else { throw Failure.check("real menuMove with epoch") }
+        app.send(newer)
         _ = try await app.coordinator.editorQuery { try await $0.snapshot() }
         app.send(.endGesture)
         let second = app.gestureSave!
@@ -252,6 +285,37 @@ struct DirectDragAppChecks {
         try demand(try await reopened.snapshot().uses.first { $0.id == card.binding!.use }!.positions[control.id] == .scalar(0.9),
             "newer live/model hand survives held release writer and fresh reopen")
         app.close()
+    }
+    @MainActor static func controllerStopResumePolicy() throws {
+        func state(_ id: UUID?, enabled: Bool = true, bundle: String = "test.resume") -> ListeningRenderSnapshot {
+            ListeningRenderSnapshot(isEnabled: enabled, assignments: id.map {
+                [ListeningRenderAssignment(id: $0, bundleIdentifier: bundle, isEnabled: true, parts: [])]
+            } ?? [])
+        }
+        let a = UUID(), b = UUID(), c = UUID()
+        var policy = PlaybackStopResumePolicy()
+        policy.activate(state(a))
+        let positionsStop = policy.stopping(includesCurrentActivation: false)
+        var resumed = 0
+        func complete(_ stop: PlaybackStopResumePolicy.Stop, _ desired: ListeningRenderSnapshot) {
+            if policy.mayResume(stop, desired: desired) { resumed += 1 }
+        }
+        complete(positionsStop, state(b))
+        try demand(resumed == 0, "actual stop-resume policy: positions removal cannot activate replacement B")
+        policy.activate(state(b))
+        complete(positionsStop, state(b))
+        try demand(resumed == 1, "actual stop-resume policy: later explicit activation authorizes held-stop restart")
+        complete(positionsStop, state(c))
+        try demand(resumed == 1, "actual stop-resume policy: later activation B cannot authorize positions-only replacement C")
+        let activationStop = policy.stopping(includesCurrentActivation: true)
+        complete(activationStop, state(c))
+        try demand(resumed == 1, "actual stop-resume policy: original activation cannot replay a different positions-only scope")
+        complete(activationStop, state(b))
+        try demand(resumed == 2, "actual stop-resume policy: unchanged explicit activation scope retains restart")
+        complete(positionsStop, state(b, enabled: false))
+        complete(positionsStop, state(nil))
+        complete(positionsStop, state(b, bundle: "test.other-source"))
+        try demand(resumed == 2, "actual stop-resume policy: OFF/removal/source replacement never starts")
     }
     @MainActor static func controllerPolicy() throws {
         let id = UUID(), part = ListeningRenderPart(id: UUID(), path: [], type: "gain", parameters: [ListeningParameter(key: "gainDb", value: -3)])

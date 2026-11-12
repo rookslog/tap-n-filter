@@ -86,6 +86,7 @@ public final class PlaybackController {
   private var lanes: [UUID: PlaybackLane] = [:]
   private var nextKey: UInt64 = 0
   private var desired: ListeningRenderSnapshot?
+  private var stopResume = PlaybackStopResumePolicy()
   private var original = false
   private var visualizationRequest: VisualizationRequest?
   private var quitting = false
@@ -195,17 +196,23 @@ public final class PlaybackController {
 
   public func apply(_ snapshot: ListeningRenderSnapshot, original: Bool) {
     guard !quitting else { return }
+    stopResume.activate(snapshot)
+    applyDesired(snapshot, original: original)
+  }
+
+  private func applyDesired(_ snapshot: ListeningRenderSnapshot, original: Bool) {
+    guard !quitting else { return }
     desired = snapshot
     let original = original && compareAvailable
     self.original = original
     let present = Set(snapshot.assignments.map(\.id))
-    for (id, lane) in lanes where !present.contains(id) { stop(id, lane: lane, removing: true) }
+    for (id, lane) in lanes where !present.contains(id) { stop(id, lane: lane, removing: true, includesCurrentActivation: true) }
     for assignment in snapshot.assignments {
       let lane = lanes[assignment.id] ?? makeLane(assignment)
       lanes[assignment.id] = lane
       do { try lane.factory.update(assignment, original: original) } catch {
         lane.failure = "The sound change could not be applied. \(error)"
-        stop(assignment.id, lane: lane)
+        stop(assignment.id, lane: lane, includesCurrentActivation: true)
         continue
       }
       if !snapshot.isEnabled || !assignment.isEnabled {
@@ -213,7 +220,7 @@ public final class PlaybackController {
           lane.failure = nil
           lane.state = .idle
         }
-        stop(assignment.id, lane: lane)
+        stop(assignment.id, lane: lane, includesCurrentActivation: true)
       } else if lane.state == .idle {
         start(assignment, lane: lane)
       }
@@ -304,13 +311,14 @@ public final class PlaybackController {
     }
   }
 
-  private func stop(_ id: UUID, lane: PlaybackLane, removing: Bool = false) {
+  private func stop(_ id: UUID, lane: PlaybackLane, removing: Bool = false, includesCurrentActivation: Bool = false) {
     guard lane.state == .starting || lane.state == .running else {
       if removing, lane.state != .stopping { lanes.removeValue(forKey: id) }
       return
     }
     lane.operation += 1
     let operation = lane.operation
+    let authorization = stopResume.stopping(includesCurrentActivation: includesCurrentActivation)
     lane.state = .stopping
     Task { @MainActor [weak self, weak lane] in
       guard let self, let lane else { return }
@@ -319,7 +327,9 @@ public final class PlaybackController {
       lane.sink = nil
       lane.state = lane.failure == nil ? .idle : .failed
       if removing { self.lanes.removeValue(forKey: id) }
-      if let desired = self.desired { self.apply(desired, original: self.original) }
+      if let desired = self.desired, self.stopResume.mayResume(authorization, desired: desired) {
+        self.applyDesired(desired, original: self.original)
+      }
     }
   }
 

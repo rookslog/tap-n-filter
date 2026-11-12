@@ -33,3 +33,38 @@ struct PlaybackPositionDelivery {
         return needsFull ? .requiresFull : applied ? .applied : .retainedInactive
     }
 }
+
+struct PlaybackStopResumePolicy {
+    struct Stop: Sendable {
+        let activation: UInt64
+        let includesCurrentActivation: Bool
+    }
+    private struct Binding: Equatable {
+        let bundle: String
+        let enabled: Bool
+    }
+    private struct Scope: Equatable {
+        let enabled: Bool
+        let bindings: [UUID: Binding]
+        init(_ snapshot: ListeningRenderSnapshot) {
+            enabled = snapshot.isEnabled
+            bindings = Dictionary(uniqueKeysWithValues: snapshot.assignments.map {
+                ($0.id, Binding(bundle: $0.bundleIdentifier, enabled: $0.isEnabled))
+            })
+        }
+    }
+    private var activation: UInt64 = 0
+    private var scope: Scope?
+    mutating func activate(_ snapshot: ListeningRenderSnapshot) {
+        activation &+= 1
+        scope = Scope(snapshot)
+    }
+    func stopping(includesCurrentActivation: Bool) -> Stop {
+        Stop(activation: activation, includesCurrentActivation: includesCurrentActivation)
+    }
+    func mayResume(_ stop: Stop, desired: ListeningRenderSnapshot) -> Bool {
+        desired.isEnabled && desired.assignments.contains(where: \.isEnabled)
+            && scope == Scope(desired)
+            && (activation > stop.activation || stop.includesCurrentActivation && activation == stop.activation)
+    }
+}

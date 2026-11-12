@@ -145,11 +145,17 @@ final class LibraryListeningCoordinator {
     private let menuMoveOverride: MenuMove?
     typealias MenuMove = @MainActor @Sendable (SoundLibrarySession, LibraryControlAddress, LibraryMenuIdentity, LibraryOptionGesture?, LibraryPosition) async throws -> LibraryMenuMoveResult
     private var sliderBatch: LibrarySliderBatch?
+    private var checkpointGestureContext: MenuPositionContext?
+    private var menuGestureContext: MenuPositionContext?
     private var parameterEnabled = false
     private var parameterGesture: LibraryParameterGesture?
     var perfParameterEvaluated: ((Double, LibraryPosition) -> Void)?
     var perfParameterDocumentCommit: ((LibraryLiveMutation) -> Void)?
-    func beginParameterGesture() { sealSliderMoves(); parameterEnabled = true }
+    func beginParameterGesture() {
+        sealSliderMoves()
+        menuGestureContext = positionContext ?? checkpointGestureContext
+        parameterEnabled = true
+    }
     @discardableResult
     private func commitParameter(_ owner: SoundLibrarySession) async throws -> LibraryLiveMutation? {
         guard let gesture = parameterGesture else { return nil }
@@ -342,7 +348,7 @@ final class LibraryListeningCoordinator {
     }
     /// Only the mutation + cheap status read are ordered. Neither disk nor the full projection is on this tail.
     func enqueueMutation<Value: Sendable>(allowDuringDrain: Bool = false, statusAfterOperation: Bool = true,
-        preservingSliderEligibility: Bool = false,
+        preservingSliderEligibility: Bool = false, preservingGestureAdmission: Bool = false,
         _ operation: @escaping @MainActor @Sendable (SoundLibrarySession) async throws -> Value) throws -> Task<Value, Error> {
         guard lifecycle != .closed, lifecycle != .draining || allowDuringDrain else {
             throw LibraryConsumerLifecycleError.unavailable(lifecycle)
@@ -350,7 +356,8 @@ final class LibraryListeningCoordinator {
         guard let session = session ?? (allowDuringDrain ? openingOwner : nil) else {
             throw LibraryConsumerLifecycleError.notReady
         }
-        if preservingSliderEligibility { sealSliderMoves() } else { beginSliderEligibilityBarrier() }
+        if preservingSliderEligibility { sealSliderMoves() }
+        else { beginSliderEligibilityBarrier(preservingGestureAdmission: preservingGestureAdmission) }
         liveSequence += 1
         invalidate()
         let previous = liveTail, completion = LibraryCommandCompletion()
@@ -443,8 +450,8 @@ final class LibraryListeningCoordinator {
         lifecycle == .running && sliderEligibilityBarriers == 0 && sliderEligibility.contains(
             LibrarySliderEligibility(binding: expected, address: address, option: optionGesture))
     }
-    private func beginSliderEligibilityBarrier() {
-        invalidatePositionDelivery()
+    private func beginSliderEligibilityBarrier(preservingGestureAdmission: Bool = false) {
+        invalidatePositionDelivery(preservingGestureAdmission: preservingGestureAdmission)
         sliderEligibility = []
         sliderEligibilityBarriers += 1
         invalidate()
@@ -454,7 +461,11 @@ final class LibraryListeningCoordinator {
         sliderEligibility = []
         invalidate()
     }
-    func invalidatePositionDelivery() {
+    func invalidatePositionDelivery(preservingGestureAdmission: Bool = false) {
+        if !preservingGestureAdmission {
+            checkpointGestureContext = nil
+            menuGestureContext = nil
+        }
         parameterEnabled = false
         deliveryEpoch &+= 1
         invalidate()
@@ -486,16 +497,27 @@ final class LibraryListeningCoordinator {
         if let option { return try await session.move(address, expected: binding, optionGesture: option, to: position) }
         return try await session.move(address, expected: binding, to: position)
     }
+    private func acceptsMenuEpoch(_ expected: UInt64?) -> Bool {
+        expected == nil || expected == positionContext?.epoch || expected == menuGestureContext?.epoch
+    }
     func submitSliderMove(_ address: LibraryControlAddress, expected: LibraryBinding, to value: LibraryPosition,
                           optionGesture: LibraryOptionGesture? = nil, menuIdentity: LibraryMenuIdentity? = nil, expectedEpoch: UInt64? = nil) throws -> Task<LibrarySliderResult, Error> {
         guard lifecycle == .running else { throw LibraryConsumerLifecycleError.unavailable(lifecycle) }
         guard session != nil else { throw LibraryConsumerLifecycleError.notReady }
-        if let expectedEpoch, expectedEpoch != positionContext?.epoch { return Task { .executed(.superseded) } }
+        guard acceptsMenuEpoch(expectedEpoch) else { return Task { .executed(.superseded) } }
         if let menuIdentity, presentation?.identity(for: expected) != menuIdentity {
             return Task { .executed(.superseded) }
         }
         guard sliderCanCoalesce(address, expected: expected, optionGesture: optionGesture) else {
-            let ordered = try submitMove(address, expected: expected, to: value, optionGesture: optionGesture)
+            let ordered: Task<LibraryLiveMutation, Error>
+            if let menuIdentity {
+                ordered = try enqueueMutation(preservingGestureAdmission: expectedEpoch != nil && expectedEpoch == menuGestureContext?.epoch) { session in
+                    try await self.executeMenuOrdered(session, address: address, expected: menuIdentity,
+                        option: optionGesture, value: value).outcome
+                }
+            } else {
+                ordered = try submitMove(address, expected: expected, to: value, optionGesture: optionGesture)
+            }
             return Task { .executed(try await ordered.value) }
         }
         let request = LibrarySliderRequest(value)
@@ -558,7 +580,7 @@ final class LibraryListeningCoordinator {
     }
     func submitMenuMove(_ address: LibraryControlAddress, expected: LibraryMenuIdentity, to value: LibraryPosition,
                         optionGesture: LibraryOptionGesture?, expectedEpoch: UInt64?) throws -> Task<LibraryLiveMutation, Error> {
-        if let expectedEpoch, expectedEpoch != positionContext?.epoch { return Task { .superseded } }
+        guard acceptsMenuEpoch(expectedEpoch) else { return Task { .superseded } }
         return try scheduleLive { session in
             try await self.executeMenuOrdered(session, address: address, expected: expected, option: optionGesture, value: value).outcome
         }
@@ -682,14 +704,19 @@ final class LibraryListeningCoordinator {
         }
         var creation: LibraryCreationResult? { if case .creation(let value) = self { return value }; return nil }
     }
-    private func scheduleDurable(commandID: UUID,
+    private func scheduleDurable(commandID: UUID, preservingGestureAdmission: Bool = false,
         _ action: @escaping @Sendable (SoundLibrarySession) async throws -> DurableValue) -> Task<LibraryConsumerCommandResult, Never> {
         let id = commandID
         guard lifecycle == .running else {
             let result = LibraryConsumerCommandResult(command: id, outcome: .rejected(lifecycle))
             emit(.command(result)); return Task { result }
         }
-        beginSliderEligibilityBarrier()
+        let checkpointContext = preservingGestureAdmission ? positionContext ?? checkpointGestureContext : nil
+        beginSliderEligibilityBarrier(preservingGestureAdmission: preservingGestureAdmission)
+        if preservingGestureAdmission {
+            checkpointGestureContext = checkpointContext
+            menuGestureContext = nil
+        }
         let prior = structuralTail, mutationBarrier = liveTail, completion = LibraryCommandCompletion()
         structuralTail = completion
         let task = Task { @MainActor in
@@ -746,7 +773,7 @@ final class LibraryListeningCoordinator {
         return await completeStructural(task)
     }
     func checkpoint(commandID: UUID = UUID()) async -> LibraryConsumerCommandResult {
-        let task = scheduleStructural(commandID: commandID) { try await $0.checkpoint() }
+        let task = submitCheckpoint(commandID: commandID)
         return await completeStructural(task)
     }
 
@@ -776,7 +803,7 @@ final class LibraryListeningCoordinator {
         }
     }
     func submitCheckpoint(commandID: UUID = UUID()) -> Task<LibraryConsumerCommandResult, Never> {
-        scheduleStructural(commandID: commandID) { try await $0.checkpoint() }
+        scheduleDurable(commandID: commandID, preservingGestureAdmission: true) { try await .commit($0.checkpoint()) }
     }
     func submitCreateEmpty(name: String, commandID: UUID = UUID()) -> Task<LibraryConsumerCommandResult, Never> {
         scheduleDurable(commandID: commandID) { try await .creation($0.createEmpty(name: name)) }
