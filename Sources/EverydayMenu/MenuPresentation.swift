@@ -5,6 +5,7 @@ import SwiftUI
 
 public enum EverydayMenuAction: Sendable {
     case beginGesture
+    case beginMenuGesture(UUID)
     case endGesture
     case setEnabled(Bool)
     case putOn(String)
@@ -15,6 +16,7 @@ public enum EverydayMenuAction: Sendable {
     case libraryMove(LibraryBinding, LibraryControlAddress, LibraryPosition)
     case libraryOptionMove(LibraryBinding, LibraryControlAddress, LibraryOptionGesture, LibraryPosition)
     case menuMove(LibraryMenuIdentity, UInt64, LibraryControlAddress, LibraryOptionGesture?, LibraryPosition)
+    case gestureMove(UUID, LibraryMenuIdentity, UInt64, LibraryControlAddress, LibraryOptionGesture?, LibraryPosition)
     case compare(Bool)
     case showProblem
     case refreshSources
@@ -224,16 +226,20 @@ final class MenuPresentation: ObservableObject {
     let perform: (EverydayMenuAction) -> Void
     var resize: (() -> Void)?
     private var gesturing = false
+    private var gestureIdentity: UUID?
 
     func beginGesture() {
         guard !gesturing else { return }
         gesturing = true
-        perform(.beginGesture)
+        let identity = UUID()
+        gestureIdentity = identity
+        perform(.beginMenuGesture(identity))
     }
 
     func endGesture() {
         guard gesturing else { return }
         gesturing = false
+        gestureIdentity = nil
         perform(.endGesture)
     }
 
@@ -281,6 +287,21 @@ final class MenuPresentation: ObservableObject {
 
     func move(_ control: MenuSoundControl, on assignment: MenuSoundCard, to value: Double) {
         if let action = assignment.movement(for: control, to: value) { perform(action) }
+    }
+
+    func beginMovement(_ control: MenuSoundControl, on assignment: MenuSoundCard) -> MenuTrackGesture {
+        endGesture()
+        beginGesture()
+        let gesture = gestureIdentity
+        return MenuTrackGesture(change: { [weak self] value in
+            guard let self, let action = assignment.movement(for: control, to: value) else { return }
+            if let gesture, case .menuMove(let identity, let epoch, let address, let option, let position) = action {
+                perform(.gestureMove(gesture, identity, epoch, address, option, position))
+            } else { perform(action) }
+        }, end: { [weak self] in
+            guard let self, gestureIdentity == gesture else { return }
+            endGesture()
+        })
     }
 
     func tabIsOpen(_ tab: MenuSoundOptionTab, on card: MenuSoundCard) -> Bool {

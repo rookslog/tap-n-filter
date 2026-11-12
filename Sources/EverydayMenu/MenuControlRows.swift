@@ -45,7 +45,7 @@ struct MenuControlRow: View {
                 .background(MenuAnchor("control-\(assignment.id)-\(control.id)"))
             case .slider:
                 MenuTrack(value: position, label: control.title, spoken: readout,
-                          keyboardInput: state.keyboardInput, begin: state.beginGesture, end: state.endGesture, change: move)
+                          keyboardInput: state.keyboardInput, start: { state.beginMovement(control, on: assignment) }, change: move)
                     .background(MenuAnchor("control-\(assignment.id)-\(control.id)"))
                 Text(readout).font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
                     .frame(width: 50, alignment: .trailing)
@@ -65,8 +65,7 @@ struct MenuTrack: View {
     let label: String
     let spoken: String
     let keyboardInput: Bool
-    var begin: () -> Void = {}
-    var end: () -> Void = {}
+    let start: () -> MenuTrackGesture
     let change: (Double) -> Void
     @FocusState private var focused: Bool
     @StateObject private var dragState = MenuDragState()
@@ -90,13 +89,16 @@ struct MenuTrack: View {
             .frame(height: geometry.size.height).contentShape(.rect)
             .gesture(DragGesture(minimumDistance: 0).onChanged { drag in
                 guard width > 0 else { return }
-                if !dragState.active { dragState.active = true; begin() }
+                if !dragState.active {
+                    dragState.active = true
+                    dragState.gesture = start()
+                }
                 let fine = NSEvent.modifierFlags.contains(.option) ? 0.1 : 1.0
-                change(min(1, max(0, (drag.startLocation.x + drag.translation.width * fine) / width)))
-            }.onEnded { _ in dragState.active = false; end() })
+                dragState.gesture?.change(min(1, max(0, (drag.startLocation.x + drag.translation.width * fine) / width)))
+            }.onEnded { _ in dragState.finish() })
         }
         .frame(height: 22).focusable().focused($focused).focusEffectDisabled()
-        .onDisappear { if dragState.active { dragState.active = false; end() } }
+        .onDisappear { dragState.finish() }
         .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in
             let direction = press.key == .rightArrow ? 1.0 : -1.0
             let step = press.modifiers.contains(.shift) ? 0.1 : press.modifiers.contains(.option) ? 0.002 : 0.01
@@ -110,8 +112,21 @@ struct MenuTrack: View {
     }
 }
 
+struct MenuTrackGesture {
+    let change: (Double) -> Void
+    let end: () -> Void
+}
+
 private final class MenuDragState: ObservableObject {
     var active = false
+    var gesture: MenuTrackGesture?
+    func finish() {
+        guard active else { return }
+        active = false
+        let completed = gesture
+        gesture = nil
+        completed?.end()
+    }
 }
 
 struct MenuAnchor: NSViewRepresentable {

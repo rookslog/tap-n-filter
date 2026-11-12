@@ -51,9 +51,10 @@ private actor Reads {
 @MainActor private final class Surface {
     weak var app: LibraryAppSession?
     var view: MenuPresentation?
+    var actions: [EverydayMenuAction] = []
     func full() {
         guard let app, let presentation = app.presentation, let data = app.menuData else { return }
-        if view == nil { view = MenuPresentation(presentation: presentation, glyph: NSImage(size: NSSize(width: 1, height: 1)), perform: { [weak self] in self?.app?.send($0) }) }
+        if view == nil { view = MenuPresentation(presentation: presentation, glyph: NSImage(size: NSSize(width: 1, height: 1)), perform: { [weak self] in self?.actions.append($0); self?.app?.send($0) }) }
         view?.positionContext = app.coordinator.positionContext
         if view?.snapshot != data { view?.snapshot = data }
     }
@@ -87,9 +88,9 @@ private actor Reads {
         let card = card(target)
         return (card.controls + card.optionTabs.flatMap(\.controls)).first { $0.title == title }!
     }
-    func move(_ control: MenuSoundControl, card: MenuSoundCard, to value: Double) throws -> Task<LibrarySliderResult, Error> {
+    func move(_ control: MenuSoundControl, card: MenuSoundCard, to value: Double, gestureIdentity: UUID? = nil) throws -> Task<LibrarySliderResult, Error> {
         try app.coordinator.submitSliderMove(control.address, expected: card.binding!, to: .scalar(value),
-            optionGesture: control.optionGesture, menuIdentity: card.menuIdentity, expectedEpoch: card.menuEpoch)
+            optionGesture: control.optionGesture, menuIdentity: card.menuIdentity, expectedEpoch: card.menuEpoch, gestureIdentity: gestureIdentity)
     }
 }
 
@@ -101,8 +102,10 @@ struct DirectDragAppChecks {
         try await childParentBarrier()
         try await optionRowObservation()
         try await heldWrite()
+        try await producerHeldWrite()
         try controllerPolicy()
         try controllerStopResumePolicy()
+        try await controllerAsyncLifecycle()
         print("PASS direct-drag coordinator/row/controller pure fakes; no native App/window/audio/device path")
     }
     @MainActor static func rowsAndRelease() async throws {
@@ -262,28 +265,60 @@ struct DirectDragAppChecks {
             "visible option child row and readout observe live patch without global publication")
     }
     @MainActor static func heldWrite() async throws {
-        let f = try await Fixture(), app = f.app, card = f.card(), control = f.slider()
-        app.send(.beginGesture); _ = try await f.move(control, card: card, to: 0.6).value
+        let f = try await Fixture(), app = f.app, card = f.card(), control = f.slider(), view = f.surface.view!
+        view.beginGesture()
+        guard case .beginMenuGesture(let oldIdentity) = f.surface.actions.last else { throw Failure.check("actual menu gesture identity") }
+        _ = try await f.move(control, card: card, to: 0.6, gestureIdentity: oldIdentity).value
+        let oldCallback = EverydayMenuAction.gestureMove(oldIdentity, card.menuIdentity!, card.menuEpoch!, control.address, control.optionGesture, .scalar(0.1))
         await f.port.arm()
-        app.send(.endGesture)
+        view.endGesture()
         await f.port.entered()
         let first = app.gestureSave!
-        let retired = try await f.move(control, card: card, to: 0.1).value
+        let retired = try await f.move(control, card: card, to: 0.1, gestureIdentity: oldIdentity).value
         guard case .executed(.superseded) = retired else { throw Failure.check("retired checkpoint callback admitted") }
-        let held = try await f.owner.snapshot()
-        try demand(held.uses.first { $0.id == card.binding!.use }!.positions[control.id] == .scalar(0.6),
-            "retired gesture epoch stays rejected until a fresh begin during checkpoint")
-        app.send(.beginGesture)
-        guard let newer = f.card().movement(for: control, to: 0.9), case .menuMove = newer else { throw Failure.check("real menuMove with epoch") }
-        app.send(newer)
+        view.beginGesture()
+        guard case .beginMenuGesture(let freshIdentity) = f.surface.actions.last, freshIdentity != oldIdentity else { throw Failure.check("distinct fresh gesture identity") }
+        _ = try await f.move(control, card: f.card(), to: 0.9, gestureIdentity: freshIdentity).value
+        app.send(oldCallback)
         _ = try await app.coordinator.editorQuery { try await $0.snapshot() }
-        app.send(.endGesture)
+        view.endGesture()
         let second = app.gestureSave!
         await f.port.release()
         _ = await first.value; _ = await second.value
         let reopened = try await SoundLibrarySession(persistence: Port(await f.port.data), limits: LibraryAppSession.normalLimits())
         try demand(try await reopened.snapshot().uses.first { $0.id == card.binding!.use }!.positions[control.id] == .scalar(0.9),
-            "newer live/model hand survives held release writer and fresh reopen")
+            "OLD callback AFTER fresh begin/newer move cannot overwrite saved/reopened0.9; fresh gesture remains usable")
+        app.close()
+    }
+    @MainActor static func producerHeldWrite() async throws {
+        let f = try await Fixture(), app = f.app, card = f.card(), control = f.slider(), view = f.surface.view!
+        let oldChange: (Double) -> Void = { value in view.move(control, on: card, to: value) }
+        let oldGesture = view.beginMovement(control, on: card)
+        oldChange(0.6)
+        await f.port.arm(); view.endGesture(); await f.port.entered()
+        let first = app.gestureSave!
+        let newerCard = f.card()
+        let freshGesture = view.beginMovement(control, on: newerCard)
+        let newerChange = freshGesture.change
+        func apply(_ change: @escaping (Double) -> Void, _ value: Double) async -> LibraryLiveMutation {
+            await withCheckedContinuation { continuation in
+                app.perfMutationCompleted = { outcome in app.perfMutationCompleted = nil; continuation.resume(returning: outcome) }
+                change(value)
+            }
+        }
+        try demand(await apply(newerChange, 0.9) != .superseded, "actual fresh producer remains usable during held checkpoint")
+        try demand(await apply(oldChange, 0.1) == .superseded, "retained untracked rendered-row closure cannot borrow new gesture UUID")
+        try demand(await apply(oldGesture.change, 0.2) == .superseded, "retained actual gesture change keeps its retired begin-time identity")
+        oldGesture.end()
+        try demand(app.gestureSave == nil, "late old gesture end cannot end/checkpoint fresh gesture")
+        try demand(await apply(newerChange, 0.8) != .superseded, "fresh producer still accepts changes after old end")
+        _ = await apply(newerChange, 0.9)
+        freshGesture.end(); let second = app.gestureSave!
+        await f.port.release(); _ = await first.value; _ = await second.value
+        let reopened = try await SoundLibrarySession(persistence: Port(await f.port.data), limits: LibraryAppSession.normalLimits())
+        let value = try await reopened.snapshot().uses.first { $0.id == card.binding!.use }!.positions[control.id]
+        print("PRODUCER reopened=\(String(describing: value)) expected=scalar0.9")
+        try demand(value == .scalar(0.9), "retained actual row producer after fresh begin/newer move preserves saved/reopened0.9")
         app.close()
     }
     @MainActor static func controllerStopResumePolicy() throws {
@@ -295,22 +330,22 @@ struct DirectDragAppChecks {
         let a = UUID(), b = UUID(), c = UUID()
         var policy = PlaybackStopResumePolicy()
         policy.activate(state(a))
-        let positionsStop = policy.stopping(includesCurrentActivation: false)
+        let positionsStop = policy.stopping(assignment: a, includesCurrentActivation: false)
         var resumed = 0
         func complete(_ stop: PlaybackStopResumePolicy.Stop, _ desired: ListeningRenderSnapshot) {
             if policy.mayResume(stop, desired: desired) { resumed += 1 }
         }
         complete(positionsStop, state(b))
         try demand(resumed == 0, "actual stop-resume policy: positions removal cannot activate replacement B")
-        policy.activate(state(b))
-        complete(positionsStop, state(b))
+        policy.activate(state(a))
+        complete(positionsStop, state(a))
         try demand(resumed == 1, "actual stop-resume policy: later explicit activation authorizes held-stop restart")
         complete(positionsStop, state(c))
-        try demand(resumed == 1, "actual stop-resume policy: later activation B cannot authorize positions-only replacement C")
-        let activationStop = policy.stopping(includesCurrentActivation: true)
+        try demand(resumed == 1, "actual stop-resume policy: later activation A cannot authorize positions-only replacement C")
+        let activationStop = policy.stopping(assignment: a, includesCurrentActivation: true)
         complete(activationStop, state(c))
         try demand(resumed == 1, "actual stop-resume policy: original activation cannot replay a different positions-only scope")
-        complete(activationStop, state(b))
+        complete(activationStop, state(a))
         try demand(resumed == 2, "actual stop-resume policy: unchanged explicit activation scope retains restart")
         complete(positionsStop, state(b, enabled: false))
         complete(positionsStop, state(nil))

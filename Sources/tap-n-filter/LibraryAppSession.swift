@@ -118,12 +118,8 @@ final class LibraryAppSession {
     func send(_ action: EverydayMenuAction) {
         guard coordinator.lifecycle != .closed else { return }
         switch action {
-        case .beginGesture:
-            gestureSave?.cancel(); gestureSave = nil
-            coordinator.beginParameterGesture()
-            gesturing = true
-            saveEpoch &+= 1
-            cancelPendingSave()
+        case .beginGesture: beginGesture(nil)
+        case .beginMenuGesture(let identity): beginGesture(identity)
         case .endGesture:
             guard gesturing else { return }
             gesturing = false
@@ -132,6 +128,8 @@ final class LibraryAppSession {
         case .selectBlock(let definition, let target): select(definition, on: target)
         case .setEnabled(let enabled): live { try $0.submitEnabled(enabled) }
         case .libraryPower(let binding, let enabled): live { try $0.submitEnabled(enabled, expected: binding) }
+        case .gestureMove(let gesture, let identity, let epoch, let address, let option, let position):
+            listen(identity.binding, address, position, option: option, identity: identity, deliveryEpoch: epoch, gestureIdentity: gesture)
         case .menuMove(let identity, let epoch, let address, let option, let position):
             listen(identity.binding, address, position, option: option, identity: identity, deliveryEpoch: epoch)
         case .libraryMove(let binding, let address, let position):
@@ -142,9 +140,16 @@ final class LibraryAppSession {
         default: break
         }
     }
+    private func beginGesture(_ identity: UUID?) {
+        gestureSave?.cancel(); gestureSave = nil
+        coordinator.beginParameterGesture(identity: identity)
+        gesturing = true
+        saveEpoch &+= 1
+        cancelPendingSave()
+    }
     private func listen(_ binding: LibraryBinding, _ address: LibraryControlAddress,
                         _ position: LibraryPosition, option: LibraryOptionGesture?, identity: LibraryMenuIdentity? = nil,
-                        deliveryEpoch: UInt64? = nil) {
+                        deliveryEpoch: UInt64? = nil, gestureIdentity: UUID? = nil) {
         let card = menuData?.assignments.first { $0.binding == binding }
         let controls = (card?.controls ?? []) + (card?.optionTabs.flatMap(\.controls) ?? [])
         let slider = controls.contains { control in
@@ -154,7 +159,7 @@ final class LibraryAppSession {
         guard slider, case .scalar = position else {
             if let identity {
                 live(positionOnly: true) { try $0.submitMenuMove(address, expected: identity, to: position,
-                    optionGesture: option, expectedEpoch: deliveryEpoch) }
+                    optionGesture: option, expectedEpoch: deliveryEpoch, gestureIdentity: gestureIdentity) }
             } else {
                 live(positionOnly: true) { try $0.submitMove(address, expected: binding, to: position, optionGesture: option) }
             }
@@ -162,7 +167,7 @@ final class LibraryAppSession {
         }
         do {
             let task = try coordinator.submitSliderMove(address, expected: binding, to: position,
-                optionGesture: option, menuIdentity: identity, expectedEpoch: deliveryEpoch)
+                optionGesture: option, menuIdentity: identity, expectedEpoch: deliveryEpoch, gestureIdentity: gestureIdentity)
             let epoch = saveEpoch
             Task {
                 do {

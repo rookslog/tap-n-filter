@@ -147,13 +147,15 @@ final class LibraryListeningCoordinator {
     private var sliderBatch: LibrarySliderBatch?
     private var checkpointGestureContext: MenuPositionContext?
     private var menuGestureContext: MenuPositionContext?
+    private var menuGestureIdentity: UUID?
     private var parameterEnabled = false
     private var parameterGesture: LibraryParameterGesture?
     var perfParameterEvaluated: ((Double, LibraryPosition) -> Void)?
     var perfParameterDocumentCommit: ((LibraryLiveMutation) -> Void)?
-    func beginParameterGesture() {
+    func beginParameterGesture(identity: UUID? = nil) {
         sealSliderMoves()
-        menuGestureContext = positionContext ?? checkpointGestureContext
+        menuGestureIdentity = identity
+        menuGestureContext = identity == nil ? nil : positionContext ?? checkpointGestureContext
         parameterEnabled = true
     }
     @discardableResult
@@ -465,6 +467,7 @@ final class LibraryListeningCoordinator {
         if !preservingGestureAdmission {
             checkpointGestureContext = nil
             menuGestureContext = nil
+            menuGestureIdentity = nil
         }
         parameterEnabled = false
         deliveryEpoch &+= 1
@@ -497,21 +500,25 @@ final class LibraryListeningCoordinator {
         if let option { return try await session.move(address, expected: binding, optionGesture: option, to: position) }
         return try await session.move(address, expected: binding, to: position)
     }
-    private func acceptsMenuEpoch(_ expected: UInt64?) -> Bool {
-        expected == nil || expected == positionContext?.epoch || expected == menuGestureContext?.epoch
+    private func acceptsMenuEpoch(_ expected: UInt64?, gestureIdentity: UUID?) -> Bool {
+        if let gestureIdentity {
+            return gestureIdentity == menuGestureIdentity && expected != nil
+                && (expected == positionContext?.epoch || expected == menuGestureContext?.epoch)
+        }
+        return expected == nil || expected == positionContext?.epoch
     }
     func submitSliderMove(_ address: LibraryControlAddress, expected: LibraryBinding, to value: LibraryPosition,
-                          optionGesture: LibraryOptionGesture? = nil, menuIdentity: LibraryMenuIdentity? = nil, expectedEpoch: UInt64? = nil) throws -> Task<LibrarySliderResult, Error> {
+                          optionGesture: LibraryOptionGesture? = nil, menuIdentity: LibraryMenuIdentity? = nil, expectedEpoch: UInt64? = nil, gestureIdentity: UUID? = nil) throws -> Task<LibrarySliderResult, Error> {
         guard lifecycle == .running else { throw LibraryConsumerLifecycleError.unavailable(lifecycle) }
         guard session != nil else { throw LibraryConsumerLifecycleError.notReady }
-        guard acceptsMenuEpoch(expectedEpoch) else { return Task { .executed(.superseded) } }
+        guard acceptsMenuEpoch(expectedEpoch, gestureIdentity: gestureIdentity) else { return Task { .executed(.superseded) } }
         if let menuIdentity, presentation?.identity(for: expected) != menuIdentity {
             return Task { .executed(.superseded) }
         }
         guard sliderCanCoalesce(address, expected: expected, optionGesture: optionGesture) else {
             let ordered: Task<LibraryLiveMutation, Error>
             if let menuIdentity {
-                ordered = try enqueueMutation(preservingGestureAdmission: expectedEpoch != nil && expectedEpoch == menuGestureContext?.epoch) { session in
+                ordered = try enqueueMutation(preservingGestureAdmission: gestureIdentity != nil && gestureIdentity == menuGestureIdentity) { session in
                     try await self.executeMenuOrdered(session, address: address, expected: menuIdentity,
                         option: optionGesture, value: value).outcome
                 }
@@ -579,8 +586,8 @@ final class LibraryListeningCoordinator {
         return try await session.moveForMenu(address, expected: expected, optionGesture: option, to: value)
     }
     func submitMenuMove(_ address: LibraryControlAddress, expected: LibraryMenuIdentity, to value: LibraryPosition,
-                        optionGesture: LibraryOptionGesture?, expectedEpoch: UInt64?) throws -> Task<LibraryLiveMutation, Error> {
-        guard acceptsMenuEpoch(expectedEpoch) else { return Task { .superseded } }
+                        optionGesture: LibraryOptionGesture?, expectedEpoch: UInt64?, gestureIdentity: UUID? = nil) throws -> Task<LibraryLiveMutation, Error> {
+        guard acceptsMenuEpoch(expectedEpoch, gestureIdentity: gestureIdentity) else { return Task { .superseded } }
         return try scheduleLive { session in
             try await self.executeMenuOrdered(session, address: address, expected: expected, option: optionGesture, value: value).outcome
         }
@@ -716,6 +723,7 @@ final class LibraryListeningCoordinator {
         if preservingGestureAdmission {
             checkpointGestureContext = checkpointContext
             menuGestureContext = nil
+            menuGestureIdentity = nil
         }
         let prior = structuralTail, mutationBarrier = liveTail, completion = LibraryCommandCompletion()
         structuralTail = completion

@@ -79,10 +79,11 @@ private final class PlaybackLane {
 
 @MainActor
 public final class PlaybackController {
-  private let coreAudio: any CoreAudioInterface
-  private let leases: InputGuardLeaseCoordinator
+  private let coreAudio: (any CoreAudioInterface)?
+  private let leases: InputGuardLeaseCoordinator?
   private let probeEnabled: Bool
   private let hub: NativeOutputHub
+  private var testingLane: ((ListeningRenderAssignment, @escaping @MainActor (LifecycleObservation) -> Void) -> (PlaybackCaptureFactory, PlaybackRuntime))?
   private var lanes: [UUID: PlaybackLane] = [:]
   private var nextKey: UInt64 = 0
   private var desired: ListeningRenderSnapshot?
@@ -93,6 +94,7 @@ public final class PlaybackController {
   private var timer: Timer?
   private var samplingNotifications = PlaybackSamplingNotifications()
   private var terminationObserver: NSObjectProtocol?
+  var stoppedForTesting: ((UUID, String) -> Void)?
   public var changed: () -> Void = {}
   public var log: (String) -> Void = { _ in }
 
@@ -116,6 +118,15 @@ public final class PlaybackController {
     installObservers()
   }
 
+  /// Inert dependency seam for the real controller's asynchronous lifecycle checks.
+  init(testingLane: @escaping (ListeningRenderAssignment, @escaping @MainActor (LifecycleObservation) -> Void) -> (PlaybackCaptureFactory, PlaybackRuntime)) {
+    coreAudio = nil
+    leases = nil
+    probeEnabled = false
+    hub = NativeOutputHub()
+    self.testingLane = testingLane
+  }
+
   private func installObservers() {
     hub.configurationChanged = { [weak self] in self?.invalidateAll(.formatChanged) }
     terminationObserver = NSWorkspace.shared.notificationCenter.addObserver(
@@ -132,7 +143,7 @@ public final class PlaybackController {
   }
 
   public var problem: String? { lanes.values.compactMap(\.failure).sorted().first }
-  public var guardLeaseCount: Int { leases.activeLeaseCount }
+  public var guardLeaseCount: Int { leases?.activeLeaseCount ?? 0 }
   public var telemetry: [PlaybackTelemetry] {
     lanes.values.compactMap { $0.sink?.telemetry(state: String(describing: $0.state)) }
       .sorted { $0.assignment.uuidString < $1.assignment.uuidString }
@@ -255,6 +266,11 @@ public final class PlaybackController {
   }
 
   private func makeLane(_ assignment: ListeningRenderAssignment) -> PlaybackLane {
+    if let testingLane {
+      let (factory, runtime) = testingLane(assignment) { [weak self] in self?.observed($0) }
+      return PlaybackLane(factory: factory, runtime: runtime, generation: CaptureGeneration(), slot: PlaybackSinkSlot())
+    }
+    guard let coreAudio, let leases else { preconditionFailure("Playback dependencies are required") }
     precondition(nextKey < UInt64.max)
     nextKey += 1
     let key = nextKey
@@ -318,7 +334,7 @@ public final class PlaybackController {
     }
     lane.operation += 1
     let operation = lane.operation
-    let authorization = stopResume.stopping(includesCurrentActivation: includesCurrentActivation)
+    let authorization = stopResume.stopping(assignment: id, includesCurrentActivation: includesCurrentActivation)
     lane.state = .stopping
     Task { @MainActor [weak self, weak lane] in
       guard let self, let lane else { return }
@@ -327,9 +343,18 @@ public final class PlaybackController {
       lane.sink = nil
       lane.state = lane.failure == nil ? .idle : .failed
       if removing { self.lanes.removeValue(forKey: id) }
-      if let desired = self.desired, self.stopResume.mayResume(authorization, desired: desired) {
-        self.applyDesired(desired, original: self.original)
+      if let desired = self.desired, self.stopResume.mayResume(authorization, desired: desired),
+         lane.state == .idle, let assignment = desired.assignments.first(where: { $0.id == id }) {
+        self.lanes[id] = lane
+        do {
+          try lane.factory.update(assignment, original: self.original)
+          self.start(assignment, lane: lane)
+        } catch {
+          lane.state = .failed
+          lane.failure = "The sound change could not be applied. \(error)"
+        }
       }
+      self.stoppedForTesting?(id, String(describing: lane.state))
     }
   }
 
