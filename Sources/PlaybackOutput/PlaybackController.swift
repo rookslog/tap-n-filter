@@ -346,7 +346,7 @@ public final class PlaybackController {
       lane.sink = nil
       lane.state = lane.failure == nil ? .idle : .failed
       if removing { self.lanes.removeValue(forKey: id) }
-      if let desired = self.desired, self.stopResume.mayResume(authorization, desired: desired),
+      if !self.quitting, let desired = self.desired, self.stopResume.mayResume(authorization, desired: desired),
          lane.state == .idle, let assignment = desired.assignments.first(where: { $0.id == id }) {
         self.lanes[id] = lane
         do {

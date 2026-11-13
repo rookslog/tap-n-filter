@@ -2,6 +2,9 @@ import Foundation
 import AppKit
 import SoundModel
 @testable import EverydayMenu
+import PlaybackLifecycle
+import PlaybackRuntime
+@testable import PlaybackOutput
 @testable import tap_n_filter
 
 // PR #39 race checks: editor read counts after read failures, and menu clicks or drags that land
@@ -208,6 +211,7 @@ struct PR39HostedRaceCases {
         func wants(_ name: String) -> Bool {
             selected == "all" || selected == name || (selected == "R15" && name.hasPrefix("R15"))
                 || (selected == "R26" && name.hasPrefix("R26")) || (selected == "P1" && name.hasPrefix("P1"))
+                || (selected == "Q" && name.hasPrefix("Q-"))
         }
         if wants("R15-A") { try await r15HeldTrigger() }
         if wants("R15-B") { try await r15SplitSample() }
@@ -219,6 +223,9 @@ struct PR39HostedRaceCases {
         for follow in [P1Follow.click, .drag, .retiredToken, .retiredEpoch] where wants("P1-\(follow.rawValue)") {
             try await p1NewerEpochDuringSave(follow)
         }
+        if wants("Q-held-shutdown") { try await quitWhileLaneStopping() }
+        if wants("Q-B-T1-restart-without-quit") { try await restartWithoutQuit() }
+        if wants("Q-B-A2-off-withdraws-restart") { try await offWithdrawsRestart() }
         if failures > 0 { throw HostedError.setup("\(failures) hosted race assertions") }
     }
 
@@ -505,5 +512,191 @@ struct PR39HostedRaceCases {
             check(savedSlider == .scalar(0.5), "\(name) reopen keeps 0.5, not the stale card's 0.05: \(values)")
         }
         await f.close()
+    }
+}
+
+// MARK: - Quit while a lane is stopping (real PlaybackController through its testing-lane seam)
+
+@MainActor private final class QuitTrace {
+    /// Output (sink) starts and capture starts per source bundle.
+    var outputStarts: [String: Int] = [:]
+    var captureStarts: [String: Int] = [:]
+    /// Bundles whose next sink stop parks at that bundle's gate.
+    var holdStop: Set<String> = []
+    var stopGates: [String: HostedGate] = [:]
+    /// Lifecycle `.stopping` observations, in order, with the bundle they belong to.
+    private(set) var stoppings: [String] = []
+    let stoppingSignal = HostedSignal()
+    private(set) var stopCompletions: [UUID: String] = [:]
+    let stopSignal = HostedSignal()
+    private(set) var startCompletions: [UUID: [String]] = [:]
+    let startSignal = HostedSignal()
+    let outputSignal = HostedSignal()
+    func gate(_ bundle: String) -> HostedGate { if let g = stopGates[bundle] { return g }; let g = HostedGate(); stopGates[bundle] = g; return g }
+    func output(_ bundle: String) { outputStarts[bundle, default: 0] += 1; outputSignal.send() }
+    func observed(_ bundle: String, _ observation: LifecycleObservation) {
+        if case .stopping = observation.event { stoppings.append(bundle); stoppingSignal.send() }
+    }
+    func stopped(_ id: UUID, _ state: String) {
+        stopCompletions[id] = state; stopSignal.send()
+        let ready = reportWaiters.filter { $0.lane == id }
+        reportWaiters.removeAll { $0.lane == id }
+        for waiter in ready { waiter.continuation.resume(returning: true) }
+    }
+    func started(_ id: UUID, _ state: String) { startCompletions[id, default: []].append(state); startSignal.send() }
+    func awaitOutput(_ bundle: String, _ count: Int) async { while outputStarts[bundle, default: 0] < count { await outputSignal.wait(outputSignal.count + 1) } }
+    func awaitStopCompletion(_ id: UUID) async { while stopCompletions[id] == nil { await stopSignal.wait(stopSignal.count + 1) } }
+    private var reportWaiters: [(id: UUID, lane: UUID, continuation: CheckedContinuation<Bool, Never>)] = []
+    /// True once `lane` reports its stop completion. A controller may legitimately drop that report after
+    /// Quit (its stop is superseded), so the deadline turns "no report" into false instead of a hang.
+    /// A start that the report would announce is still caught by the start counters after shutdown.
+    func awaitStopReport(_ lane: UUID, deadline: Duration) async -> Bool {
+        if stopCompletions[lane] != nil { return true }
+        let id = UUID()
+        return await withCheckedContinuation { continuation in
+            reportWaiters.append((id, lane, continuation))
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: deadline)
+                guard let self, let index = self.reportWaiters.firstIndex(where: { $0.id == id }) else { return }
+                self.reportWaiters.remove(at: index).continuation.resume(returning: false)
+            }
+        }
+    }
+    func awaitStartCompletions(_ id: UUID, _ count: Int) async { while startCompletions[id, default: []].count < count { await startSignal.wait(startSignal.count + 1) } }
+}
+@MainActor private struct QuitResolver: ProcessResolving {
+    func resolve(binding: AppBinding, preferredPID: Int32?) async throws -> ResolvedProcess { ResolvedProcess(binding: binding, pid: 1, audioProcessID: 1, path: .preferredPID) }
+    func revalidate(_ process: ResolvedProcess) async throws {}
+}
+@MainActor private struct QuitGuard: InputGuardPort {
+    func recoverIfStranded() async -> GuardRestoration { .noMarker }
+    func engage(settingEnabled: Bool) async -> GuardEngagement { .declined(reason: "inert lifecycle fake") }
+    func restore() async -> GuardRestoration { .noMarker }
+}
+@MainActor private final class QuitCapture: CaptureSession {
+    let trace: QuitTrace, bundle: String
+    init(_ trace: QuitTrace, bundle: String) { self.trace = trace; self.bundle = bundle }
+    func prepare(source: ResolvedProcess) async throws -> CapturePreparation { CapturePreparation(format: try StreamFormat(sampleRate: 48000, channels: 2)) }
+    func start() async throws { try Task.checkCancellation(); trace.captureStarts[bundle, default: 0] += 1 }
+    func stop() async -> TeardownOutcome { .completed }
+}
+@MainActor private struct QuitCaptureFactory: CaptureSessionFactory {
+    let trace: QuitTrace, bundle: String
+    func makeSession() -> any CaptureSession { QuitCapture(trace, bundle: bundle) }
+}
+@MainActor private final class QuitSink: PlaybackSink {
+    let trace: QuitTrace, bundle: String
+    init(_ trace: QuitTrace, bundle: String) { self.trace = trace; self.bundle = bundle }
+    func prepare(_ capture: CapturePreparation) async throws {}
+    func update(_ assignment: ListeningRenderAssignment, original: Bool) throws {}
+    func start() throws { trace.output(bundle) }
+    func stop() async { if trace.holdStop.remove(bundle) != nil { await trace.gate(bundle).pause() } }
+}
+@MainActor private struct QuitRig {
+    let trace = QuitTrace(), a = UUID(), b = UUID()
+    let controller: PlaybackController
+    init() {
+        let trace = self.trace
+        controller = PlaybackController(testingLane: { assignment, observe in
+            let bundle = assignment.bundleIdentifier
+            let factory = PlaybackCaptureFactory(inner: QuitCaptureFactory(trace: trace, bundle: bundle), assignment: assignment) { value, _ in QuitSink(trace, bundle: value.bundleIdentifier) }
+            let runtime = PlaybackRuntime(resolver: QuitResolver(), factory: factory,
+                leases: InputGuardLeaseCoordinator(port: QuitGuard(), settingEnabled: false),
+                observe: { observation in trace.observed(bundle, observation); observe(observation) })
+            return (factory, runtime)
+        })
+        controller.stoppedForTesting = { trace.stopped($0, $1) }
+        controller.startedForTesting = { trace.started($0, $1) }
+    }
+    func snapshot(power: Bool = true, a aOn: Bool, b bOn: Bool) -> ListeningRenderSnapshot {
+        ListeningRenderSnapshot(isEnabled: power, assignments: [
+            ListeningRenderAssignment(id: a, bundleIdentifier: "test.A", isEnabled: aOn, parts: []),
+            ListeningRenderAssignment(id: b, bundleIdentifier: "test.B", isEnabled: bOn, parts: [])])
+    }
+    /// Both lanes running; then A is turned OFF (its stop held at A's sink) and back ON, which authorizes
+    /// A's restart when that stop completes.
+    func aStoppingWithRestartAuthorized() async {
+        controller.apply(snapshot(a: true, b: true), original: false)
+        await trace.awaitOutput("test.A", 1); await trace.awaitOutput("test.B", 1)
+        trace.holdStop.insert("test.A")
+        _ = controller.updatePositions(snapshot(a: false, b: true), original: false)
+        await trace.gate("test.A").entered()
+        controller.apply(snapshot(a: true, b: true), original: false)
+    }
+    var counts: String { "output=\(trace.outputStarts.sorted { $0.key < $1.key }) capture=\(trace.captureStarts.sorted { $0.key < $1.key })" }
+}
+
+extension PR39HostedRaceCases {
+    // Requirement: once the user quits (or the app shuts down), no lane starts again and nothing sounds,
+    // even if a lane that was turned OFF and back ON was still stopping when Quit began.
+    @MainActor fileprivate static func quitWhileLaneStopping() async throws {
+        // Shutdown visits lanes in dictionary order, which the test cannot choose. The defect needs shutdown
+        // to wait on B before it reaches A, so each attempt uses fresh lane IDs and reports the order it got;
+        // the requirement is checked on every attempt.
+        var orders: [String] = []
+        for attempt in 1...24 {
+            let rig = QuitRig(), trace = rig.trace
+            await rig.aStoppingWithRestartAuthorized()
+            trace.holdStop.insert("test.B")
+            let outputBefore = trace.outputStarts, captureBefore = trace.captureStarts, stoppingsBefore = trace.stoppings.count
+            let shutdown = Task { await rig.controller.shutdown() }
+            await trace.stoppingSignal.wait(trace.stoppingSignal.count + 1)
+            let first = trace.stoppings.count > stoppingsBefore ? trace.stoppings[stoppingsBefore] : "none"
+            orders.append(first)
+            var aCompletion = "not reported"
+            if first == "test.B" {
+                // Shutdown is waiting on B. Let A's earlier stop finish now.
+                let aStartsBefore = trace.startCompletions[rig.a, default: []].count
+                await trace.gate("test.A").release()
+                let reported = await trace.awaitStopReport(rig.a, deadline: .seconds(10))
+                aCompletion = reported ? trace.stopCompletions[rig.a] ?? "missing" : "not reported within 10 s"
+                // A restart, if one began, is left to run to its end before shutdown may continue.
+                if aCompletion == "starting" { await trace.awaitStartCompletions(rig.a, aStartsBefore + 1) }
+                await trace.gate("test.B").release()
+            } else {
+                // Shutdown reached A first; A's earlier stop is now superseded by shutdown's own.
+                await trace.gate("test.A").release()
+                await trace.gate("test.B").entered()
+                await trace.gate("test.B").release()
+            }
+            await shutdown.value
+            let newOutput = trace.outputStarts.merging(outputBefore) { $0 - $1 }.filter { $0.value != 0 }
+            let newCapture = trace.captureStarts.merging(captureBefore) { $0 - $1 }.filter { $0.value != 0 }
+            let values = "attempt=\(attempt) shutdownWaitedFirstOn=\(first) aStopCompletion=\(aCompletion) aStartCompletions=\(trace.startCompletions[rig.a] ?? []) newOutputStarts=\(newOutput) newCaptureStarts=\(newCapture) \(rig.counts)"
+            check(newOutput.isEmpty && newCapture.isEmpty, "Q-held-shutdown no lane starts output or capture after Quit begins: \(values)")
+            if first == "test.B" { print("HOSTED ORDERS Q-held-shutdown \(orders)"); return }
+        }
+        check(false, "Q-held-shutdown INVALID: shutdown never waited on B before A in 24 attempts, so the held order was not exercised: \(orders)")
+    }
+
+    // Requirement (guard B-T1): without Quit, turning a lane OFF and back ON while it is still stopping
+    // starts it again once the stop finishes.
+    @MainActor fileprivate static func restartWithoutQuit() async throws {
+        let rig = QuitRig(), trace = rig.trace
+        await rig.aStoppingWithRestartAuthorized()
+        // A's first start completion can be dropped by the OFF that follows it, so count from here.
+        let aStartsBefore = trace.startCompletions[rig.a, default: []].count
+        await trace.gate("test.A").release()
+        await trace.awaitStopCompletion(rig.a)
+        let completion = trace.stopCompletions[rig.a] ?? "missing"
+        if completion == "starting" { await trace.awaitStartCompletions(rig.a, aStartsBefore + 1) }
+        check(completion == "starting" && trace.outputStarts["test.A"] == 2 && trace.captureStarts["test.A"] == 2 && trace.outputStarts["test.B"] == 1,
+            "Q-B-T1-restart-without-quit authorized restart starts A once more: aStopCompletion=\(completion) \(rig.counts)")
+        await rig.controller.shutdown()
+    }
+
+    // Requirement (guard B-A2): turning power OFF while that lane is still stopping cancels the restart;
+    // the lane stays silent.
+    @MainActor fileprivate static func offWithdrawsRestart() async throws {
+        let rig = QuitRig(), trace = rig.trace
+        await rig.aStoppingWithRestartAuthorized()
+        _ = rig.controller.updatePositions(rig.snapshot(power: false, a: true, b: true), original: false)
+        await trace.gate("test.A").release()
+        await trace.awaitStopCompletion(rig.a)
+        await trace.awaitStopCompletion(rig.b)
+        let completion = trace.stopCompletions[rig.a] ?? "missing"
+        check(completion == "idle" && trace.outputStarts["test.A"] == 1 && trace.captureStarts["test.A"] == 1,
+            "Q-B-A2-off-withdraws-restart OFF during the held stop leaves A idle with no new start: aStopCompletion=\(completion) bStopCompletion=\(trace.stopCompletions[rig.b] ?? "missing") \(rig.counts)")
+        await rig.controller.shutdown()
     }
 }
