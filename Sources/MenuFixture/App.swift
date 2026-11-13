@@ -78,8 +78,11 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate {
                 case .libraryMove(let binding, let address, let position): _ = try await session.move(address, expected: binding, to: position)
                 case .libraryOptionMove(let binding, let address, let gesture, let position):
                     _ = try await session.move(address, expected: binding, optionGesture: gesture, to: position)
+                case .menuMove(let identity, _, let address, let gesture, let position),
+                     .gestureMove(_, let identity, _, let address, let gesture, let position):
+                    _ = try await session.moveForMenu(address, expected: identity, optionGesture: gesture, to: position)
                 case .compare(let value): comparing = value; await session.compareOriginal(value)
-                case .beginGesture, .endGesture: return
+                case .beginGesture, .beginMenuGesture, .endGesture: return
                 case .setAppEnabled, .move: throw CocoaError(.validationMissingMandatoryProperty)
                 case .quit: NSApplication.shared.terminate(nil)
                 case .showProblem, .refreshSources: break

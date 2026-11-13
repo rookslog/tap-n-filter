@@ -5,6 +5,7 @@ import SwiftUI
 
 public enum EverydayMenuAction: Sendable {
     case beginGesture
+    case beginMenuGesture(UUID)
     case endGesture
     case setEnabled(Bool)
     case putOn(String)
@@ -14,6 +15,8 @@ public enum EverydayMenuAction: Sendable {
     case libraryPower(LibraryBinding, Bool)
     case libraryMove(LibraryBinding, LibraryControlAddress, LibraryPosition)
     case libraryOptionMove(LibraryBinding, LibraryControlAddress, LibraryOptionGesture, LibraryPosition)
+    case menuMove(LibraryMenuIdentity, UInt64, LibraryControlAddress, LibraryOptionGesture?, LibraryPosition)
+    case gestureMove(UUID, LibraryMenuIdentity, UInt64, LibraryControlAddress, LibraryOptionGesture?, LibraryPosition)
     case compare(Bool)
     case showProblem
     case refreshSources
@@ -156,12 +159,58 @@ enum MenuCardMetrics {
 
 @MainActor
 final class MenuPresentation: ObservableObject {
-    @Published var snapshot: MenuSoundData {
-        didSet {
+    private var snapshotValue: MenuSoundData
+    var snapshot: MenuSoundData {
+        get { snapshotValue }
+        set {
+            objectWillChange.send()
+            snapshotValue = newValue
+            refreshPositions()
             var next = folds
             next.observe(snapshot)
             if next.entries != folds.entries { folds = next }
         }
+    }
+    var positionContext: MenuPositionContext? {
+        didSet {
+            if oldValue != positionContext {
+                positionGeneration = positionContext?.generation ?? 0
+                positionStateRevision = positionContext?.stateRevision ?? 0
+            }
+        }
+    }
+    func installPositionContext(_ context: MenuPositionContext) {
+        positionContext = context
+        snapshotValue = snapshotValue.contextualized(context)
+    }
+    private var rowPositions: [MenuRowPositionKey: MenuRowPosition] = [:]
+    private var positionGeneration: UInt64 = 0
+    private var positionStateRevision: UInt64 = 0
+    func rowPosition(_ control: MenuSoundControl, on card: MenuSoundCard) -> MenuRowPosition {
+        let key = MenuRowPositionKey(card: card, control: control)
+        if let current = rowPositions[key] { return current }
+        let current = MenuRowPosition(control.position); rowPositions[key] = current; return current
+    }
+    private func refreshPositions() {
+        var keys: Set<MenuRowPositionKey> = []
+        for card in snapshotValue.assignments {
+            for control in card.controls + card.optionTabs.flatMap(\.controls) {
+                let key = MenuRowPositionKey(card: card, control: control)
+                keys.insert(key); rowPositions[key]?.update(control.position)
+            }
+        }
+        rowPositions = rowPositions.filter { keys.contains($0.key) }
+    }
+    func applyPositions(_ delta: LibraryMenuDelta, context: MenuPositionContext) -> Bool {
+        guard positionContext == context, context.ownerID == delta.identity.ownerID,
+              context.identities.contains(delta.identity), delta.liveGeneration >= positionGeneration,
+              delta.baseGeneration == positionGeneration, delta.baseStateRevision == positionStateRevision,
+              let next = snapshotValue.applying(delta) else { return false }
+        snapshotValue = next
+        positionGeneration = delta.liveGeneration
+        positionStateRevision = delta.stateRevision
+        refreshPositions()
+        return true
     }
     @Published var folds = MenuFoldState()
     @Published var apps: [SourceAppInfo] = []
@@ -181,21 +230,25 @@ final class MenuPresentation: ObservableObject {
     let perform: (EverydayMenuAction) -> Void
     var resize: (() -> Void)?
     private var gesturing = false
+    private var gestureIdentity: UUID?
 
     func beginGesture() {
         guard !gesturing else { return }
         gesturing = true
-        perform(.beginGesture)
+        let identity = UUID()
+        gestureIdentity = identity
+        perform(.beginMenuGesture(identity))
     }
 
     func endGesture() {
         guard gesturing else { return }
         gesturing = false
+        gestureIdentity = nil
         perform(.endGesture)
     }
 
     init(snapshot: ListeningSnapshot, glyph: NSImage, perform: @escaping (EverydayMenuAction) -> Void) {
-        self.snapshot = MenuSoundData(legacy: snapshot)
+        self.snapshotValue = MenuSoundData(legacy: snapshot)
         self.glyph = glyph
         self.perform = perform
         folds.observe(self.snapshot)
@@ -207,8 +260,15 @@ final class MenuPresentation: ObservableObject {
     }
 
     init(snapshot: LibrarySnapshot, glyph: NSImage, perform: @escaping (EverydayMenuAction) -> Void) {
-        self.snapshot = MenuSoundData(library: snapshot); self.glyph = glyph; self.perform = perform
+        self.snapshotValue = MenuSoundData(library: snapshot); self.glyph = glyph; self.perform = perform
         folds.observe(self.snapshot)
+    }
+    init(presentation: LibraryMenuState, glyph: NSImage, perform: @escaping (EverydayMenuAction) -> Void) {
+        let context = MenuPositionContext(presentation: presentation, epoch: 0)
+        snapshotValue = MenuSoundData(menu: presentation).contextualized(context); self.glyph = glyph; self.perform = perform
+        positionContext = context
+        positionGeneration = presentation.liveGeneration; positionStateRevision = presentation.stateRevision
+        folds.observe(snapshotValue)
     }
 
     func definition(_ assignment: MenuSoundCard) -> MenuSoundCard? { assignment }
@@ -233,12 +293,40 @@ final class MenuPresentation: ObservableObject {
         if let action = assignment.movement(for: control, to: value) { perform(action) }
     }
 
+    func beginMovement(_ control: MenuSoundControl, on assignment: MenuSoundCard) -> MenuTrackGesture {
+        endGesture()
+        beginGesture()
+        let gesture = gestureIdentity
+        let assignment = currentCard(assignment, for: control) ?? assignment
+        return MenuTrackGesture(change: { [weak self] value in
+            guard let self, let action = assignment.movement(for: control, to: value) else { return }
+            if let gesture, case .menuMove(let identity, let epoch, let address, let option, let position) = action {
+                perform(.gestureMove(gesture, identity, epoch, address, option, position))
+            } else { perform(action) }
+        }, end: { [weak self] in
+            guard let self, gestureIdentity == gesture else { return }
+            endGesture()
+        })
+    }
+
     func tabIsOpen(_ tab: MenuSoundOptionTab, on card: MenuSoundCard) -> Bool {
         guard let key = card.foldKey(tab.parent) else { return false }
         return folds.isOpen(key, option: tab.option.id)
     }
 
+    private func currentCard(_ rendered: MenuSoundCard, for control: MenuSoundControl) -> MenuSoundCard? {
+        snapshotValue.assignments.first { card in
+            card.id == rendered.id && card.menuIdentity == rendered.menuIdentity && card.binding == rendered.binding
+                && (card.controls + card.optionTabs.flatMap(\.controls)).contains {
+                    $0.address == control.address && $0.optionGesture == control.optionGesture && $0.face == control.face
+                }
+        }
+    }
+    func adjust(_ control: MenuSoundControl, on rendered: MenuSoundCard, to value: Double) {
+        move(control, on: currentCard(rendered, for: control) ?? rendered, to: value)
+    }
     func activate(_ option: MenuSoundOption, control: MenuSoundControl, on card: MenuSoundCard) {
+        let card = currentCard(card, for: control) ?? card
         switch folds.activate(option, control: control, on: card, current: snapshot) {
         case .none: break
         case .toggle: resize?()

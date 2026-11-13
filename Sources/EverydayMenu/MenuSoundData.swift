@@ -64,9 +64,15 @@ public struct MenuSoundCard: Equatable, Sendable {
     public let binding: LibraryBinding?
     public let choices: [MenuSoundChoice]
     public var optionTabs: [MenuSoundOptionTab] = []
+    public var menuIdentity: LibraryMenuIdentity? = nil
+    public var menuEpoch: UInt64? = nil
 
     public func movement(for control: MenuSoundControl, to value: Double) -> EverydayMenuAction? {
         guard (controls + optionTabs.flatMap(\.controls)).contains(where: { $0.address == control.address }) else { return nil }
+        if let menuIdentity {
+            guard let menuEpoch else { return nil }
+            return .menuMove(menuIdentity, menuEpoch, control.address, control.optionGesture, .scalar(value))
+        }
         if let binding {
             if let gesture = control.optionGesture { return .libraryOptionMove(binding, control.address, gesture, .scalar(value)) }
             return .libraryMove(binding, control.address, .scalar(value))
@@ -80,6 +86,9 @@ public struct MenuSoundData: Equatable, Sendable {
     public let assignments: [MenuSoundCard]
     public let choices: [MenuSoundChoice]
     public let isLibrary: Bool
+    init(isEnabled: Bool, assignments: [MenuSoundCard], choices: [MenuSoundChoice], isLibrary: Bool) {
+        self.isEnabled = isEnabled; self.assignments = assignments; self.choices = choices; self.isLibrary = isLibrary
+    }
 
     public init(legacy snapshot: ListeningSnapshot) {
         isEnabled = snapshot.isEnabled; isLibrary = false
@@ -107,6 +116,9 @@ public struct MenuSoundData: Equatable, Sendable {
         }
     }
 
+    public init(menu presentation: LibraryMenuState) {
+        self.init(projection: MenuLibraryProjection(presentation))
+    }
     public init(library snapshot: LibrarySnapshot) {
         self.init(projection: MenuLibraryProjection(snapshot))
     }
@@ -158,7 +170,11 @@ public struct MenuSoundData: Equatable, Sendable {
                 title: card.use?.name ?? head?.name ?? card.definitionID.uuidString,
                 nameHelp: card.use?.hasOwnName == true ? head?.name : nil, block: decoration,
                 controls: controls.filter { !children.contains($0.address) }, heldNames: card.heldNames,
-                heldHelp: card.heldHelp, binding: card.binding, choices: choices, optionTabs: tabs)
+                heldHelp: card.heldHelp, binding: card.binding, choices: choices, optionTabs: tabs,
+                menuIdentity: projection.ownerID.flatMap { owner in card.use.map {
+                    LibraryMenuIdentity(ownerID: owner, binding: card.binding,
+                        reference: LibraryReference(definition: $0.definition, revision: $0.baseRevision))
+                } })
         }
     }
 }

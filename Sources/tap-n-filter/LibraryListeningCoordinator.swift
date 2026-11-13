@@ -18,6 +18,7 @@ enum LibraryConsumerCommandOutcome: Equatable, Sendable {
     case blocked(UUID?)
     case failed(String)
     case rejected(LibraryConsumerLifecycle)
+    case cancelled
 }
 struct LibraryConsumerCommandResult: Equatable, Sendable {
     let command: UUID
@@ -33,9 +34,12 @@ enum LibraryConsumerReconciliation: Equatable {
     case unresolved(UUID?, String)
     case superseded
 }
+enum LibraryDeliveryMode { case activation, positions }
+
 struct LibraryConsumerPublication {
     let generation: UInt64
-    let snapshot: LibrarySnapshot
+    let presentation: LibraryMenuState
+    let positionContext: MenuPositionContext
     let menu: MenuLibraryProjection
     let admissionFailure: String?
 }
@@ -57,6 +61,7 @@ enum LibraryDrainResult: Equatable {
 enum LibraryConsumerEvent {
     case startup(LibraryConsumerStartup)
     case state(LibraryConsumerPublication)
+    case positionContext(MenuPositionContext)
     case command(LibraryConsumerCommandResult)
     case reconciliation(LibraryConsumerReconciliation)
     case readFailure(String)
@@ -76,7 +81,7 @@ enum LibraryConsumerEvent {
                 guard case .refused(let reason) = receipt.outcome else { return nil }
                 return .refused(command: result.command, commit: receipt.token, reason: reason)
             case .blocked: return .blocked(command: result.command)
-            case .failed, .rejected: return .failed(command: result.command)
+            case .failed, .rejected, .cancelled: return .failed(command: result.command)
             }
         case .reconciliation(.accepted(let command, let commit)):
             return .reconciled(command: command, commit: commit, accepted: true)
@@ -107,10 +112,10 @@ final class LibraryListeningCoordinator {
     typealias Move = @MainActor @Sendable (SoundLibrarySession, LibraryControlAddress, LibraryBinding, LibraryOptionGesture?, LibraryPosition) async throws -> LibraryLiveMutation
     typealias FreshPreparation = @Sendable (SoundLibrarySession) async -> LibraryFreshPreparationResult
     typealias EditRead = @Sendable (SoundLibrarySession, LibraryEditHandle) async throws -> LibraryEditSnapshot
-    typealias Read = @Sendable (SoundLibrarySession) async throws -> LibrarySnapshot
+    typealias Read = @Sendable (SoundLibrarySession) async throws -> LibraryMenuState
     private let publish: (LibraryConsumerEvent) -> Void
     private let admit: (ListeningRenderSnapshot) throws -> Void
-    private var apply: ((ListeningRenderSnapshot, Bool) -> Void)?
+    private var apply: ((ListeningRenderSnapshot, Bool, LibraryDeliveryMode) -> Void)?
     private let read: Read
     private let editRead: EditRead
     private var session: SoundLibrarySession?
@@ -132,7 +137,77 @@ final class LibraryListeningCoordinator {
     private var pending: (command: UUID, commit: UUID, creation: LibraryCreationResult?, publication: Bool)?
     private var refreshTask: Task<Void, Never>?
     private var refreshWanted = false
+    private var refreshMode = LibraryDeliveryMode.positions
+    private(set) var presentation: LibraryMenuState?
+    private(set) var positionContext: MenuPositionContext?
+    private var deliveryEpoch: UInt64 = 0
+    private(set) var fullReadAttempts: UInt64 = 0
+    private let publishPositions: (LibraryMenuDelta, MenuPositionContext) -> Bool
+    private let menuMoveOverride: MenuMove?
+    typealias MenuMove = @MainActor @Sendable (SoundLibrarySession, LibraryControlAddress, LibraryMenuIdentity, LibraryOptionGesture?, LibraryPosition) async throws -> LibraryMenuMoveResult
     private var sliderBatch: LibrarySliderBatch?
+    private var checkpointAdmissions = 0
+    private var editorReaders = 0
+    private var continuationGestureContext: MenuPositionContext?
+    private var checkpointGestureContext: MenuPositionContext?
+    private var menuGestureContext: MenuPositionContext?
+    private var menuGestureIdentity: UUID?
+    private var parameterEnabled = false
+    private var parameterGesture: LibraryParameterGesture?
+    var perfParameterEvaluated: ((Double, LibraryPosition) -> Void)?
+    var perfParameterDocumentCommit: ((LibraryLiveMutation) -> Void)?
+    func beginParameterGesture(identity: UUID? = nil) {
+        sealSliderMoves()
+        menuGestureIdentity = identity
+        menuGestureContext = identity == nil ? nil : positionContext ?? continuationGestureContext ?? checkpointGestureContext
+        parameterEnabled = true
+    }
+    @discardableResult
+    private func commitParameter(_ owner: SoundLibrarySession) async throws -> LibraryLiveMutation? {
+        guard let gesture = parameterGesture else { return nil }
+        parameterGesture = nil
+        guard let latest = gesture.latest else { return nil }
+        let result = try await executeMenuOrdered(owner, address: gesture.plan.address,
+            expected: gesture.plan.identity, option: gesture.plan.option, value: latest)
+        perfParameterDocumentCommit?(result.outcome)
+        editor.invalidateCoverage()
+        return result.outcome
+    }
+    private func evaluateParameter(_ owner: SoundLibrarySession, address: LibraryControlAddress,
+        identity: LibraryMenuIdentity, option: LibraryOptionGesture?, value: LibraryPosition, epoch: UInt64) async throws -> LibrarySliderResult {
+        if let current = parameterGesture,
+           current.plan.identity != identity || current.plan.address != address || current.plan.option != option {
+            try await commitParameter(owner)
+            _ = await refresh(mode: .positions)
+        }
+        if parameterGesture == nil {
+            guard let plan = presentation?.parameterPlans.first(where: { $0.identity == identity && $0.address == address && $0.option == option }), plan.lease.isValid else {
+                return .executed(try await executeMenuOrdered(owner, address: address, expected: identity, option: option, value: value).outcome)
+            }
+            parameterGesture = LibraryParameterGesture(plan, epoch: epoch)
+        }
+        guard let gesture = parameterGesture else { return .executed(.superseded) }
+        gesture.latest = value
+        let started = ProcessInfo.processInfo.systemUptime
+        guard let delta = try gesture.plan.evaluate(value) else {
+            let outcome = try await commitParameter(owner) ?? .superseded
+            invalidatePositionDelivery()
+            return .executed(outcome)
+        }
+        guard epoch == deliveryEpoch, let context = positionContext,
+              let candidate = presentation?.applying(delta) else { return .fenced(.noChange) }
+        let delivered = try gesture.plan.lease.ifValid {
+            let transport = ListeningRenderSnapshot(menu: candidate)
+            try admit(transport)
+            guard publishPositions(delta, context) else { return false }
+            presentation = candidate
+            deliver(transport, compare: candidate.compareOriginal, mode: .positions)
+            return true
+        } ?? false
+        guard delivered else { invalidatePositionDelivery(); return .fenced(.superseded) }
+        perfParameterEvaluated?(ProcessInfo.processInfo.systemUptime - started, value)
+        return .live
+    }
     private var sliderEligibility: [LibrarySliderEligibility] = []
     private var sliderEligibilityBarriers = 0
     private let moveOverride: Move?
@@ -145,17 +220,22 @@ final class LibraryListeningCoordinator {
 
     init(publish: @escaping (LibraryConsumerEvent) -> Void,
          admit: @escaping (ListeningRenderSnapshot) throws -> Void = RenderAssignmentMapper.admitCapabilities,
-         apply: ((ListeningRenderSnapshot, Bool) -> Void)? = nil,
-         read: @escaping Read = { try await $0.snapshot() },
+         apply: ((ListeningRenderSnapshot, Bool, LibraryDeliveryMode) -> Void)? = nil,
+         read: @escaping Read = { try await $0.menuState() },
          editRead: @escaping EditRead = { try await $0.inspectEdit($1) },
-         move: Move? = nil) {
-        moveOverride = move
+         move: Move? = nil,
+         menuMove: MenuMove? = nil,
+         positions: @escaping (LibraryMenuDelta, MenuPositionContext) -> Bool = { _, _ in true }) {
+        moveOverride = move; menuMoveOverride = menuMove; publishPositions = positions
         self.editRead = editRead
         self.publish = publish; self.admit = admit; self.apply = apply; self.read = read
     }
     func beginEdit(_ target: LibraryEditTarget) async throws -> LibraryEditSnapshot {
         guard lifecycle == .running else { throw LibraryConsumerLifecycleError.unavailable(lifecycle) }
         guard let session else { throw LibraryConsumerLifecycleError.notReady }
+        invalidatePositionDelivery()
+        await joinLive()
+        try await commitParameter(session)
         return try await session.beginEdit(target, admission: RenderAssignmentMapper.admitParts)
     }
     func start(persistence: any LibraryPersistence, limits: LibraryLimits,
@@ -218,14 +298,14 @@ final class LibraryListeningCoordinator {
         publish(event)
     }
     private func invalidate() { generation += 1 }
-    private func deliver(_ snapshot: ListeningRenderSnapshot, compare: Bool) {
+    private func deliver(_ snapshot: ListeningRenderSnapshot, compare: Bool, mode: LibraryDeliveryMode) {
         guard lifecycle != .closed, let apply,
               applied?.snapshot != snapshot || applied?.compare != compare else { return }
-        applied = (snapshot, compare); apply(snapshot, compare)
+        applied = (snapshot, compare); apply(snapshot, compare, mode)
     }
     /// Attach only a real synchronous consumer. Never replay an inactive startup intent.
     @discardableResult
-    func attachPlayback(_ port: @escaping (ListeningRenderSnapshot, Bool) -> Void) async -> Bool {
+    func attachPlayback(_ port: @escaping (ListeningRenderSnapshot, Bool, LibraryDeliveryMode) -> Void) async -> Bool {
         guard lifecycle == .running, session != nil, apply == nil else { return false }
         await joinLive()
         guard lifecycle == .running else { return false }
@@ -235,39 +315,47 @@ final class LibraryListeningCoordinator {
         return lifecycle == .running
     }
     private func restrict(_ live: LibraryLiveState) {
-        if let applied { deliver(applied.snapshot.restricting(to: live), compare: live.compareOriginal) }
+        if let applied { deliver(applied.snapshot.restricting(to: live), compare: live.compareOriginal, mode: .positions) }
     }
     /// Read initiation order fences completions; command completions always request a new read.
-    func refresh() async {
-        guard lifecycle == .running, let session else { return }
+    @discardableResult
+    func refresh(mode: LibraryDeliveryMode = .activation) async -> Bool {
+        guard lifecycle == .running, let session else { return false }
         invalidate(); let requested = generation
         do {
+            fullReadAttempts &+= 1
             let snapshot = try await read(session)
-            guard requested == generation else { return }
-            let transport = ListeningRenderSnapshot(library: snapshot)
+            guard requested == generation else { return false }
+            let transport = ListeningRenderSnapshot(menu: snapshot)
             let failure: String?
             do { try admit(transport); failure = nil }
             catch { failure = String(describing: error) }
-            if failure == nil { deliver(transport, compare: snapshot.compareOriginal) }
+            if failure == nil && sliderEligibilityBarriers == 0 { deliver(transport, compare: snapshot.compareOriginal, mode: mode) }
             else {
                 let live = try await session.liveState()
-                guard requested == generation else { return }
+                guard requested == generation else { return false }
                 restrict(live)
             }
+            presentation = snapshot
+            if checkpointAdmissions == 0 && !snapshot.writing { checkpointGestureContext = nil }
+            let context = MenuPositionContext(presentation: snapshot, epoch: deliveryEpoch)
+            positionContext = context
             installSliderEligibility(snapshot, admitted: failure == nil)
-            emit(.state(LibraryConsumerPublication(generation: requested, snapshot: snapshot,
+            emit(.state(LibraryConsumerPublication(generation: requested, presentation: snapshot, positionContext: context,
                 menu: MenuLibraryProjection(snapshot), admissionFailure: failure)))
+            return true
         } catch {
-            guard requested == generation else { return }
+            guard requested == generation else { return false }
             sliderEligibility = []
             if let live = try? await session.liveState(), requested == generation { restrict(live) }
-            guard requested == generation else { return }
+            guard requested == generation else { return false }
             emit(.readFailure(String(describing: error)))
+            return false
         }
     }
     /// Only the mutation + cheap status read are ordered. Neither disk nor the full projection is on this tail.
     func enqueueMutation<Value: Sendable>(allowDuringDrain: Bool = false, statusAfterOperation: Bool = true,
-        preservingSliderEligibility: Bool = false,
+        preservingSliderEligibility: Bool = false, preservingGestureAdmission: Bool = false,
         _ operation: @escaping @MainActor @Sendable (SoundLibrarySession) async throws -> Value) throws -> Task<Value, Error> {
         guard lifecycle != .closed, lifecycle != .draining || allowDuringDrain else {
             throw LibraryConsumerLifecycleError.unavailable(lifecycle)
@@ -275,7 +363,8 @@ final class LibraryListeningCoordinator {
         guard let session = session ?? (allowDuringDrain ? openingOwner : nil) else {
             throw LibraryConsumerLifecycleError.notReady
         }
-        if preservingSliderEligibility { sealSliderMoves() } else { beginSliderEligibilityBarrier() }
+        if preservingSliderEligibility { sealSliderMoves() }
+        else { beginSliderEligibilityBarrier(preservingGestureAdmission: preservingGestureAdmission) }
         liveSequence += 1
         invalidate()
         let previous = liveTail, completion = LibraryCommandCompletion()
@@ -287,7 +376,10 @@ final class LibraryListeningCoordinator {
             }
             await previous?.value
             let result: Value
-            do { result = try await operation(session) }
+            do {
+                if !preservingSliderEligibility { try await self.commitParameter(session) }
+                result = try await operation(session)
+            }
             catch { invalidate(); throw error }
             if statusAfterOperation { try await mutationStatus(session) }
             return result
@@ -307,30 +399,80 @@ final class LibraryListeningCoordinator {
     }
     func publishEditor(_ state: LibraryEditorState) { emit(.editor(state)) }
     func editorAcknowledged(_ command: UUID) { emit(.editorMutation(command)) }
+    private func beginEditorRead() {
+        if editorReaders == 0 { invalidatePositionDelivery(preservingGestureAdmission: true) }
+        else { sealSliderMoves() }
+        editorReaders += 1
+    }
+    private func finishEditorRead(_ owner: SoundLibrarySession?) async {
+        editorReaders -= 1
+        guard editorReaders == 0, lifecycle == .running, let owner else { return }
+        let expected = generation
+        do {
+            fullReadAttempts &+= 1
+            let snapshot = try await read(owner)
+            guard editorReaders == 0, expected == generation else { return }
+            let transport = ListeningRenderSnapshot(menu: snapshot)
+            try admit(transport)
+            if sliderEligibilityBarriers == 0 { deliver(transport, compare: snapshot.compareOriginal, mode: .positions) }
+            else { restrict(snapshot.live) }
+            let unchanged = presentation == snapshot
+            presentation = snapshot
+            let context = MenuPositionContext(presentation: snapshot, epoch: deliveryEpoch)
+            positionContext = context
+            continuationGestureContext = nil
+            if checkpointAdmissions == 0 && !snapshot.writing { checkpointGestureContext = nil }
+            installSliderEligibility(snapshot, admitted: true)
+            if unchanged { emit(.positionContext(context)) }
+            else { emit(.state(LibraryConsumerPublication(generation: expected, presentation: snapshot, positionContext: context,
+                menu: MenuLibraryProjection(snapshot), admissionFailure: nil))) }
+        } catch {
+            if editorReaders == 0 && expected == generation { continuationGestureContext = nil }
+            emit(.readFailure(String(describing: error)))
+        }
+    }
     func editorRead(_ handle: LibraryEditHandle) async throws -> (LibraryEditSnapshot, LibrarySaveCoverage) {
-        guard lifecycle != .closed, let session else { throw LibraryConsumerLifecycleError.notReady }
-        return try await (editRead(session, handle), session.saveCoverage())
+        beginEditorRead()
+        do {
+            await joinLive()
+            guard lifecycle != .closed, let session else { throw LibraryConsumerLifecycleError.notReady }
+            try await commitParameter(session)
+            let result = try await (editRead(session, handle), session.saveCoverage())
+            await finishEditorRead(session)
+            return result
+        } catch { await finishEditorRead(session); throw error }
     }
     func editorInspect(_ owner: SoundLibrarySession, _ handle: LibraryEditHandle) async throws -> LibraryEditSnapshot {
         try await editRead(owner, handle)
     }
     func editorObservationIsCurrent(_ version: UInt64) -> Bool { lifecycle == .running && generation == version }
     func editorQuery<Value: Sendable>(_ operation: @Sendable (SoundLibrarySession) async throws -> Value) async throws -> (Value, UInt64) {
-        await joinLive()
-        guard lifecycle == .running, let session else { throw LibraryConsumerLifecycleError.unavailable(lifecycle) }
-        let version = generation
-        return try await (operation(session), version)
+        beginEditorRead()
+        do {
+            await joinLive()
+            guard lifecycle == .running, let session else { throw LibraryConsumerLifecycleError.unavailable(lifecycle) }
+            try await commitParameter(session)
+            let version = generation
+            let result = try await operation(session)
+            await finishEditorRead(session)
+            return (result, version)
+        } catch { await finishEditorRead(session); throw error }
     }
     func cancelEditorPreview(_ preview: LibraryUpdatePreview) async { await session?.cancelUpdateLibrary(preview) }
-    func requestRefresh() {
+    func requestRefresh(mode: LibraryDeliveryMode = .activation) {
         refreshWanted = true
+        if mode == .activation { refreshMode = .activation }
         guard refreshTask == nil else { return }
         refreshTask = Task { @MainActor in
-            repeat { refreshWanted = false; await refresh() } while refreshWanted && lifecycle == .running
+            repeat {
+                refreshWanted = false
+                let mode = refreshMode; refreshMode = .positions
+                await refresh(mode: mode)
+            } while refreshWanted && lifecycle == .running
             refreshTask = nil
         }
     }
-    private func installSliderEligibility(_ snapshot: LibrarySnapshot, admitted: Bool) {
+    private func installSliderEligibility(_ snapshot: LibraryMenuState, admitted: Bool) {
         sliderEligibility = []
         guard admitted, sliderEligibilityBarriers == 0, !snapshot.writing, !snapshot.unresolved else { return }
         for assignment in snapshot.assignments {
@@ -355,8 +497,8 @@ final class LibraryListeningCoordinator {
         lifecycle == .running && sliderEligibilityBarriers == 0 && sliderEligibility.contains(
             LibrarySliderEligibility(binding: expected, address: address, option: optionGesture))
     }
-    private func beginSliderEligibilityBarrier() {
-        sealSliderMoves()
+    private func beginSliderEligibilityBarrier(preservingGestureAdmission: Bool = false) {
+        invalidatePositionDelivery(preservingGestureAdmission: preservingGestureAdmission)
         sliderEligibility = []
         sliderEligibilityBarriers += 1
         invalidate()
@@ -365,6 +507,31 @@ final class LibraryListeningCoordinator {
         sliderEligibilityBarriers -= 1
         sliderEligibility = []
         invalidate()
+    }
+    func invalidatePositionDelivery(preservingGestureAdmission: Bool = false) {
+        if preservingGestureAdmission {
+            continuationGestureContext = positionContext ?? continuationGestureContext
+        } else {
+            continuationGestureContext = nil
+            checkpointGestureContext = nil
+            menuGestureContext = nil
+            menuGestureIdentity = nil
+        }
+        parameterEnabled = false
+        deliveryEpoch &+= 1
+        invalidate()
+        positionContext = nil
+        sealSliderMoves()
+        sliderEligibility = []
+    }
+    func playbackDidChange() {
+        invalidatePositionDelivery()
+        Task { @MainActor in
+            await joinLive()
+            do { if let session { try await commitParameter(session) } }
+            catch { emit(.readFailure(String(describing: error))) }
+            requestRefresh(mode: .positions)
+        }
     }
     func sealSliderMoves() {
         sliderBatch?.accepting = false
@@ -381,33 +548,65 @@ final class LibraryListeningCoordinator {
         if let option { return try await session.move(address, expected: binding, optionGesture: option, to: position) }
         return try await session.move(address, expected: binding, to: position)
     }
+    private func acceptsMenuEpoch(_ expected: UInt64?, gestureIdentity: UUID?) -> Bool {
+        if let gestureIdentity {
+            return gestureIdentity == menuGestureIdentity && expected != nil
+                && (expected == positionContext?.epoch || expected == menuGestureContext?.epoch)
+        }
+        return expected == nil || expected == positionContext?.epoch
+    }
     func submitSliderMove(_ address: LibraryControlAddress, expected: LibraryBinding, to value: LibraryPosition,
-                          optionGesture: LibraryOptionGesture? = nil) throws -> Task<LibrarySliderResult, Error> {
+                          optionGesture: LibraryOptionGesture? = nil, menuIdentity: LibraryMenuIdentity? = nil, expectedEpoch: UInt64? = nil, gestureIdentity: UUID? = nil) throws -> Task<LibrarySliderResult, Error> {
         guard lifecycle == .running else { throw LibraryConsumerLifecycleError.unavailable(lifecycle) }
         guard session != nil else { throw LibraryConsumerLifecycleError.notReady }
+        guard acceptsMenuEpoch(expectedEpoch, gestureIdentity: gestureIdentity) else { return Task { .executed(.superseded) } }
+        if let menuIdentity, presentation?.identity(for: expected) != menuIdentity {
+            return Task { .executed(.superseded) }
+        }
         guard sliderCanCoalesce(address, expected: expected, optionGesture: optionGesture) else {
-            let ordered = try submitMove(address, expected: expected, to: value, optionGesture: optionGesture)
+            let ordered: Task<LibraryLiveMutation, Error>
+            if let menuIdentity {
+                ordered = try enqueueMutation(preservingGestureAdmission: gestureIdentity != nil && gestureIdentity == menuGestureIdentity) { session in
+                    try await self.executeMenuOrdered(session, address: address, expected: menuIdentity,
+                        option: optionGesture, value: value).outcome
+                }
+            } else {
+                ordered = try submitMove(address, expected: expected, to: value, optionGesture: optionGesture)
+            }
             return Task { .executed(try await ordered.value) }
         }
         let request = LibrarySliderRequest(value)
-        if let batch = sliderBatch, batch.matches(expected, address, optionGesture) {
+        if let batch = sliderBatch, batch.matches(expected, address, optionGesture, identity: menuIdentity) {
             liveSequence += 1; invalidate()
             if batch.pending != nil { perfSliderCoalesced?() }
             batch.replace(request)
             perfSliderQueueChanged?(batch.inFlight ? 1 : 0, 1)
         } else {
-            let batch = LibrarySliderBatch(binding: expected, address: address, option: optionGesture, request: request)
+            let batch = LibrarySliderBatch(binding: expected, address: address, option: optionGesture, identity: menuIdentity, request: request)
             // enqueueMutation seals the previous segment before installing this one's tail.
+            let epoch = deliveryEpoch
+            let identity = menuIdentity ?? presentation?.identity(for: expected)
             _ = try enqueueMutation(statusAfterOperation: false, preservingSliderEligibility: true) { session in
                 defer { if self.sliderBatch === batch { self.sliderBatch = nil } }
                 while let next = batch.take() {
                     batch.inFlight = true
                     self.perfSliderQueueChanged?(1, batch.pending == nil ? 0 : 1)
                     do {
-                        let result = try await self.executeMove(session, address: batch.address, binding: batch.binding,
-                                                               option: batch.option, position: next.position)
-                        try await self.mutationStatus(session)
-                        next.finish(.success(.executed(result)))
+                        let result: LibrarySliderResult
+                        if let identity, self.moveOverride == nil, self.parameterEnabled || self.parameterGesture != nil {
+                            result = try await self.evaluateParameter(session, address: batch.address, identity: identity,
+                                option: batch.option, value: next.position, epoch: epoch)
+                        } else if let identity, self.moveOverride == nil {
+                            let value = try await self.executeMenuOrdered(session, address: batch.address,
+                                expected: identity, option: batch.option, value: next.position)
+                            result = .executed(value.outcome)
+                        } else {
+                            let value = try await self.executeMove(session, address: batch.address, binding: batch.binding,
+                                                                  option: batch.option, position: next.position)
+                            try await self.mutationStatus(session)
+                            result = .executed(value)
+                        }
+                        next.finish(.success(result))
                     } catch { next.finish(.failure(error)) }
                     batch.inFlight = false
                 }
@@ -422,6 +621,37 @@ final class LibraryListeningCoordinator {
                     optionGesture: LibraryOptionGesture? = nil) throws -> Task<LibraryLiveMutation, Error> {
         try scheduleLive { session in
             try await self.executeMove(session, address: address, binding: expected, option: optionGesture, position: value)
+        }
+    }
+    private func executeMenuOrdered(_ session: SoundLibrarySession, address: LibraryControlAddress,
+                                    expected: LibraryMenuIdentity, option: LibraryOptionGesture?, value: LibraryPosition) async throws -> LibraryMenuMoveResult {
+        if let override = menuMoveOverride { return try await override(session, address, expected, option, value) }
+        if perfMoveExecuted != nil {
+            let measured = try await session.measuredMenuMove(address, expected: expected, optionGesture: option, to: value)
+            perfMoveExecuted?(measured.measurement, value)
+            return measured.result
+        }
+        return try await session.moveForMenu(address, expected: expected, optionGesture: option, to: value)
+    }
+    func submitMenuMove(_ address: LibraryControlAddress, expected: LibraryMenuIdentity, to value: LibraryPosition,
+                        optionGesture: LibraryOptionGesture?, expectedEpoch: UInt64?, gestureIdentity: UUID? = nil) throws -> Task<LibraryLiveMutation, Error> {
+        let preservedChoice: Bool
+        if gestureIdentity == nil, let expectedEpoch, [positionContext, continuationGestureContext, checkpointGestureContext].contains(where: {
+               $0?.epoch == expectedEpoch && $0?.identities.contains(expected) == true
+           }),
+           let control = presentation?.uses.first(where: { $0.id == expected.binding.use })?.occurrences
+            .first(where: { $0.path == address.path })?.controls.first(where: { $0.id == address.control }), case .choice = control.face {
+            preservedChoice = true
+        } else { preservedChoice = false }
+        guard acceptsMenuEpoch(expectedEpoch, gestureIdentity: gestureIdentity) || preservedChoice else { return Task { .superseded } }
+        if preservedChoice {
+            menuGestureIdentity = nil; menuGestureContext = nil
+            return try enqueueMutation(preservingGestureAdmission: true) { session in
+                try await self.executeMenuOrdered(session, address: address, expected: expected, option: optionGesture, value: value).outcome
+            }
+        }
+        return try scheduleLive { session in
+            try await self.executeMenuOrdered(session, address: address, expected: expected, option: optionGesture, value: value).outcome
         }
     }
     func submitEnabled(_ enabled: Bool, expected: LibraryBinding? = nil) throws -> Task<LibraryLiveMutation, Error> {
@@ -520,7 +750,12 @@ final class LibraryListeningCoordinator {
     }
     func onMenuOpen() async {
         guard lifecycle == .running else { return }
+        invalidatePositionDelivery(preservingGestureAdmission: true)
+        menuGestureIdentity = nil
+        menuGestureContext = nil
+        await joinLive()
         do {
+            if let session { try await commitParameter(session) }
             if structuralActive != nil {
                 emit(.reconciliation(.inFlight(try await session?.liveState().pendingCommit)))
             } else { emit(.reconciliation(try await reconcileOwner())) }
@@ -540,18 +775,28 @@ final class LibraryListeningCoordinator {
         }
         var creation: LibraryCreationResult? { if case .creation(let value) = self { return value }; return nil }
     }
-    private func scheduleDurable(commandID: UUID,
+    private func scheduleDurable(commandID: UUID, preservingGestureAdmission: Bool = false,
         _ action: @escaping @Sendable (SoundLibrarySession) async throws -> DurableValue) -> Task<LibraryConsumerCommandResult, Never> {
         let id = commandID
         guard lifecycle == .running else {
             let result = LibraryConsumerCommandResult(command: id, outcome: .rejected(lifecycle))
             emit(.command(result)); return Task { result }
         }
-        beginSliderEligibilityBarrier()
+        let checkpointContext = preservingGestureAdmission ? positionContext ?? checkpointGestureContext : nil
+        if preservingGestureAdmission { checkpointAdmissions += 1 }
+        beginSliderEligibilityBarrier(preservingGestureAdmission: preservingGestureAdmission)
+        if preservingGestureAdmission {
+            checkpointGestureContext = checkpointContext
+            menuGestureContext = nil
+            menuGestureIdentity = nil
+        }
         let prior = structuralTail, mutationBarrier = liveTail, completion = LibraryCommandCompletion()
         structuralTail = completion
         let task = Task { @MainActor in
-            defer { endSliderEligibilityBarrier(); completion.finish() }
+            defer {
+                if preservingGestureAdmission { checkpointAdmissions -= 1 }
+                endSliderEligibilityBarrier(); completion.finish()
+            }
             _ = await prior?.value
             await mutationBarrier?.value
             let outcome: LibraryConsumerCommandOutcome
@@ -559,6 +804,7 @@ final class LibraryListeningCoordinator {
             var publication: LibraryUpdateResult?
             do {
                 guard let session else { throw LibraryError.invalidArchive }
+                try await commitParameter(session)
                 emit(.reconciliation(try await reconcileOwner()))
                 let state = try await session.liveState()
                 if state.unresolved || state.writing { outcome = .blocked(state.pendingCommit) }
@@ -603,7 +849,7 @@ final class LibraryListeningCoordinator {
         return await completeStructural(task)
     }
     func checkpoint(commandID: UUID = UUID()) async -> LibraryConsumerCommandResult {
-        let task = scheduleStructural(commandID: commandID) { try await $0.checkpoint() }
+        let task = submitCheckpoint(commandID: commandID)
         return await completeStructural(task)
     }
 
@@ -613,8 +859,29 @@ final class LibraryListeningCoordinator {
     func waitForIssuedSaves() async {
         await structuralTail?.value
     }
+    func submitGestureCheckpoint() -> Task<LibraryConsumerCommandResult, Never> {
+        sealSliderMoves()
+        menuGestureIdentity = nil
+        menuGestureContext = nil
+        return Task { @MainActor in
+            await joinLive()
+            if Task.isCancelled { return LibraryConsumerCommandResult(command: UUID(), outcome: .cancelled) }
+            guard lifecycle == .running else {
+                return LibraryConsumerCommandResult(command: UUID(), outcome: .rejected(lifecycle))
+            }
+            let checkpoint = submitCheckpoint()
+            let result = await checkpoint.value
+            while lifecycle == .running {
+                await joinLive()
+                let sequence = liveSequence
+                if await refresh(mode: .positions), sequence == liveSequence { break }
+                if !refreshWanted { break }
+            }
+            return result
+        }
+    }
     func submitCheckpoint(commandID: UUID = UUID()) -> Task<LibraryConsumerCommandResult, Never> {
-        scheduleStructural(commandID: commandID) { try await $0.checkpoint() }
+        scheduleDurable(commandID: commandID, preservingGestureAdmission: true) { try await .commit($0.checkpoint()) }
     }
     func submitCreateEmpty(name: String, commandID: UUID = UUID()) -> Task<LibraryConsumerCommandResult, Never> {
         scheduleDurable(commandID: commandID) { try await .creation($0.createEmpty(name: name)) }
@@ -649,6 +916,7 @@ final class LibraryListeningCoordinator {
     @discardableResult
     func beginDrain() -> Bool {
         guard lifecycle == .running else { return false }
+        invalidatePositionDelivery()
         editor.prepareDrain()
         lifecycle = .draining; discardRequested = false; invalidate()
         emit(.lifecycle(.draining)); return true
@@ -688,6 +956,7 @@ final class LibraryListeningCoordinator {
         guard lifecycle != .closed else { return .closed }
         guard let session else { return .startupUnavailable(startupStatus) }
         do {
+            try await commitParameter(session)
             emit(.reconciliation(try await reconcileOwner()))
             let state = try await session.liveState()
             if state.unresolved { return .unresolved(state.pendingCommit, "readback remains unresolved") }
@@ -717,6 +986,6 @@ final class LibraryListeningCoordinator {
         } catch { return .failed(String(describing: error)) }
     }
     /// Call after saved/discarded drain and before the existing output-first native shutdown.
-    func closePublications() { lifecycle = .closed; editor.retire(); apply = nil; invalidate() }
+    func closePublications() { invalidatePositionDelivery(); lifecycle = .closed; editor.retire(); apply = nil; invalidate() }
 
 }

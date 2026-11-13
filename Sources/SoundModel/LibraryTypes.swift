@@ -377,6 +377,7 @@ struct LibraryCommittedBytes: Sendable {
     }
 }
 struct LibraryOwnerState: Sendable {
+    let menuOwnerID = UUID()
     let port: any LibraryPersistence
     let limits: LibraryLimits
     let profiles: LibraryProfiles

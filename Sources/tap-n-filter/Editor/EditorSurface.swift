@@ -196,9 +196,9 @@ struct TNFEditorTreePanel: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                ForEach(commands.app.snapshot?.assignments ?? [], id: \.id) { assignment in
+                ForEach(commands.app.presentation?.assignments ?? [], id: \.id) { assignment in
                     let binding = LibraryBinding(assignment: assignment.id, use: assignment.use, target: assignment.target)
-                    if let use = commands.app.snapshot?.uses.first(where: { $0.id == assignment.use }) {
+                    if let use = commands.app.presentation?.uses.first(where: { $0.id == assignment.use }) {
                         HStack(spacing: 8) { TNFEditorAppIcon(identity: commands.appIdentity(assignment.target), size: 24); Text(commands.appName(assignment.target)).font(.system(size: 13, weight: .semibold)).foregroundStyle(commands.appIdentity(assignment.target).isMissing ? .secondary : .primary); Spacer(minLength: 0) }.padding(.vertical, 4)
                         TNFEditorTreeRow(commands: commands, binding: binding, name: use.name, path: [], part: nil, type: nil, depth: 0)
                         if commands.binding == binding, !commands.collapsedTree.contains(TNFEditorTreeKey(use: binding.use, path: [])), let edit = commands.edit {
@@ -289,7 +289,7 @@ struct TNFEditorAppIcon: View {
 /// Edit72.LibraryShelf: original search/section/row expressions, real library identities.
 struct TNFEditorLibraryShelf: View {
     @ObservedObject var commands: TNFEditorCommands
-    var definitions: [LibraryDefinitionSummary] { (commands.app.snapshot?.definitions ?? []).filter { commands.librarySearch.isEmpty || $0.name.localizedCaseInsensitiveContains(commands.librarySearch) } }
+    var definitions: [LibraryDefinitionSummary] { (commands.app.presentation?.definitions ?? []).filter { commands.librarySearch.isEmpty || $0.name.localizedCaseInsensitiveContains(commands.librarySearch) } }
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
@@ -323,7 +323,7 @@ struct TNFEditorLibraryShelf: View {
             Text(definition.name).font(.system(size: 13, weight: here ? .semibold : .regular)).lineLimit(1)
             Spacer(minLength: 0)
             if here {
-                ForEach((commands.app.snapshot?.uses ?? []).filter { use in use.definition == definition.id && commands.app.snapshot?.assignments.contains(where: { $0.use == use.id }) == true }.prefix(2), id: \.id) { use in TNFEditorAppIcon(identity: commands.appIdentity(use.target), size: 16).help(commands.appIdentity(use.target).isMissing ? "" : "On \(commands.appName(use.target))") }
+                ForEach((commands.app.presentation?.uses ?? []).filter { use in use.definition == definition.id && commands.app.presentation?.assignments.contains(where: { $0.use == use.id }) == true }.prefix(2), id: \.id) { use in TNFEditorAppIcon(identity: commands.appIdentity(use.target), size: 16).help(commands.appIdentity(use.target).isMissing ? "" : "On \(commands.appName(use.target))") }
             }
         }.frame(height: 28).padding(.horizontal, 6).contentShape(.rect)
             .background(here ? Color.primary.opacity(0.07) : .clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))

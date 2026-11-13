@@ -10,68 +10,92 @@ final class LibraryAppSession {
         try LibraryLimits(maximumBytes: 4_000_000, maximumRevisions: 128,
             expansion: LibraryExpansionLimits(maximumDepth: 16, maximumOccurrences: 128, maximumParts: 128))
     }
-    private(set) var snapshot: LibrarySnapshot?
+    private(set) var presentation: LibraryMenuState?
     private(set) var menuData: MenuSoundData?
-    private(set) var snapshotGeneration: UInt64?
+    private(set) var presentationGeneration: UInt64?
     private(set) var roster = LibraryRosterRequests()
     private(set) var startup: LibraryConsumerStartup = .starting
-    private(set) var problem: String?
+    var problem: String? { readProblem ?? operationProblem }
+    private var readProblem: String?
+    private var operationProblem: String?
     private(set) var acceptedCreation: (command: UUID, commit: UUID, reference: LibraryReference)?
     var editor: LibraryEditorAdapter { coordinator.editor }
     private let changed: () -> Void
+    private let attentionChanged: () -> Void
+    private let contextChanged: (MenuPositionContext) -> Void
+    private let positionsChanged: (LibraryMenuDelta, MenuPositionContext) -> Bool
+    private let menuMove: LibraryListeningCoordinator.MenuMove?
     var perfMutationCompleted: ((LibraryLiveMutation) -> Void)?
     var perfMutationFailed: (() -> Void)?
     func perfRefresh(_ menu: EverydayMenu, apps: [SourceAppInfo]) {
-        guard let snapshot, let menuData else { return }
-        menu.update(data: menuData, pendingApps: [], apps: apps, comparing: snapshot.compareOriginal,
-                    compareAvailable: false, problem: nil)
+        guard let presentation, let menuData else { return }
+        menu.update(data: menuData, positionContext: coordinator.positionContext, pendingApps: [], apps: apps, comparing: presentation.compareOriginal,
+                    compareAvailable: false, problem: problem == nil ? nil : "Audio Needs Attention…")
     }
     private let checkpointDelay: @Sendable () async throws -> Void
     private var debounce: Task<Void, Never>?
     private var gesturing = false
     private var saveEpoch: UInt64 = 0
+    private(set) var gestureSave: Task<LibraryConsumerCommandResult, Never>?
     private let editRead: LibraryListeningCoordinator.EditRead
     private let read: LibraryListeningCoordinator.Read
     private let move: LibraryListeningCoordinator.Move?
     private(set) lazy var coordinator = LibraryListeningCoordinator(
-        publish: { [weak self] in self?.receive($0) }, read: read, editRead: editRead, move: move)
+        publish: { [weak self] in self?.receive($0) }, read: read, editRead: editRead, move: move,
+        menuMove: menuMove, positions: { [weak self] in self?.receivePositions($0, context: $1) ?? false })
 
     init(changed: @escaping () -> Void,
-         read: @escaping LibraryListeningCoordinator.Read = { try await $0.snapshot() },
+         attentionChanged: @escaping () -> Void = {},
+         contextChanged: @escaping (MenuPositionContext) -> Void = { _ in },
+         positionsChanged: @escaping (LibraryMenuDelta, MenuPositionContext) -> Bool = { _, _ in true },
+         read: @escaping LibraryListeningCoordinator.Read = { try await $0.menuState() },
          editRead: @escaping LibraryListeningCoordinator.EditRead = { try await $0.inspectEdit($1) },
          checkpointDelay: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .milliseconds(200)) },
-         move: LibraryListeningCoordinator.Move? = nil) {
-        self.move = move
-        self.changed = changed; self.read = read; self.editRead = editRead; self.checkpointDelay = checkpointDelay
+         move: LibraryListeningCoordinator.Move? = nil,
+         menuMove: LibraryListeningCoordinator.MenuMove? = nil) {
+        self.move = move; self.menuMove = menuMove; self.positionsChanged = positionsChanged; self.contextChanged = contextChanged
+        self.attentionChanged = attentionChanged; self.changed = changed; self.read = read; self.editRead = editRead; self.checkpointDelay = checkpointDelay
+    }
+    private func receivePositions(_ delta: LibraryMenuDelta, context: MenuPositionContext) -> Bool {
+        guard let next = presentation?.applying(delta), let data = menuData?.applying(delta),
+              positionsChanged(delta, context) else { return false }
+        presentation = next; menuData = data
+        return true
     }
     private func receive(_ event: LibraryConsumerEvent) {
         if let receipt = event.rosterReceipt { roster.receive(receipt) }
         switch event {
+        case .positionContext(let context):
+            menuData = menuData?.contextualized(context)
+            contextChanged(context)
+            if readProblem != nil { readProblem = nil; attentionChanged() }
+            return
         case .state(let publication):
-            if snapshot != publication.snapshot {
-                snapshot = publication.snapshot
-                menuData = MenuSoundData(projection: publication.menu)
-            }
-            snapshotGeneration = publication.generation
-            roster.update(publication.snapshot)
-            if let failure = publication.admissionFailure { problem = failure }
+            presentation = publication.presentation
+            menuData = MenuSoundData(projection: publication.menu).contextualized(publication.positionContext)
+            presentationGeneration = publication.generation
+            roster.update(publication.presentation)
+            readProblem = publication.admissionFailure
         case .startup(let status):
             startup = status
             switch status {
             case .starting, .existing, .fresh, .migrated: break
-            default: problem = String(describing: status)
+            default: operationProblem = String(describing: status)
             }
         case .command(let result):
             switch result.outcome {
             case .accepted: break
-            default: problem = "The change could not be saved. \(result.outcome)"
+            default: operationProblem = "The change could not be saved. \(result.outcome)"
             }
         case .editorMutation: scheduleSave()
         case .editor(let state):
-            if let failure = state.failure { problem = failure }
+            if let failure = state.failure { operationProblem = failure }
         case .creationAccepted(let command, let commit, let reference):
             acceptedCreation = (command, commit, reference)
-        case .readFailure(let reason): problem = reason
+        case .readFailure(let reason):
+            readProblem = reason
+            attentionChanged()
+            return
         default: break
         }
         changed()
@@ -81,8 +105,8 @@ final class LibraryAppSession {
         await coordinator.start(persistence: persistence, limits: limits, migrationSource: migrationSource,
                                 freshPreparation: LibraryFreshPreparation.safariEveryday, builtins: .quickMenu)
     }
-    var isReady: Bool { snapshot != nil && coordinator.lifecycle == .running }
-    var neutral: ListeningRenderSnapshot? { snapshot.map(ListeningRenderSnapshot.init(library:)) }
+    var isReady: Bool { presentation != nil && coordinator.lifecycle == .running }
+    var neutral: ListeningRenderSnapshot? { presentation.map(ListeningRenderSnapshot.init(menu:)) }
 
     /// Admission and identity binding happen synchronously, before the command Task exists.
     @discardableResult
@@ -91,9 +115,9 @@ final class LibraryAppSession {
     }
     @discardableResult
     func request(_ direction: LibraryRosterRequests.Direction, target: String, id: UUID = UUID()) -> Bool {
-        guard coordinator.lifecycle == .running, let snapshot else { return false }
+        guard coordinator.lifecycle == .running, let presentation else { return false }
         let removing = direction == .remove
-        let definition = removing ? nil : snapshot.definitions.first(where: \.inTheMenu)?.id
+        let definition = removing ? nil : presentation.definitions.first(where: \.inTheMenu)?.id
         guard removing || definition != nil,
               roster.bind(id, bundle: target, direction: removing ? .remove : .add) else { return false }
         observe(coordinator.submitSelect(definition, on: target, commandID: id))
@@ -108,19 +132,20 @@ final class LibraryAppSession {
     func send(_ action: EverydayMenuAction) {
         guard coordinator.lifecycle != .closed else { return }
         switch action {
-        case .beginGesture:
-            coordinator.sealSliderMoves()
-            gesturing = true
-            saveEpoch &+= 1
-            cancelPendingSave()
+        case .beginGesture: beginGesture(nil)
+        case .beginMenuGesture(let identity): beginGesture(identity)
         case .endGesture:
             guard gesturing else { return }
             gesturing = false
-            _ = flushSave()
+            gestureSave = flushSave()
         case .putOn(let target): _ = request(.add, target: target)
         case .selectBlock(let definition, let target): select(definition, on: target)
         case .setEnabled(let enabled): live { try $0.submitEnabled(enabled) }
         case .libraryPower(let binding, let enabled): live { try $0.submitEnabled(enabled, expected: binding) }
+        case .gestureMove(let gesture, let identity, let epoch, let address, let option, let position):
+            listen(identity.binding, address, position, option: option, identity: identity, deliveryEpoch: epoch, gestureIdentity: gesture)
+        case .menuMove(let identity, let epoch, let address, let option, let position):
+            listen(identity.binding, address, position, option: option, identity: identity, deliveryEpoch: epoch)
         case .libraryMove(let binding, let address, let position):
             listen(binding, address, position, option: nil)
         case .libraryOptionMove(let binding, let address, let gesture, let position):
@@ -129,8 +154,16 @@ final class LibraryAppSession {
         default: break
         }
     }
+    private func beginGesture(_ identity: UUID?) {
+        gestureSave?.cancel(); gestureSave = nil
+        coordinator.beginParameterGesture(identity: identity)
+        gesturing = true
+        saveEpoch &+= 1
+        cancelPendingSave()
+    }
     private func listen(_ binding: LibraryBinding, _ address: LibraryControlAddress,
-                        _ position: LibraryPosition, option: LibraryOptionGesture?) {
+                        _ position: LibraryPosition, option: LibraryOptionGesture?, identity: LibraryMenuIdentity? = nil,
+                        deliveryEpoch: UInt64? = nil, gestureIdentity: UUID? = nil) {
         let card = menuData?.assignments.first { $0.binding == binding }
         let controls = (card?.controls ?? []) + (card?.optionTabs.flatMap(\.controls) ?? [])
         let slider = controls.contains { control in
@@ -138,26 +171,35 @@ final class LibraryAppSession {
             return true
         }
         guard slider, case .scalar = position else {
-            live { try $0.submitMove(address, expected: binding, to: position, optionGesture: option) }
+            if let identity {
+                live(positionOnly: true) { try $0.submitMenuMove(address, expected: identity, to: position,
+                    optionGesture: option, expectedEpoch: deliveryEpoch, gestureIdentity: gestureIdentity) }
+            } else {
+                live(positionOnly: true) { try $0.submitMove(address, expected: binding, to: position, optionGesture: option) }
+            }
             return
         }
         do {
-            let task = try coordinator.submitSliderMove(address, expected: binding, to: position, optionGesture: option)
+            let task = try coordinator.submitSliderMove(address, expected: binding, to: position,
+                optionGesture: option, menuIdentity: identity, expectedEpoch: deliveryEpoch, gestureIdentity: gestureIdentity)
             let epoch = saveEpoch
             Task {
                 do {
                     switch try await task.value {
-                    case .coalesced: break
+                    case .coalesced, .live: break
+                    case .delivered(let result), .fenced(let result):
+                        perfMutationCompleted?(result)
+                        if !gesturing && epoch == saveEpoch { scheduleSave() }
                     case .executed(let result):
                         perfMutationCompleted?(result)
-                        coordinator.requestRefresh()
+                        coordinator.requestRefresh(mode: .positions)
                         if !gesturing && epoch == saveEpoch { scheduleSave() }
                     }
                 } catch { perfMutationFailed?(); record(error) }
             }
         } catch { perfMutationFailed?(); record(error) }
     }
-    private func live(save: Bool = true,
+    private func live(save: Bool = true, positionOnly: Bool = false,
                       _ action: (LibraryListeningCoordinator) throws -> Task<LibraryLiveMutation, Error>) {
         do {
             let task = try action(coordinator)
@@ -166,7 +208,7 @@ final class LibraryAppSession {
                 do {
                     let result = try await task.value
                     perfMutationCompleted?(result)
-                    coordinator.requestRefresh()
+                    coordinator.requestRefresh(mode: positionOnly ? .positions : .activation)
                     if save && !gesturing && epoch == saveEpoch { scheduleSave() }
                 }
                 catch { perfMutationFailed?(); record(error) }
@@ -175,7 +217,7 @@ final class LibraryAppSession {
     }
     private func record(_ error: Error) {
         guard coordinator.lifecycle != .closed else { return }
-        problem = "The change could not be saved. \(error)"; changed()
+        operationProblem = "The change could not be saved. \(error)"; changed()
         if gesturing { gesturing = false; _ = flushSave() }
     }
     private func observe(_ task: Task<LibraryConsumerCommandResult, Never>) {
@@ -219,7 +261,7 @@ final class LibraryAppSession {
             debounce = nil
             let task = coordinator.submitCheckpoint()
             _ = await task.value
-            coordinator.requestRefresh(); editor.requestDisplay()
+            coordinator.requestRefresh(mode: .positions); editor.requestDisplay()
         }
     }
     @discardableResult
@@ -227,8 +269,8 @@ final class LibraryAppSession {
         cancelPendingSave()
         saveEpoch &+= 1
         guard coordinator.lifecycle == .running else { return nil }
-        let task = coordinator.submitCheckpoint()
-        Task { _ = await task.value; coordinator.requestRefresh(); editor.requestDisplay() }
+        let task = coordinator.submitGestureCheckpoint()
+        Task { _ = await task.value; editor.requestDisplay() }
         return task
     }
     func beginDrain() {

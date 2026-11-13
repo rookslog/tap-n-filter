@@ -35,27 +35,27 @@ struct TNFEditorOpenToggle {
     }
     var linkHelp: String? {
         guard let definition else { return nil }
-        let uses = app.snapshot?.uses.filter { $0.definition == definition.id }.count ?? 0
+        let uses = app.presentation?.uses.filter { $0.definition == definition.id }.count ?? 0
         if binding != nil { if changedHere { return "Linked · changed here" }; return uses > 1 ? "Linked · used in \(uses)" : "Linked" }
         return uses > 0 ? "Library · used in \(uses)" : "Library"
     }
     func blockDefinition(_ path: [UUID], binding selected: LibraryBinding? = nil) -> LibraryDefinitionSummary? {
         let selected = selected ?? binding
-        let use = selected.flatMap { binding in app.snapshot?.uses.first { $0.id == binding.use } }
+        let use = selected.flatMap { binding in app.presentation?.uses.first { $0.id == binding.use } }
         if path.isEmpty {
-            if let use { return app.snapshot?.definitions.first { $0.id == use.definition } }
+            if let use { return app.presentation?.definitions.first { $0.id == use.definition } }
             return definition
         }
         let occurrence = (selected == binding ? edit?.occurrences : use?.occurrences)?.first { $0.path == path }
-        return occurrence?.reference.flatMap { reference in app.snapshot?.definitions.first { $0.id == reference.definition } }
+        return occurrence?.reference.flatMap { reference in app.presentation?.definitions.first { $0.id == reference.definition } }
     }
     func blockName(_ path: [UUID]) -> String {
         guard !path.isEmpty else { return title }
         if let ref = edit?.occurrences.first(where: { $0.path == path })?.reference,
-           let definition = app.snapshot?.definitions.first(where: { $0.id == ref.definition }) { return definition.name }
+           let definition = app.presentation?.definitions.first(where: { $0.id == ref.definition }) { return definition.name }
         if let piece = edit?.pieces.first(where: { if case .reference(let site, _, _) = $0 { return site == path.first }; return false }),
            case .reference(_, let ref, _) = piece,
-           let definition = app.snapshot?.definitions.first(where: { $0.id == ref.definition }) { return definition.name }
+           let definition = app.presentation?.definitions.first(where: { $0.id == ref.definition }) { return definition.name }
         return "Block"
     }
     func laneName(_ binding: LibraryMappingSummary) -> String {

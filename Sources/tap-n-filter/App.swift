@@ -104,13 +104,15 @@ final class TNFDelegate: NSObject, NSApplicationDelegate {
         packagedLibraryValue: Bundle.main.object(forInfoDictionaryKey: LibrarySessionConfiguration.trialInfoKey),
         packagedLegacyValue: Bundle.main.object(forInfoDictionaryKey: SessionLocation.trialInfoKey))
       let limits = try LibraryAppSession.normalLimits()
-      let owner = LibraryAppSession(changed: { [weak self] in self?.refreshMenu() })
+      let owner = LibraryAppSession(changed: { [weak self] in self?.refreshMenu() },
+        attentionChanged: { [weak self] in self?.refreshAttention() },
+        contextChanged: { [weak self] in self?.surface?.updatePositionContext($0) }, positionsChanged: { [weak self] delta, context in self?.surface?.applyPositions(delta, context: context) ?? true })
       library = owner
       await owner.start(persistence: LibrarySessionFile(url: url, maximumBytes: limits.maximumBytes), limits: limits)
-      guard let accepted = owner.snapshot else { throw LibraryConsumerLifecycleError.notReady }
+      guard let accepted = owner.presentation else { throw LibraryConsumerLifecycleError.notReady }
       guard owner.coordinator.lifecycle == .running else { return }
       let glyph = try menuGlyph()
-      surface = EverydayMenu(snapshot: accepted, glyph: glyph,
+      surface = EverydayMenu(presentation: accepted, glyph: glyph,
         visibilityChanged: { [weak self] in self?.recordMenuVisibility($0) },
         visualizationDemandChanged: { [weak self] in self?.setVisualizationMode($0) }
       ) { [weak self] in self?.send($0) }
@@ -181,12 +183,21 @@ final class TNFDelegate: NSObject, NSApplicationDelegate {
       if ProbeDiagnostics.teardownUnconfirmed(value) { self?.probeDrainUnconfirmed = true }
       if let line = ProbeDiagnostics.visible(value) { print(line) }
     }
-    playback.changed = { [weak self] in self?.refreshMenu() }
+    playback.changed = { [weak self] in
+      self?.library?.coordinator.playbackDidChange()
+      self?.refreshMenu()
+    }
     self.playback = playback
     refreshSources()
     if let library {
-      _ = await library.coordinator.attachPlayback { [playback] snapshot, comparing in
-        playback.apply(snapshot, original: comparing)
+      _ = await library.coordinator.attachPlayback { [playback, weak self] snapshot, comparing, mode in
+        switch mode {
+        case .activation: playback.apply(snapshot, original: comparing)
+        case .positions:
+          if playback.updatePositions(snapshot, original: comparing) == .requiresFull {
+            self?.library?.coordinator.playbackDidChange()
+          }
+        }
       }
     } else if let snapshot { playback.apply(snapshot, original: false) }
     refreshMenu()
@@ -341,7 +352,7 @@ final class TNFDelegate: NSObject, NSApplicationDelegate {
   }
 
   private func refreshSources() {
-    let assigned = library?.snapshot?.assignments.map(\.target) ?? snapshot?.assignments.map(\.bundleIdentifier) ?? []
+    let assigned = library?.presentation?.assignments.map(\.target) ?? snapshot?.assignments.map(\.bundleIdentifier) ?? []
     var installed: [SourceCatalogMetadata] = []
     var icons = Dictionary(apps.map { ($0.bundleIdentifier, $0.icon) }, uniquingKeysWith: { first, _ in first })
     for bundle in SourceCatalog.lookupBundles(assigned: assigned) {
@@ -367,8 +378,14 @@ final class TNFDelegate: NSObject, NSApplicationDelegate {
     editorWindow?.open(preferredApp: preferredApp)
   }
 
+  private var menuProblem: String? {
+    library?.problem != nil || problem != nil || playback?.problem != nil ? "Audio Needs Attention…" : nil
+  }
+
+  private func refreshAttention() { surface?.updateProblem(menuProblem) }
+
   private func refreshMenu(snapshotOrigin: MenuSnapshotOrigin = .cached) {
-    if let library, let snapshot = library.snapshot {
+    if let library, let snapshot = library.presentation {
       editorWindow?.ownerDidChange(compareAvailable: playback?.compareAvailable == true)
       guard library.coordinator.lifecycle != .closed, let data = library.menuData else { return }
       if playback?.compareAvailable != true && snapshot.compareOriginal && !releasingLibraryCompare {
@@ -378,9 +395,9 @@ final class TNFDelegate: NSObject, NSApplicationDelegate {
           releasingLibraryCompare = false
         }
       }
-      surface?.update(data: data, pendingApps: Set(library.roster.pending.keys), apps: apps,
+      surface?.update(data: data, positionContext: library.coordinator.positionContext, pendingApps: Set(library.roster.pending.keys), apps: apps,
         comparing: snapshot.compareOriginal, compareAvailable: playback?.compareAvailable == true,
-        problem: library.problem != nil || problem != nil || playback?.problem != nil ? "Audio Needs Attention…" : nil)
+        problem: menuProblem)
       return
     }
     guard let snapshot else { return }

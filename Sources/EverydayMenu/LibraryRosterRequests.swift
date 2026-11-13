@@ -38,6 +38,10 @@ public struct LibraryRosterRequests: Equatable, Sendable {
         return true
     }
     public func isEnabled(_ bundle: String) -> Bool { pending[bundle] == nil }
+    public mutating func update(_ presentation: LibraryMenuState) {
+        committed = Set(presentation.assignments.map(\.target))
+        settleAccepted()
+    }
     public mutating func update(_ snapshot: LibrarySnapshot) {
         committed = Set(snapshot.assignments.map(\.target))
         settleAccepted()

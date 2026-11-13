@@ -1,5 +1,10 @@
 import Foundation
 
+private enum LibraryMoveEvaluation {
+    case applied(CompiledSound, LibraryMenuAppliedOutcome, eligible: Bool, baseGeneration: UInt64, baseStateRevision: UInt64)
+    case superseded
+}
+
 extension SoundDocument {
     func openLibrary(content: DocumentContent, metadata: LibraryMetadata, enabled: Bool,
                      profiles: LibraryProfiles, persistence: any LibraryPersistence,
@@ -555,11 +560,19 @@ extension SoundDocument {
         try libraryMove(target: target, key: OccurrenceControlKey(path: [], control: control), value: value)
     }
     func libraryMove(target: ApplicationKey, key: OccurrenceControlKey, value: ControlValue) throws {
+        _ = try libraryMoveSound(target: target, key: key, value: value)
+    }
+    private func libraryMoveSound(target: ApplicationKey, key: OccurrenceControlKey, value: ControlValue,
+                                  menuIdentity: LibraryMenuIdentity? = nil,
+                                  option: LibraryOptionGesture? = nil) throws -> LibraryMoveEvaluation {
         var state = try owner()
         let metadata = state.effectiveMetadata
         let binding = try active(target)
         let listening = content.listening[binding.root] ?? UseListeningState(positions: [:])
         let sound = try metadata.compile(root: binding.root, listening: listening, profiles: state.profiles, limits: state.limits)
+        if let option, !sound.optionControls.contains(where: {
+            $0.child.key == key && $0.parent == option.parent && $0.option == option.option && $0.isActive
+        }) { return .superseded }
         guard let control = sound.controlSchemas[key] else { throw DocumentError.unknownControl(key.control) }
         let canonical = try libraryValue(value, control: control)
         let payload = try metadata.payload(root: binding.root)
@@ -572,10 +585,52 @@ extension SoundDocument {
         } else {
             next = try mappingMove(transient, key: key, value: canonical)
         }
-        guard next != listening else { return }
-        _ = try metadata.compile(root: binding.root, listening: next, profiles: state.profiles, limits: state.limits)
+        let record = metadata.revisions.first { $0.definition.reference == transient.base }
+        let shipped = record.map {
+            ($0.payload.profile == LibraryProfiles.quickMenu && $0.definition.reference == state.profiles.quickMenuRecipe.definition.reference)
+                || ($0.payload.profile == LibraryProfiles.filters && $0.definition.reference == state.profiles.recipes.filters.definition.reference)
+        } ?? false
+        let owned = metadata.owned.first { $0.use.id == binding.root }
+        let eligible = menuIdentity != nil && state.pending == nil && state.uncertain == nil
+            && shipped && record?.origin == "builtin" && owned?.draft == nil && state.drafts[.use(binding.root)] == nil
+            && owned?.use.definition == transient.base && control.face == .slider
+            && sound.directSliderControls?.contains(LibraryControlAddress(path: key.path.map(\.rawValue), control: key.control.rawValue)) == true
+        let baseGeneration = state.liveGeneration
+        let baseStateRevision = libraryStateRevision
+        guard next != listening else { return .applied(sound, .noChange, eligible: eligible, baseGeneration: baseGeneration, baseStateRevision: baseStateRevision) }
+        let proposed = try metadata.compile(root: binding.root, listening: next, profiles: state.profiles, limits: state.limits)
         content.listening[binding.root] = next
         state.liveGeneration &+= 1; libraryOwner = state
+        return .applied(proposed, .changed, eligible: eligible, baseGeneration: baseGeneration, baseStateRevision: baseStateRevision)
+    }
+    func libraryMenuMove(expected: LibraryMenuIdentity, key: OccurrenceControlKey,
+                         option: LibraryOptionGesture?, value: LibraryPosition) throws -> LibraryMenuMoveResult {
+        let state = try owner()
+        guard state.menuOwnerID == expected.ownerID, matches(expected.binding),
+              content.uses.first(where: { $0.id.rawValue == expected.binding.use })?.definition == expected.reference.reference else {
+            return .superseded
+        }
+        let result = try libraryMoveSound(target: ApplicationKey(expected.binding.target), key: key,
+            value: value.validated(), menuIdentity: expected, option: option)
+        switch result {
+        case .superseded: return .superseded
+        case .applied(let sound, let outcome, let eligible, let baseGeneration, let baseStateRevision):
+            let live = try libraryLiveState(), current = try owner()
+            guard eligible else { return .fullRequired(outcome.mutation, live) }
+            do {
+                let assignment = ListeningRenderAssignment(id: expected.binding.assignment,
+                    bundleIdentifier: expected.binding.target,
+                    isEnabled: live.assignments.first { $0.binding == expected.binding }?.isEnabled == true,
+                    parts: try current.profiles.native(sound))
+                return .delta(LibraryMenuDelta(identity: expected, liveGeneration: current.liveGeneration, baseGeneration: baseGeneration,
+                    stateRevision: libraryStateRevision, baseStateRevision: baseStateRevision,
+                    live: live, outcome: outcome, occurrences: sound.occurrences,
+                    optionControls: sound.optionControls, directSliderControls: sound.directSliderControls,
+                    assignment: assignment))
+            } catch {
+                return .fullRequired(outcome.mutation, live)
+            }
+        }
     }
     func libraryCreateLinked(name: String, children: [DefinitionReference], target: ApplicationKey) async throws -> DefinitionID {
         try await settleWriter(); try libraryName(name)
@@ -625,7 +680,7 @@ extension SoundDocument {
         if var committed = state.committed {
             let wasCached = committed.cachedToken != nil
             let token = try committed.token()
-            if !wasCached { libraryOwner?.committed = committed }
+            if !wasCached { cacheLibraryCoverageToken(committed) }
             let current = state.effectiveMetadata.archive(content: content, enabled: isEnabled, token: token)
             unsaved = try current.encoded() != committed.data
         }
@@ -637,6 +692,12 @@ extension SoundDocument {
                                    liveGeneration: state.liveGeneration)
     }
     func librarySnapshot() throws -> LibrarySnapshot {
+        let state = try owner(), menu = try libraryMenuState(preparingParameters: false)
+        return LibrarySnapshot(isEnabled: menu.isEnabled, compareOriginal: menu.compareOriginal,
+            unsaved: try libraryUnsaved(state), unresolved: menu.unresolved, writing: menu.writing,
+            definitions: menu.definitions, uses: menu.uses, assignments: menu.assignments, pendingCommit: menu.pendingCommit)
+    }
+    func libraryMenuState(preparingParameters: Bool = true) throws -> LibraryMenuState {
         let state = try owner()
         let definitions = try state.metadata.heads.map { head in
             let record = try state.metadata.head(head.definition)
@@ -672,10 +733,9 @@ extension SoundDocument {
             return LibraryAssignmentSummary(isEnabled: binding.isEnabled, id: binding.id.rawValue, target: binding.app.bundleIdentifier,
                 use: binding.root.rawValue, definition: use.definition.id.rawValue, parts: try state.profiles.native(sound))
         }
-        let unsaved = try libraryUnsaved(state)
-        return LibrarySnapshot(isEnabled: isEnabled, compareOriginal: state.compareOriginal,
-            unsaved: unsaved, unresolved: state.uncertain != nil, writing: state.pending != nil,
-            definitions: definitions, uses: uses, assignments: assignments,
-            pendingCommit: state.uncertain?.token ?? state.pending?.token)
+        var result = LibraryMenuState(ownerID: state.menuOwnerID, liveGeneration: state.liveGeneration, stateRevision: libraryStateRevision,
+            live: try libraryLiveState(), definitions: definitions, uses: uses, assignments: assignments)
+        if preparingParameters { result.parameterPlans = try libraryParameterPlans(for: result) }
+        return result
     }
 }

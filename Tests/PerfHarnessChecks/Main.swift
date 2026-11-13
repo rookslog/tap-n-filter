@@ -25,8 +25,8 @@ struct PerfHarnessChecks {
     @MainActor static func main() async throws {
         try await run(URL(fileURLWithPath: CommandLine.arguments[1]))
     }
-    @MainActor static func run(_ directory: URL) async throws {
-        let root = directory.resolvingSymlinksInPath()
+    @MainActor static func run(_ root: URL) async throws {
+        let root = root.resolvingSymlinksInPath()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         func configuration() throws -> PerfConfiguration {
             let id = UUID()
@@ -60,12 +60,12 @@ struct PerfHarnessChecks {
         let store = PerfPersistence(run.library)
         let app = LibraryAppSession(changed: {}, checkpointDelay: {})
         await app.start(persistence: store, limits: try LibraryAppSession.normalLimits())
-        try requireHarness(app.isReady && app.snapshot?.isEnabled == false, "real harness owner starts fresh OFF")
+        try requireHarness(app.isReady && app.presentation?.isEnabled == false, "real harness owner starts fresh OFF")
         let initialCommits = await store.history()
         try requireHarness(!initialCommits.isEmpty && initialCommits.allSatisfy { $0.outcome == "committed" || $0.outcome == "identical" },
                            "counter records actual owned-file commit outcomes")
-        let assignment = app.snapshot!.assignments[0]
-        let use = app.snapshot!.uses.first { $0.id == assignment.use }!
+        let assignment = app.presentation!.assignments[0]
+        let use = app.presentation!.uses.first { $0.id == assignment.use }!
         let slider = use.controls.first { $0.title == "Softer" }!
         let binding = LibraryBinding(assignment: assignment.id, use: assignment.use, target: assignment.target)
         var applied = 0

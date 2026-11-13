@@ -57,7 +57,7 @@ struct TNFEditorUpdateChooser: View {
     @Environment(\.dismiss) private var dismiss
     var places: [TNFEditorPlace] {
         guard let definition = commands.definition else { return [] }
-        return (commands.app.snapshot?.uses ?? []).flatMap { use -> [TNFEditorPlace] in
+        return (commands.app.presentation?.uses ?? []).flatMap { use -> [TNFEditorPlace] in
             var result: [TNFEditorPlace] = []
             if use.definition == definition.id { result.append(TNFEditorPlace(place: LibraryUpdatePlace(use: use.id), name: commands.appName(use.target) + " · " + use.name, bundle: use.target)) }
             for occurrence in use.occurrences where occurrence.reference?.definition == definition.id {
@@ -93,7 +93,7 @@ struct TNFEditorDialogs: View {
                     Text("Update Library").font(.headline)
                     ScrollView {
                         VStack(alignment: .leading, spacing: 12) {
-                            ForEach(Array(plan.preview.places.enumerated()), id: \.offset) { _, place in appNamedText(commands.placeName(place), bundle: commands.app.snapshot?.uses.first { $0.id == place.use }?.target, commands: commands) }
+                            ForEach(Array(plan.preview.places.enumerated()), id: \.offset) { _, place in appNamedText(commands.placeName(place), bundle: commands.app.presentation?.uses.first { $0.id == place.use }?.target, commands: commands) }
                             ForEach(Array(plan.preview.removals.enumerated()), id: \.offset) { _, removal in
                                 HStack {
                                     Text(commands.controlNames[removal.address.control] ?? "Control")

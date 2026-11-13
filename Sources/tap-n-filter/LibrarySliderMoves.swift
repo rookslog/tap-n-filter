@@ -10,7 +10,10 @@ struct LibrarySliderEligibility: Equatable {
 // Replaced requests complete explicitly, without claiming an owner application.
 enum LibrarySliderResult: Sendable {
     case executed(LibraryLiveMutation)
+    case delivered(LibraryLiveMutation)
+    case fenced(LibraryLiveMutation)
     case coalesced
+    case live
 }
 
 @MainActor
@@ -38,14 +41,15 @@ final class LibrarySliderBatch {
     let binding: LibraryBinding
     let address: LibraryControlAddress
     let option: LibraryOptionGesture?
+    let identity: LibraryMenuIdentity?
     var pending: LibrarySliderRequest?
     var accepting = true
     var inFlight = false
-    init(binding: LibraryBinding, address: LibraryControlAddress, option: LibraryOptionGesture?, request: LibrarySliderRequest) {
-        self.binding = binding; self.address = address; self.option = option; pending = request
+    init(binding: LibraryBinding, address: LibraryControlAddress, option: LibraryOptionGesture?, identity: LibraryMenuIdentity?, request: LibrarySliderRequest) {
+        self.binding = binding; self.address = address; self.option = option; self.identity = identity; pending = request
     }
-    func matches(_ binding: LibraryBinding, _ address: LibraryControlAddress, _ option: LibraryOptionGesture?) -> Bool {
-        accepting && self.binding == binding && self.address == address && self.option == option
+    func matches(_ binding: LibraryBinding, _ address: LibraryControlAddress, _ option: LibraryOptionGesture?, identity: LibraryMenuIdentity?) -> Bool {
+        accepting && self.binding == binding && self.address == address && self.option == option && self.identity == identity
     }
     func replace(_ request: LibrarySliderRequest) {
         pending?.finish(.success(.coalesced))
@@ -54,4 +58,12 @@ final class LibrarySliderBatch {
     func take() -> LibrarySliderRequest? {
         let next = pending; pending = nil; return next
     }
+}
+
+@MainActor
+final class LibraryParameterGesture {
+    let plan: LibraryParameterPlan
+    let epoch: UInt64
+    var latest: LibraryPosition?
+    init(_ plan: LibraryParameterPlan, epoch: UInt64) { self.plan = plan; self.epoch = epoch }
 }
