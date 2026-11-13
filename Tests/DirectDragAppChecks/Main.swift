@@ -43,6 +43,8 @@ private actor Reads {
         if !errors.isEmpty { injectedFailures += 1; throw Failure.check(errors.removeFirst()) }
         return try await owner.menuState()
     }
+    /// Both counters in one actor turn, so no read can start between the two values.
+    func sample() -> (reads: Int, injected: Int) { (count, injectedFailures) }
 }
 @MainActor private final class Gate {
     private var waiter: CheckedContinuation<Void, Never>?
@@ -61,13 +63,38 @@ private actor Reads {
     var fullChanges = 0
     var attentionChanges = 0
     var observedProblems: [String?] = []
+    /// Count of attention + full notifications; read-failure checks wait on it instead of sleeping.
+    private(set) var notifications = 0
+    private var notificationWaiters: [(id: UUID, target: Int, continuation: CheckedContinuation<Bool, Never>)] = []
+    private func notified() {
+        notifications += 1
+        let ready = notificationWaiters.filter { notifications >= $0.target }
+        notificationWaiters.removeAll { notifications >= $0.target }
+        for waiter in ready { waiter.continuation.resume(returning: true) }
+    }
+    /// Resumes true once `target` notifications have arrived. The deadline only turns a missing
+    /// notification into a reported failure instead of a hang; no passing result depends on it.
+    func waitForNotifications(_ target: Int, deadline: Duration = .seconds(30)) async -> Bool {
+        if notifications >= target { return true }
+        let id = UUID()
+        return await withCheckedContinuation { continuation in
+            notificationWaiters.append((id, target, continuation))
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: deadline)
+                guard let self, let index = self.notificationWaiters.firstIndex(where: { $0.id == id }) else { return }
+                self.notificationWaiters.remove(at: index).continuation.resume(returning: false)
+            }
+        }
+    }
     func attention() {
         attentionChanges += 1
         observedProblems.append(app?.problem)
         view?.problem = app?.problem == nil ? nil : "Audio Needs Attention…"
+        notified()
     }
     func full() {
         fullChanges += 1
+        defer { notified() }
         guard let app, let presentation = app.presentation, let data = app.menuData else { return }
         if view == nil { view = MenuPresentation(presentation: presentation, glyph: NSImage(size: NSSize(width: 1, height: 1)), perform: { [weak self] in self?.actions.append($0); self?.app?.send($0) }) }
         view?.positionContext = app.coordinator.positionContext
@@ -396,6 +423,10 @@ struct DirectDragAppChecks {
         try demand(admitted, "selected editor read barrier restores fresh menu admission")
         app.close()
     }
+    // Requirement: after a failed read, each time the editor asks for its view the app reads exactly once,
+    // with no automatic retry, tells the user through attention only, and recovers quietly on the next read.
+    // Every count is sampled in one actor call after the trigger's completion notification. Nothing sleeps to
+    // order events; a 30 s deadline only turns a missing notification into a reported failure.
     @MainActor static func readFailureNotifications() async throws {
         let f = try await Fixture(), app = f.app
         let commands = TNFEditorCommands(app: app)
@@ -403,36 +434,41 @@ struct DirectDragAppChecks {
         await app.editor.displaySettled()
         try await commands.refresh()
         await app.editor.displaySettled()
-        let setupReads = await f.reads.count
-        try await Task.sleep(for: .milliseconds(50))
-        let idleReads = await f.reads.count - setupReads
-        try demand(idleReads == 0, "failure setup settled with zero idle reads")
+        // Settled sample. Replaces the old 50 ms idle window: any read that starts between here and a
+        // trigger's completion is counted in that trigger's sample below and fails it.
+        let settled = await f.reads.sample()
         f.surface.selectedEditor = commands
         let publications = f.surface.fullChanges, notices = f.surface.attentionChanges
-        let beforeReads = await f.reads.count
         let failures = ["availability-one", "availability-two", "availability-three"]
         await f.reads.armFailures(failures)
-        for (index, reason) in failures.enumerated() {
+        func counts() async -> (reads: Int, injected: Int) { let s = await f.reads.sample(); return (s.reads - settled.reads, s.injected) }
+        func trigger(_ label: String) async throws -> (reads: Int, injected: Int) {
+            let target = f.surface.notifications + 1
             commands.receiveOwnerChange()
-            try await Task.sleep(for: .milliseconds(200))
-            let reads = await f.reads.count - beforeReads, injected = await f.reads.injectedFailures
-            try demand(reads == index + 1 && injected == index + 1,
-                "explicit failure trigger \(index + 1) performs exactly one read without automatic retry")
+            let arrived = await f.surface.waitForNotifications(target)
+            let sample = await counts()
+            try demand(arrived, "\(label) completion notification arrived: notifications=\(f.surface.notifications) target=\(target) (reads,injected)=\(sample) attention=+\(f.surface.attentionChanges - notices) full=+\(f.surface.fullChanges - publications)")
+            return sample
+        }
+        for (index, reason) in failures.enumerated() {
+            let sample = try await trigger("explicit failure trigger \(index + 1)")
+            try demand(sample.reads == index + 1 && sample.injected == index + 1,
+                "explicit failure trigger \(index + 1) performs exactly one read without automatic retry: (reads,injected)=\(sample) expected=(\(index + 1), \(index + 1))")
             try demand(f.surface.fullChanges == publications && f.surface.attentionChanges == notices + index + 1,
-                "failure \(index + 1) notifies attention without semantic owner publication")
+                "failure \(index + 1) notifies attention without semantic owner publication: attention=+\(f.surface.attentionChanges - notices) full=+\(f.surface.fullChanges - publications)")
             try demand(app.problem?.contains(reason) == true && f.surface.observedProblems.last??.contains(reason) == true
                 && f.surface.view?.problem == "Audio Needs Attention…" && app.coordinator.positionContext == nil,
-                "distinct failure \(index + 1) remains observable with attention and unavailable context")
+                "distinct failure \(index + 1) remains observable with attention and unavailable context: problem=\(String(describing: app.problem)) observed=\(String(describing: f.surface.observedProblems.last ?? nil)) viewProblem=\(String(describing: f.surface.view?.problem)) contextPresent=\(app.coordinator.positionContext != nil)")
         }
-        commands.receiveOwnerChange()
-        try await Task.sleep(for: .milliseconds(200))
-        let recoveredReads = await f.reads.count - beforeReads
-        try demand(recoveredReads == 4 && app.coordinator.positionContext != nil && commands.projection != nil,
-            "explicit recovered read restores current context with no feedback reads")
+        _ = try await trigger("explicit recovery trigger")
+        await app.editor.displaySettled()
+        let recovered = await counts()
+        try demand(recovered.reads == 4 && recovered.injected == 3 && app.coordinator.positionContext != nil && commands.projection != nil,
+            "explicit recovered read restores current context with no feedback reads: (reads,injected)=\(recovered) expected=(4, 3) contextPresent=\(app.coordinator.positionContext != nil) projection=\(commands.projection != nil)")
         try demand(app.problem == nil && f.surface.view?.problem == nil && f.surface.attentionChanges == notices + 4
             && f.surface.fullChanges == publications,
-            "recovery clears read attention quietly without owner notification")
-        print("READ_FAILURE_COUNTS setupIdleReads=\(idleReads) explicitTriggers=4 reads=\(recoveredReads) injectedFailures=\(await f.reads.injectedFailures) ownerPublications=\(f.surface.fullChanges - publications) attentionNotifications=\(f.surface.attentionChanges - notices)")
+            "recovery clears read attention quietly without owner notification: problem=\(String(describing: app.problem)) viewProblem=\(String(describing: f.surface.view?.problem)) attention=+\(f.surface.attentionChanges - notices) full=+\(f.surface.fullChanges - publications)")
+        print("READ_FAILURE_COUNTS settledReads=\(settled.reads) explicitTriggers=4 reads=\(recovered.reads) injectedFailures=\(recovered.injected) ownerPublications=\(f.surface.fullChanges - publications) attentionNotifications=\(f.surface.attentionChanges - notices)")
         let card = f.card(), control = f.slider()
         let gesture = f.surface.view!.beginMovement(control, on: card)
         let token = f.surface.actions.compactMap { if case .beginMenuGesture(let id) = $0 { return id }; return nil }.last

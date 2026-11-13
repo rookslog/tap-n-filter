@@ -7,7 +7,7 @@ import SoundModel
 // PR #39 race checks: editor read counts after read failures, and menu clicks or drags that land
 // while an editor read or a release save is in flight.
 // Ordering is by gates and completion signals only. The one Task.sleep in this file is inside the
-// labelled legacy-predicate demonstration in R15-A, which reproduces Main.swift's check unchanged;
+// labelled legacy-predicate demonstration in R15-A, which reproduces the original timed check;
 // it orders nothing (the edit-read gate is what holds trigger 2).
 
 private enum HostedError: Error { case setup(String) }
@@ -241,7 +241,7 @@ struct PR39HostedRaceCases {
 
     // Requirement: each time the editor asks for its view after a failed read, the app reads exactly once
     // and does not retry on its own, however slowly that read runs. (Event-driven replacement for
-    // Main.swift readFailureNotifications, which sleeps 50 ms / 200 ms and samples its counters in two awaits.)
+    // the original timed read-failure check, which slept 50 ms / 200 ms and sampled its counters in two awaits.)
     @MainActor private static func r15HeldTrigger() async throws {
         let (f, commands) = try await readFixture()
         let publications = f.surface.fullChanges, notices = f.surface.attentionChanges
@@ -268,7 +268,7 @@ struct PR39HostedRaceCases {
         await f.editGate.gate.entered()
         let held = await relative()
         check(held == (1, 1), "R15-A trigger 2 held before its read: (reads,injected)=\(held) expected=(1, 1)")
-        // DEMO, not ordering: Main.swift:416-418 unchanged (sleep 200 ms, then two separate awaits).
+        // DEMO, not ordering: the original timed predicate (sleep 200 ms, then two separate awaits).
         try await Task.sleep(for: .milliseconds(200))
         let legacyReads = await f.reads.count - base, legacyInjected = await f.reads.injectedFailures
         let legacyPredicate = legacyReads == 2 && legacyInjected == 2
