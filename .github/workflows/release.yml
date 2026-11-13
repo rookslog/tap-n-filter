@@ -59,12 +59,12 @@ jobs:
           RUN_INTEGRATION_TESTS: '0'
           TNF_RUN_NATIVE_TESTS: '0'
         run: python3 -B tools/release/release.py build --runner "$RELEASE_RUNNER"
-      - name: Retain only release archive and public provenance
+      - name: Retain only release disk image and public provenance
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-${{ needs.admit.outputs.tag }}-${{ matrix.os }}
           path: |
-            release-assets/*.zip
+            release-assets/*.dmg
             release-assets/*.json
           if-no-files-found: error
           overwrite: false

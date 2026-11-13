@@ -41,7 +41,7 @@ struct MenuControlRow: View {
                 } ?? [:]) { state.activate($0, control: control, on: assignment) }
                 .frame(height: 26)
                 .overlay(MenuChoiceMarks(options: options, children: control.optionChildren, selected: selected,
-                                         open: open, tint: assignment.block.tint))
+                                         subcontrolsShown: open, tint: assignment.block.tint))
                 .background(MenuAnchor("control-\(assignment.id)-\(control.id)"))
             case .slider:
                 MenuTrack(value: position, label: control.title, spoken: readout,

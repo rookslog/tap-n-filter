@@ -133,19 +133,20 @@ struct MenuChoiceMarks: View {
     let options: [MenuSoundOption]
     let children: [UUID: [String]]
     let selected: UUID?
-    let open: Bool
+    let subcontrolsShown: Bool
     let tint: Color
 
     var body: some View {
         GeometryReader { geometry in
             ForEach(Array(options.enumerated()), id: \.element.id) { index, option in
                 if children[option.id]?.isEmpty == false {
-                    let isOpen = option.id == selected && open
-                    MenuChoiceTriangle(down: isOpen)
-                        .fill(option.id == selected && !isOpen ? tint : Color.secondary.opacity(0.75))
+                    let showingSubcontrols = option.id == selected && subcontrolsShown
+                    let notchColour = showingSubcontrols ? tint : Color.secondary.opacity(0.75)
+                    MenuChoiceTriangle(down: showingSubcontrols)
+                        .fill(notchColour)
                         .frame(width: 9, height: 4.5)
                         .position(x: geometry.size.width * (CGFloat(index) + 0.5) / CGFloat(options.count),
-                                  y: isOpen ? 25.75 : 20.5)
+                                  y: showingSubcontrols ? 25.75 : 20.5)
                 }
             }
         }.allowsHitTesting(false).accessibilityHidden(true)
