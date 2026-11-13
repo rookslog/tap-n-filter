@@ -35,8 +35,13 @@ private actor Port: LibraryPersistence {
 private actor Reads {
     var count = 0
     var owner: SoundLibrarySession?
+    private var errors: [String] = []
+    private(set) var injectedFailures = 0
+    func armFailures(_ messages: [String]) { errors = messages; injectedFailures = 0 }
     func read(_ owner: SoundLibrarySession) async throws -> LibraryMenuState {
-        self.owner = owner; count += 1; return try await owner.menuState()
+        self.owner = owner; count += 1
+        if !errors.isEmpty { injectedFailures += 1; throw Failure.check(errors.removeFirst()) }
+        return try await owner.menuState()
     }
 }
 @MainActor private final class Gate {
@@ -54,6 +59,13 @@ private actor Reads {
     var actions: [EverydayMenuAction] = []
     weak var selectedEditor: TNFEditorCommands?
     var fullChanges = 0
+    var attentionChanges = 0
+    var observedProblems: [String?] = []
+    func attention() {
+        attentionChanges += 1
+        observedProblems.append(app?.problem)
+        view?.problem = app?.problem == nil ? nil : "Audio Needs Attention…"
+    }
     func full() {
         fullChanges += 1
         guard let app, let presentation = app.presentation, let data = app.menuData else { return }
@@ -80,7 +92,7 @@ private actor Reads {
         _ = try await seedOwner.select(definitions.first { $0.name == "Filters" }!.id, on: "test.other")
         _ = try await seedOwner.checkpoint()
         let port = Port(await seed.data), reads = Reads(), surface = Surface()
-        let app = LibraryAppSession(changed: { surface.full() },
+        let app = LibraryAppSession(changed: { surface.full() }, attentionChanged: { surface.attention() },
             contextChanged: { surface.view?.installPositionContext($0) }, positionsChanged: { surface.positions($0, $1) }, read: { try await reads.read($0) }, menuMove: menuMove)
         surface.app = app
         await app.start(persistence: port, limits: limits)
@@ -110,10 +122,12 @@ struct DirectDragAppChecks {
         try await choiceDuringCheckpoint()
         try await editorReadAdmission(automatic: true)
         try await editorReadAdmission(automatic: false)
+        try await readFailureNotifications()
         try await controllerStartingOff()
         try controllerPolicy()
         try controllerStopResumePolicy()
         try await controllerAsyncLifecycle()
+        try await PR39RaceCases.run()
         print("PASS direct-drag coordinator/row/controller pure fakes; no native App/window/audio/device path")
     }
     @MainActor static func rowsAndRelease() async throws {
@@ -379,6 +393,59 @@ struct DirectDragAppChecks {
         f.surface.selectedEditor = nil
         gesture.end(); _ = await app.gestureSave?.value
         try demand(admitted, "selected editor read barrier restores fresh menu admission")
+        app.close()
+    }
+    @MainActor static func readFailureNotifications() async throws {
+        let f = try await Fixture(), app = f.app
+        let commands = TNFEditorCommands(app: app)
+        try await commands.select(.use(f.card().binding!))
+        await app.editor.displaySettled()
+        try await commands.refresh()
+        await app.editor.displaySettled()
+        let setupReads = await f.reads.count
+        try await Task.sleep(for: .milliseconds(50))
+        let idleReads = await f.reads.count - setupReads
+        try demand(idleReads == 0, "failure setup settled with zero idle reads")
+        f.surface.selectedEditor = commands
+        let publications = f.surface.fullChanges, notices = f.surface.attentionChanges
+        let beforeReads = await f.reads.count
+        let failures = ["availability-one", "availability-two", "availability-three"]
+        await f.reads.armFailures(failures)
+        for (index, reason) in failures.enumerated() {
+            commands.receiveOwnerChange()
+            try await Task.sleep(for: .milliseconds(200))
+            let reads = await f.reads.count - beforeReads, injected = await f.reads.injectedFailures
+            try demand(reads == index + 1 && injected == index + 1,
+                "explicit failure trigger \(index + 1) performs exactly one read without automatic retry")
+            try demand(f.surface.fullChanges == publications && f.surface.attentionChanges == notices + index + 1,
+                "failure \(index + 1) notifies attention without semantic owner publication")
+            try demand(app.problem?.contains(reason) == true && f.surface.observedProblems.last??.contains(reason) == true
+                && f.surface.view?.problem == "Audio Needs Attention…" && app.coordinator.positionContext == nil,
+                "distinct failure \(index + 1) remains observable with attention and unavailable context")
+        }
+        commands.receiveOwnerChange()
+        try await Task.sleep(for: .milliseconds(200))
+        let recoveredReads = await f.reads.count - beforeReads
+        try demand(recoveredReads == 4 && app.coordinator.positionContext != nil && commands.projection != nil,
+            "explicit recovered read restores current context with no feedback reads")
+        try demand(app.problem == nil && f.surface.view?.problem == nil && f.surface.attentionChanges == notices + 4
+            && f.surface.fullChanges == publications,
+            "recovery clears read attention quietly without owner notification")
+        print("READ_FAILURE_COUNTS setupIdleReads=\(idleReads) explicitTriggers=4 reads=\(recoveredReads) injectedFailures=\(await f.reads.injectedFailures) ownerPublications=\(f.surface.fullChanges - publications) attentionNotifications=\(f.surface.attentionChanges - notices)")
+        let card = f.card(), control = f.slider()
+        let gesture = f.surface.view!.beginMovement(control, on: card)
+        let token = f.surface.actions.compactMap { if case .beginMenuGesture(let id) = $0 { return id }; return nil }.last
+        let result = try await f.move(control, card: card, to: 0.9, gestureIdentity: token).value
+        let admitted: Bool
+        switch result { case .executed(.superseded), .fenced(.superseded): admitted = false; default: admitted = true }
+        try demand(admitted, "recovered context admits actual fresh producer gesture")
+        f.surface.selectedEditor = nil
+        gesture.end()
+        guard let save = app.gestureSave, case .accepted = await save.value.outcome else { throw Failure.check("recovered final save") }
+        let reopened = try await SoundLibrarySession(persistence: Port(await f.port.data), limits: LibraryAppSession.normalLimits())
+        let saved = try await reopened.snapshot()
+        try demand(saved.uses.first { $0.id == card.binding!.use }!.positions[control.id] == .scalar(0.9) && !saved.isEnabled,
+            "recovered gesture final save/reopen retains latest0.9 OFF")
         app.close()
     }
     @MainActor static func controllerStopResumePolicy() throws {

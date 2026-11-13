@@ -107,6 +107,12 @@ public final class EverydayMenu: NSObject, NSMenuDelegate {
         updateCommon(apps: apps, comparing: comparing, compareAvailable: compareAvailable, problem: problem, levels: levels)
     }
 
+    public func updateProblem(_ problem: String?) {
+        if state.problem != problem { state.problem = problem }
+        problemItem?.title = problem ?? "Audio Needs Attention…"
+        problemItem?.isHidden = problem == nil
+    }
+
     private func updateCommon(apps: [SourceAppInfo], comparing: Bool, compareAvailable: Bool,
                               problem: String?, levels: [UUID: MenuLevelFrame]) {
         if !state.apps.elementsEqual(apps, by: {
@@ -114,9 +120,7 @@ public final class EverydayMenu: NSObject, NSMenuDelegate {
         }) { state.apps = apps }
         if state.comparing != comparing { state.comparing = comparing }
         if state.compareAvailable != compareAvailable { state.compareAvailable = compareAvailable }
-        if state.problem != problem { state.problem = problem }
-        problemItem?.title = problem ?? "Audio Needs Attention…"
-        problemItem?.isHidden = problem == nil
+        updateProblem(problem)
         if state.levels != levels { state.levels = levels }
         let current = Set(state.snapshot.assignments.map(\.id))
         let retainedMore = state.more.intersection(current)

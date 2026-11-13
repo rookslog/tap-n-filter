@@ -148,6 +148,7 @@ final class LibraryListeningCoordinator {
     private var sliderBatch: LibrarySliderBatch?
     private var checkpointAdmissions = 0
     private var editorReaders = 0
+    private var continuationGestureContext: MenuPositionContext?
     private var checkpointGestureContext: MenuPositionContext?
     private var menuGestureContext: MenuPositionContext?
     private var menuGestureIdentity: UUID?
@@ -158,7 +159,7 @@ final class LibraryListeningCoordinator {
     func beginParameterGesture(identity: UUID? = nil) {
         sealSliderMoves()
         menuGestureIdentity = identity
-        menuGestureContext = identity == nil ? nil : positionContext ?? checkpointGestureContext
+        menuGestureContext = identity == nil ? nil : positionContext ?? checkpointGestureContext ?? continuationGestureContext
         parameterEnabled = true
     }
     @discardableResult
@@ -399,7 +400,7 @@ final class LibraryListeningCoordinator {
     func publishEditor(_ state: LibraryEditorState) { emit(.editor(state)) }
     func editorAcknowledged(_ command: UUID) { emit(.editorMutation(command)) }
     private func beginEditorRead() {
-        if editorReaders == 0 { invalidatePositionDelivery() }
+        if editorReaders == 0 { invalidatePositionDelivery(preservingGestureAdmission: true) }
         else { sealSliderMoves() }
         editorReaders += 1
     }
@@ -419,12 +420,16 @@ final class LibraryListeningCoordinator {
             presentation = snapshot
             let context = MenuPositionContext(presentation: snapshot, epoch: deliveryEpoch)
             positionContext = context
+            continuationGestureContext = nil
             if checkpointAdmissions == 0 && !snapshot.writing { checkpointGestureContext = nil }
             installSliderEligibility(snapshot, admitted: true)
             if unchanged { emit(.positionContext(context)) }
             else { emit(.state(LibraryConsumerPublication(generation: expected, presentation: snapshot, positionContext: context,
                 menu: MenuLibraryProjection(snapshot), admissionFailure: nil))) }
-        } catch { emit(.readFailure(String(describing: error))) }
+        } catch {
+            if editorReaders == 0 && expected == generation { continuationGestureContext = nil }
+            emit(.readFailure(String(describing: error)))
+        }
     }
     func editorRead(_ handle: LibraryEditHandle) async throws -> (LibraryEditSnapshot, LibrarySaveCoverage) {
         beginEditorRead()
@@ -504,7 +509,10 @@ final class LibraryListeningCoordinator {
         invalidate()
     }
     func invalidatePositionDelivery(preservingGestureAdmission: Bool = false) {
-        if !preservingGestureAdmission {
+        if preservingGestureAdmission {
+            continuationGestureContext = positionContext ?? continuationGestureContext
+        } else {
+            continuationGestureContext = nil
             checkpointGestureContext = nil
             menuGestureContext = nil
             menuGestureIdentity = nil
@@ -741,7 +749,9 @@ final class LibraryListeningCoordinator {
     }
     func onMenuOpen() async {
         guard lifecycle == .running else { return }
-        invalidatePositionDelivery()
+        invalidatePositionDelivery(preservingGestureAdmission: true)
+        menuGestureIdentity = nil
+        menuGestureContext = nil
         await joinLive()
         do {
             if let session { try await commitParameter(session) }
@@ -850,6 +860,8 @@ final class LibraryListeningCoordinator {
     }
     func submitGestureCheckpoint() -> Task<LibraryConsumerCommandResult, Never> {
         sealSliderMoves()
+        menuGestureIdentity = nil
+        menuGestureContext = nil
         return Task { @MainActor in
             await joinLive()
             if Task.isCancelled { return LibraryConsumerCommandResult(command: UUID(), outcome: .cancelled) }

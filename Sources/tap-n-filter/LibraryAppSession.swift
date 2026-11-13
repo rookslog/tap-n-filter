@@ -15,10 +15,13 @@ final class LibraryAppSession {
     private(set) var presentationGeneration: UInt64?
     private(set) var roster = LibraryRosterRequests()
     private(set) var startup: LibraryConsumerStartup = .starting
-    private(set) var problem: String?
+    var problem: String? { readProblem ?? operationProblem }
+    private var readProblem: String?
+    private var operationProblem: String?
     private(set) var acceptedCreation: (command: UUID, commit: UUID, reference: LibraryReference)?
     var editor: LibraryEditorAdapter { coordinator.editor }
     private let changed: () -> Void
+    private let attentionChanged: () -> Void
     private let contextChanged: (MenuPositionContext) -> Void
     private let positionsChanged: (LibraryMenuDelta, MenuPositionContext) -> Bool
     private let menuMove: LibraryListeningCoordinator.MenuMove?
@@ -27,7 +30,7 @@ final class LibraryAppSession {
     func perfRefresh(_ menu: EverydayMenu, apps: [SourceAppInfo]) {
         guard let presentation, let menuData else { return }
         menu.update(data: menuData, positionContext: coordinator.positionContext, pendingApps: [], apps: apps, comparing: presentation.compareOriginal,
-                    compareAvailable: false, problem: nil)
+                    compareAvailable: false, problem: problem == nil ? nil : "Audio Needs Attention…")
     }
     private let checkpointDelay: @Sendable () async throws -> Void
     private var debounce: Task<Void, Never>?
@@ -42,6 +45,7 @@ final class LibraryAppSession {
         menuMove: menuMove, positions: { [weak self] in self?.receivePositions($0, context: $1) ?? false })
 
     init(changed: @escaping () -> Void,
+         attentionChanged: @escaping () -> Void = {},
          contextChanged: @escaping (MenuPositionContext) -> Void = { _ in },
          positionsChanged: @escaping (LibraryMenuDelta, MenuPositionContext) -> Bool = { _, _ in true },
          read: @escaping LibraryListeningCoordinator.Read = { try await $0.menuState() },
@@ -50,7 +54,7 @@ final class LibraryAppSession {
          move: LibraryListeningCoordinator.Move? = nil,
          menuMove: LibraryListeningCoordinator.MenuMove? = nil) {
         self.move = move; self.menuMove = menuMove; self.positionsChanged = positionsChanged; self.contextChanged = contextChanged
-        self.changed = changed; self.read = read; self.editRead = editRead; self.checkpointDelay = checkpointDelay
+        self.attentionChanged = attentionChanged; self.changed = changed; self.read = read; self.editRead = editRead; self.checkpointDelay = checkpointDelay
     }
     private func receivePositions(_ delta: LibraryMenuDelta, context: MenuPositionContext) -> Bool {
         guard let next = presentation?.applying(delta), let data = menuData?.applying(delta),
@@ -64,30 +68,34 @@ final class LibraryAppSession {
         case .positionContext(let context):
             menuData = menuData?.contextualized(context)
             contextChanged(context)
+            if readProblem != nil { readProblem = nil; attentionChanged() }
             return
         case .state(let publication):
             presentation = publication.presentation
             menuData = MenuSoundData(projection: publication.menu).contextualized(publication.positionContext)
             presentationGeneration = publication.generation
             roster.update(publication.presentation)
-            if let failure = publication.admissionFailure { problem = failure }
+            readProblem = publication.admissionFailure
         case .startup(let status):
             startup = status
             switch status {
             case .starting, .existing, .fresh, .migrated: break
-            default: problem = String(describing: status)
+            default: operationProblem = String(describing: status)
             }
         case .command(let result):
             switch result.outcome {
             case .accepted: break
-            default: problem = "The change could not be saved. \(result.outcome)"
+            default: operationProblem = "The change could not be saved. \(result.outcome)"
             }
         case .editorMutation: scheduleSave()
         case .editor(let state):
-            if let failure = state.failure { problem = failure }
+            if let failure = state.failure { operationProblem = failure }
         case .creationAccepted(let command, let commit, let reference):
             acceptedCreation = (command, commit, reference)
-        case .readFailure(let reason): problem = reason
+        case .readFailure(let reason):
+            readProblem = reason
+            attentionChanged()
+            return
         default: break
         }
         changed()
@@ -209,7 +217,7 @@ final class LibraryAppSession {
     }
     private func record(_ error: Error) {
         guard coordinator.lifecycle != .closed else { return }
-        problem = "The change could not be saved. \(error)"; changed()
+        operationProblem = "The change could not be saved. \(error)"; changed()
         if gesturing { gesturing = false; _ = flushSave() }
     }
     private func observe(_ task: Task<LibraryConsumerCommandResult, Never>) {

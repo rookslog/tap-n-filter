@@ -105,6 +105,7 @@ final class TNFDelegate: NSObject, NSApplicationDelegate {
         packagedLegacyValue: Bundle.main.object(forInfoDictionaryKey: SessionLocation.trialInfoKey))
       let limits = try LibraryAppSession.normalLimits()
       let owner = LibraryAppSession(changed: { [weak self] in self?.refreshMenu() },
+        attentionChanged: { [weak self] in self?.refreshAttention() },
         contextChanged: { [weak self] in self?.surface?.updatePositionContext($0) }, positionsChanged: { [weak self] delta, context in self?.surface?.applyPositions(delta, context: context) ?? true })
       library = owner
       await owner.start(persistence: LibrarySessionFile(url: url, maximumBytes: limits.maximumBytes), limits: limits)
@@ -377,6 +378,12 @@ final class TNFDelegate: NSObject, NSApplicationDelegate {
     editorWindow?.open(preferredApp: preferredApp)
   }
 
+  private var menuProblem: String? {
+    library?.problem != nil || problem != nil || playback?.problem != nil ? "Audio Needs Attention…" : nil
+  }
+
+  private func refreshAttention() { surface?.updateProblem(menuProblem) }
+
   private func refreshMenu(snapshotOrigin: MenuSnapshotOrigin = .cached) {
     if let library, let snapshot = library.presentation {
       editorWindow?.ownerDidChange(compareAvailable: playback?.compareAvailable == true)
@@ -390,7 +397,7 @@ final class TNFDelegate: NSObject, NSApplicationDelegate {
       }
       surface?.update(data: data, positionContext: library.coordinator.positionContext, pendingApps: Set(library.roster.pending.keys), apps: apps,
         comparing: snapshot.compareOriginal, compareAvailable: playback?.compareAvailable == true,
-        problem: library.problem != nil || problem != nil || playback?.problem != nil ? "Audio Needs Attention…" : nil)
+        problem: menuProblem)
       return
     }
     guard let snapshot else { return }
