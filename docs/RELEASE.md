@@ -44,7 +44,7 @@ does not fix it, establish its cause, or qualify audio behavior on that OS.
    - for a final stable release, operator listening acceptance and the full release disposition;
    - privacy pass on the release notes and assets;
    - the working app's data path untouched, with rollback to the previous release possible.
-3. Deliberately tag a commit on protected `main`. The tagged workflow builds and checks both macOS runners. Eligible `vX.Y.Z-beta.N` tags publish prereleases with immutable checksummed assets. Stable `vX.Y.Z` tags retain workflow artifacts only; publishing stable remains a separate owner release action after listening acceptance. Packages use explicit ad-hoc signing only. Developer ID signing and notarization remain separate decisions. See [tagged automation](../tools/release/README.md) for artifact identity, reruns and the version-isolated launcher.
+3. Deliberately tag a commit on protected `main`. The tagged workflow builds and checks both macOS runners. Eligible `vX.Y.Z-alpha.N` and `vX.Y.Z-beta.N` tags publish prereleases with immutable checksummed assets. Stable `vX.Y.Z` tags retain workflow artifacts only; publishing stable remains a separate owner release action after listening acceptance. Packages use explicit ad-hoc signing only. Developer ID signing and notarization remain separate decisions. See [tagged automation](../tools/release/README.md) for artifact identity, reruns and the version-isolated launcher.
 
 ## Lanes
 - Light lane: work on a branch.

@@ -61,8 +61,13 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(r.version(TAG), {'tag': TAG, 'version': '0.2.0', 'bundleVersion': '1.2.0b1', 'prerelease': True})
         self.assertFalse(r.version('v1.2.3')['prerelease'])
 
+    def test_valid_alpha_versions_are_prereleases(self):
+        self.assertEqual(r.version('v0.1.0-alpha.1'), {'tag': 'v0.1.0-alpha.1', 'version': '0.1.0', 'bundleVersion': '1.1.0a1', 'prerelease': True})
+        self.assertEqual(r.version('v0.1.0-alpha.255')['bundleVersion'], '1.1.0a255')
+
     def test_malformed_or_unsafe_versions_refuse(self):
-        for tag in ['1.2.3', 'v01.2.3', 'v1.2', 'v1.2.3-rc.1', 'v1.2.3-beta.0', 'v1.2.3-beta.256', 'v1.2.3;echo injected', 'v1.2.3\n', 'v9999.1.1']:
+        for tag in ['1.2.3', 'v01.2.3', 'v1.2', 'v1.2.3-rc.1', 'v1.2.3-beta.0', 'v1.2.3-beta.256', 'v1.2.3;echo injected', 'v1.2.3\n', 'v9999.1.1',
+                    'v1.2.3-alpha', 'v1.2.3-alpha.0', 'v1.2.3-alpha.01', 'v1.2.3-alpha.256', 'v1.2.3-alpha1', 'v1.2.3-Alpha.1', 'v1.2.3-alpha.1-beta.1', 'v1.2.3-alpha.1\n']:
             with self.subTest(tag=tag), self.assertRaises(r.Refused):
                 r.version(tag)
 
