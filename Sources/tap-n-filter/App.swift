@@ -105,7 +105,7 @@ final class TNFDelegate: NSObject, NSApplicationDelegate {
         packagedLegacyValue: Bundle.main.object(forInfoDictionaryKey: SessionLocation.trialInfoKey))
       let limits = try LibraryAppSession.normalLimits()
       let owner = LibraryAppSession(changed: { [weak self] in self?.refreshMenu() },
-        positionsChanged: { [weak self] delta, context in self?.surface?.applyPositions(delta, context: context) ?? true })
+        contextChanged: { [weak self] in self?.surface?.updatePositionContext($0) }, positionsChanged: { [weak self] delta, context in self?.surface?.applyPositions(delta, context: context) ?? true })
       library = owner
       await owner.start(persistence: LibrarySessionFile(url: url, maximumBytes: limits.maximumBytes), limits: limits)
       guard let accepted = owner.presentation else { throw LibraryConsumerLifecycleError.notReady }

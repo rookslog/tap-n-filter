@@ -94,6 +94,7 @@ public final class PlaybackController {
   private var timer: Timer?
   private var samplingNotifications = PlaybackSamplingNotifications()
   private var terminationObserver: NSObjectProtocol?
+  var startedForTesting: ((UUID, String) -> Void)?
   var stoppedForTesting: ((UUID, String) -> Void)?
   public var changed: () -> Void = {}
   public var log: (String) -> Void = { _ in }
@@ -195,7 +196,8 @@ public final class PlaybackController {
     self.original = original
     let known = Dictionary(uniqueKeysWithValues: (previous?.assignments ?? []).map { ($0.id, $0.bundleIdentifier) })
     let plan = PlaybackPositionDelivery(snapshot: snapshot,
-      running: Set(lanes.filter { $0.value.state == .running }.map(\.key)), known: known)
+      running: Set(lanes.filter { $0.value.state == .running }.map(\.key)),
+      starting: Set(lanes.filter { $0.value.state == .starting }.map(\.key)), known: known)
     return plan.apply(update: { [self] assignment in
       guard let lane = lanes[assignment.id] else { return }
       do { try lane.factory.update(assignment, original: original) }
@@ -323,6 +325,7 @@ public final class PlaybackController {
         lane.failure = "Playback was refused. \(reason)"
       default: lane.state = .idle
       }
+      self.startedForTesting?(assignment.id, String(describing: lane.state))
       self.publishChange()
     }
   }

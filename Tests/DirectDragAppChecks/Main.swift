@@ -52,11 +52,15 @@ private actor Reads {
     weak var app: LibraryAppSession?
     var view: MenuPresentation?
     var actions: [EverydayMenuAction] = []
+    weak var selectedEditor: TNFEditorCommands?
+    var fullChanges = 0
     func full() {
+        fullChanges += 1
         guard let app, let presentation = app.presentation, let data = app.menuData else { return }
         if view == nil { view = MenuPresentation(presentation: presentation, glyph: NSImage(size: NSSize(width: 1, height: 1)), perform: { [weak self] in self?.actions.append($0); self?.app?.send($0) }) }
         view?.positionContext = app.coordinator.positionContext
         if view?.snapshot != data { view?.snapshot = data }
+        selectedEditor?.receiveOwnerChange()
     }
     func positions(_ delta: LibraryMenuDelta, _ context: MenuPositionContext) -> Bool {
         view?.applyPositions(delta, context: context) ?? false
@@ -77,7 +81,7 @@ private actor Reads {
         _ = try await seedOwner.checkpoint()
         let port = Port(await seed.data), reads = Reads(), surface = Surface()
         let app = LibraryAppSession(changed: { surface.full() },
-            positionsChanged: { surface.positions($0, $1) }, read: { try await reads.read($0) }, menuMove: menuMove)
+            contextChanged: { surface.view?.installPositionContext($0) }, positionsChanged: { surface.positions($0, $1) }, read: { try await reads.read($0) }, menuMove: menuMove)
         surface.app = app
         await app.start(persistence: port, limits: limits)
         self.app = app; self.surface = surface; self.reads = reads; self.port = port
@@ -103,6 +107,10 @@ struct DirectDragAppChecks {
         try await optionRowObservation()
         try await heldWrite()
         try await producerHeldWrite()
+        try await choiceDuringCheckpoint()
+        try await editorReadAdmission(automatic: true)
+        try await editorReadAdmission(automatic: false)
+        try await controllerStartingOff()
         try controllerPolicy()
         try controllerStopResumePolicy()
         try await controllerAsyncLifecycle()
@@ -319,6 +327,58 @@ struct DirectDragAppChecks {
         let value = try await reopened.snapshot().uses.first { $0.id == card.binding!.use }!.positions[control.id]
         print("PRODUCER reopened=\(String(describing: value)) expected=scalar0.9")
         try demand(value == .scalar(0.9), "retained actual row producer after fresh begin/newer move preserves saved/reopened0.9")
+        app.close()
+    }
+    @MainActor static func choiceDuringCheckpoint() async throws {
+        let f = try await Fixture(), app = f.app, card = f.card(), control = f.slider(), view = f.surface.view!
+        let drag = view.beginMovement(control, on: card); drag.change(0.6)
+        await f.port.arm(); drag.end(); await f.port.entered()
+        let first = app.gestureSave!
+        let parent = card.controls.first { if case .choice = $0.face { return true }; return false }!
+        guard case .choice(let options) = parent.face else { throw Failure.check("choice") }
+        let choice = options.first { $0.id != card.effectiveOption(parent)?.id }!
+        let outcome: LibraryLiveMutation = await withCheckedContinuation { continuation in
+            app.perfMutationCompleted = { result in app.perfMutationCompleted = nil; continuation.resume(returning: result) }
+            view.activate(choice, control: parent, on: card)
+        }
+        print("CHOICE held checkpoint outcome=\(outcome)")
+        await f.port.release(); _ = await first.value; _ = await app.flushSave()?.value
+        let reopened = try await SoundLibrarySession(persistence: Port(await f.port.data), limits: LibraryAppSession.normalLimits())
+        let value = try await reopened.snapshot().uses.first { $0.id == card.binding!.use }!.positions[parent.id]
+        try demand(outcome != .superseded && value == .scalar(choice.position), "actual fresh choice click survives held slider checkpoint and fresh reopen")
+        app.close()
+    }
+    @MainActor static func editorReadAdmission(automatic: Bool) async throws {
+        let f = try await Fixture(), app = f.app
+        let commands = TNFEditorCommands(app: app)
+        try await commands.select(.use(f.card().binding!))
+        try demand(commands.projection != nil, "actual selected editor projection installed")
+        if automatic {
+            let gate = Gate()
+            var observed = false
+            let subscription = commands.$projection.dropFirst().sink { value in
+                if value != nil { observed = true; gate.release() }
+            }
+            f.surface.selectedEditor = commands
+            await app.coordinator.refresh(mode: .positions)
+            if !observed { await gate.wait() }
+            subscription.cancel()
+            let publications = f.surface.fullChanges
+            try await commands.refresh(); try await commands.refresh()
+            try demand(f.surface.fullChanges == publications, "read-only selected editor mappings do not feed back owner publication/query")
+        } else {
+            await app.coordinator.refresh(mode: .positions)
+            app.editor.requestDisplay(); await app.editor.displaySettled()
+        }
+        let card = f.card(), control = f.slider(), gesture = f.surface.view!.beginMovement(control, on: card)
+        let result = try await f.move(control, card: card, to: 0.9,
+            gestureIdentity: f.surface.actions.compactMap { if case .beginMenuGesture(let id) = $0 { return id }; return nil }.last).value
+        print("EDITOR automatic=\(automatic) contextPresent=\(app.coordinator.positionContext != nil) result=\(result)")
+        let admitted: Bool
+        switch result { case .executed(.superseded), .fenced(.superseded): admitted = false; default: admitted = true }
+        f.surface.selectedEditor = nil
+        gesture.end(); _ = await app.gestureSave?.value
+        try demand(admitted, "selected editor read barrier restores fresh menu admission")
         app.close()
     }
     @MainActor static func controllerStopResumePolicy() throws {

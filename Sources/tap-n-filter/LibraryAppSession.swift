@@ -19,6 +19,7 @@ final class LibraryAppSession {
     private(set) var acceptedCreation: (command: UUID, commit: UUID, reference: LibraryReference)?
     var editor: LibraryEditorAdapter { coordinator.editor }
     private let changed: () -> Void
+    private let contextChanged: (MenuPositionContext) -> Void
     private let positionsChanged: (LibraryMenuDelta, MenuPositionContext) -> Bool
     private let menuMove: LibraryListeningCoordinator.MenuMove?
     var perfMutationCompleted: ((LibraryLiveMutation) -> Void)?
@@ -41,13 +42,14 @@ final class LibraryAppSession {
         menuMove: menuMove, positions: { [weak self] in self?.receivePositions($0, context: $1) ?? false })
 
     init(changed: @escaping () -> Void,
+         contextChanged: @escaping (MenuPositionContext) -> Void = { _ in },
          positionsChanged: @escaping (LibraryMenuDelta, MenuPositionContext) -> Bool = { _, _ in true },
          read: @escaping LibraryListeningCoordinator.Read = { try await $0.menuState() },
          editRead: @escaping LibraryListeningCoordinator.EditRead = { try await $0.inspectEdit($1) },
          checkpointDelay: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .milliseconds(200)) },
          move: LibraryListeningCoordinator.Move? = nil,
          menuMove: LibraryListeningCoordinator.MenuMove? = nil) {
-        self.move = move; self.menuMove = menuMove; self.positionsChanged = positionsChanged
+        self.move = move; self.menuMove = menuMove; self.positionsChanged = positionsChanged; self.contextChanged = contextChanged
         self.changed = changed; self.read = read; self.editRead = editRead; self.checkpointDelay = checkpointDelay
     }
     private func receivePositions(_ delta: LibraryMenuDelta, context: MenuPositionContext) -> Bool {
@@ -59,6 +61,10 @@ final class LibraryAppSession {
     private func receive(_ event: LibraryConsumerEvent) {
         if let receipt = event.rosterReceipt { roster.receive(receipt) }
         switch event {
+        case .positionContext(let context):
+            menuData = menuData?.contextualized(context)
+            contextChanged(context)
+            return
         case .state(let publication):
             presentation = publication.presentation
             menuData = MenuSoundData(projection: publication.menu).contextualized(publication.positionContext)

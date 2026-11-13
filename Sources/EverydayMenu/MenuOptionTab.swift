@@ -52,7 +52,7 @@ struct MenuOptionControlRow: View {
             Text(control.title).font(.system(size: 12)).foregroundStyle(.primary.opacity(0.88))
                 .lineLimit(1).fixedSize()
             MenuTrack(value: position, label: "\(control.title), \(tab.option.title)", spoken: readout,
-                keyboardInput: state.keyboardInput, start: { state.beginMovement(control, on: assignment) }) { state.move(control, on: assignment, to: $0) }
+                keyboardInput: state.keyboardInput, start: { state.beginMovement(control, on: assignment) }) { state.adjust(control, on: assignment, to: $0) }
                 .background(MenuAnchor("control-\(assignment.id)-\(control.id)"))
             Text(readout).font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
                 .frame(width: 34, alignment: .trailing)

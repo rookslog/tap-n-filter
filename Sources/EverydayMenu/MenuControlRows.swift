@@ -19,7 +19,7 @@ struct MenuControlRow: View {
     }
 
     private func move(_ value: Double) {
-        state.move(control, on: assignment, to: value)
+        state.adjust(control, on: assignment, to: value)
     }
 
     var body: some View {

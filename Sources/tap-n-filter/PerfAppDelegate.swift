@@ -61,7 +61,7 @@ final class PerfAppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             do {
                 let app = LibraryAppSession(changed: { [weak self] in self?.refresh() },
-                    positionsChanged: { [weak self] delta, context in self?.menu?.applyPositions(delta, context: context) ?? true })
+                    contextChanged: { [weak self] in self?.menu?.updatePositionContext($0) }, positionsChanged: { [weak self] delta, context in self?.menu?.applyPositions(delta, context: context) ?? true })
                 owner = app
                 app.perfMutationCompleted = { [weak self] result in
                     self?.applied += 1

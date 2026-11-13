@@ -141,6 +141,8 @@ public final class EverydayMenu: NSObject, NSMenuDelegate {
     }
 
     @discardableResult
+    public func updatePositionContext(_ context: MenuPositionContext) { state.installPositionContext(context) }
+
     public func applyPositions(_ delta: LibraryMenuDelta, context: MenuPositionContext) -> Bool {
         state.applyPositions(delta, context: context)
     }

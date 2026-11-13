@@ -179,6 +179,10 @@ final class MenuPresentation: ObservableObject {
             }
         }
     }
+    func installPositionContext(_ context: MenuPositionContext) {
+        positionContext = context
+        snapshotValue = snapshotValue.contextualized(context)
+    }
     private var rowPositions: [MenuRowPositionKey: MenuRowPosition] = [:]
     private var positionGeneration: UInt64 = 0
     private var positionStateRevision: UInt64 = 0
@@ -293,6 +297,7 @@ final class MenuPresentation: ObservableObject {
         endGesture()
         beginGesture()
         let gesture = gestureIdentity
+        let assignment = currentCard(assignment, for: control) ?? assignment
         return MenuTrackGesture(change: { [weak self] value in
             guard let self, let action = assignment.movement(for: control, to: value) else { return }
             if let gesture, case .menuMove(let identity, let epoch, let address, let option, let position) = action {
@@ -309,7 +314,19 @@ final class MenuPresentation: ObservableObject {
         return folds.isOpen(key, option: tab.option.id)
     }
 
+    private func currentCard(_ rendered: MenuSoundCard, for control: MenuSoundControl) -> MenuSoundCard? {
+        snapshotValue.assignments.first { card in
+            card.id == rendered.id && card.menuIdentity == rendered.menuIdentity && card.binding == rendered.binding
+                && (card.controls + card.optionTabs.flatMap(\.controls)).contains {
+                    $0.address == control.address && $0.optionGesture == control.optionGesture && $0.face == control.face
+                }
+        }
+    }
+    func adjust(_ control: MenuSoundControl, on rendered: MenuSoundCard, to value: Double) {
+        move(control, on: currentCard(rendered, for: control) ?? rendered, to: value)
+    }
     func activate(_ option: MenuSoundOption, control: MenuSoundControl, on card: MenuSoundCard) {
+        let card = currentCard(card, for: control) ?? card
         switch folds.activate(option, control: control, on: card, current: snapshot) {
         case .none: break
         case .toggle: resize?()
