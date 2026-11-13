@@ -28,6 +28,7 @@ enum LaunchPresentation: Equatable {
 @MainActor
 final class TNFDelegate: NSObject, NSApplicationDelegate {
   private var releasingLibraryCompare = false
+  private var instanceLock: TNFInstanceLock?
   private var library: LibraryAppSession?
   private var editorWindow: TNFEditorWindowController?
   private var model: ListeningSession?
@@ -100,9 +101,15 @@ final class TNFDelegate: NSObject, NSApplicationDelegate {
   private func boot() async throws {
     let probe = argument("--probe-bundle")
     if !smoke && probe == nil {
-      let url = try LibrarySessionConfiguration.normal(arguments: CommandLine.arguments,
+      // Every normal launch claims the one-copy lock before any library or audio work, whichever library it selects.
+      guard let support = try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+        appropriateFor: nil, create: false) else { throw LibrarySessionConfiguration.SelectionError.missing }
+      let decision = try TNFNormalLaunch.claim(arguments: CommandLine.arguments,
         packagedLibraryValue: Bundle.main.object(forInfoDictionaryKey: LibrarySessionConfiguration.trialInfoKey),
-        packagedLegacyValue: Bundle.main.object(forInfoDictionaryKey: SessionLocation.trialInfoKey))
+        packagedLegacyValue: Bundle.main.object(forInfoDictionaryKey: SessionLocation.trialInfoKey),
+        supportDirectory: support)
+      guard case .start(let url, let claimed) = decision else { exit(0) }
+      instanceLock = claimed
       let limits = try LibraryAppSession.normalLimits()
       let owner = LibraryAppSession(changed: { [weak self] in self?.refreshMenu() },
         attentionChanged: { [weak self] in self?.refreshAttention() },
@@ -712,8 +719,18 @@ struct TapNFilterApp {
     do {
       perf = try PerfConfiguration.parse(CommandLine.arguments,
         required: Bundle.main.object(forInfoDictionaryKey: "TNFPerfOnly") as? Bool == true)
-      try perf?.claim()
     } catch {
+      print(PerfConfiguration.refusalRecord(error))
+      exit(64)
+    }
+    // One copy at a time: yield silently, before any claim, data, audio, permission or menu work.
+    let selfPID = ProcessInfo.processInfo.processIdentifier
+    let running = NSWorkspace.shared.runningApplications.map {
+      RunningAppFacts(pid: $0.processIdentifier, bundleID: $0.bundleIdentifier,
+        executableName: $0.executableURL?.lastPathComponent)
+    }
+    if TNFInstancePolicy.shouldYield(selfPID: selfPID, running: running) { exit(0) }
+    do { try perf?.claim() } catch {
       print(PerfConfiguration.refusalRecord(error))
       exit(64)
     }

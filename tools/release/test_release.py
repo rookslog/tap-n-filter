@@ -1,14 +1,13 @@
 """Bounded synthetic fixtures. No Swift build, signing, App or network execution."""
 import json
+import os
 from pathlib import Path
 import plistlib
-import shlex
 import shutil
 import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
-import zipfile
 
 import release as r
 
@@ -111,77 +110,345 @@ class AdmissionTests(unittest.TestCase):
         run.assert_called_once()
 
 
-class LauncherTests(unittest.TestCase):
+ICON = b'SYNTHETIC icns bytes, not a real icon'
+LAUNCH = 'Open the DMG and drag tap-n-filter to Applications'
+PROVENANCE_FIELDS = {'tag', 'version', 'bundleVersion', 'prerelease', 'commit', 'runner', 'architecture', 'toolchain',
+                     'signing', 'asset', 'sha256', 'resources', 'tests', 'launch'}
+
+
+def make_product(product):
+    resource = product / 'tap-n-filter_tap-n-filter.bundle/Resources'
+    resource.mkdir(parents=True)
+    (resource / 'neck1.pdf').write_bytes(b'SYNTHETIC glyph, not actual native evidence')
+    (resource / 'nested').mkdir()
+    (resource / 'nested/file.bin').write_bytes(b'SYNTHETIC nested resource')
+    (product / 'tap-n-filter').write_bytes(b'SYNTHETIC not a Mach-O executable')
+    (product / 'tap-n-filter').chmod(0o755)
+    (product / 'Tests.bundle').mkdir()
+    (product / 'Tests.bundle/private.txt').write_text('SYNTHETIC must not be copied')
+    return resource
+
+
+def make_info(info):
+    """Source Info.plist with the S3 icon beside it, as in Sources/tap-n-filter/Resources."""
+    info.parent.mkdir(parents=True, exist_ok=True)
+    info.write_bytes(plistlib.dumps({'CFBundleIdentifier': 'com.loganrooks.tap-n-filter', 'CFBundleExecutable': 'tap-n-filter',
+                                     'LSUIElement': True, 'CFBundleIconFile': 'AppIcon'}))
+    (info.parent / 'AppIcon.icns').write_bytes(ICON)
+
+
+def flag(argv, name):
+    return argv[argv.index(name) + 1] if name in argv else None
+
+
+class SyntheticInterrupt(KeyboardInterrupt):
+    """A Ctrl-C stand-in: a BaseException, not an Exception, raised from inside a synthetic native call."""
+
+
+class SyntheticNative:
+    """Stands in for subprocess.run under release.command. hdiutil create snapshots -srcfolder; attach
+    copies that snapshot (symlinks kept) to -mountpoint; detach empties it. Nothing native runs.
+    `damage` alters the mounted copy only, to model an image whose contents differ from staging."""
+
+    def __init__(self, root, product, damage=None, fail=None):
+        self.root = root
+        self.product = product
+        self.damage = damage
+        self.fail = fail
+        self.calls = []
+        self.images = {}
+        self.created = []
+        self.mounts = []
+        self.mounted = None
+        self.detaches = []
+        self.store = Path(tempfile.mkdtemp(prefix='synthetic-image-store-', dir=root))
+
+    def result(self, argv, stdout='', code=0):
+        return subprocess.CompletedProcess(argv, code, stdout, 'SYNTHETIC failure' if code else '')
+
+    def under_mount(self, path):
+        return self.mounted is not None and (path == self.mounted or path.startswith(self.mounted + '/'))
+
+    def __call__(self, argv, cwd=None, **kwargs):
+        argv = list(map(str, argv))
+        self.calls.append(argv)
+        tool = argv[0]
+        if tool == 'swift' and '--show-bin-path' in argv:
+            return self.result(argv, str(self.product) + '\n')
+        if tool == 'swift' and argv[1:2] == ['--version']:
+            return self.result(argv, 'SYNTHETIC swift version')
+        if tool == 'swift':
+            return self.result(argv)
+        if tool == 'xcodebuild':
+            return self.result(argv, 'SYNTHETIC Xcode version')
+        if tool == '/usr/bin/strip':
+            return self.result(argv)
+        if tool == '/usr/bin/lipo':
+            if self.under_mount(argv[-1]) and self.damage == 'architecture':
+                return self.result(argv, 'x86_64\n')
+            return self.result(argv, 'arm64\n')
+        if tool == '/usr/bin/codesign':
+            if '--verify' in argv and self.under_mount(argv[-1]) and self.damage == 'signature':
+                return self.result(argv, code=1)
+            if '--verify' in argv and self.under_mount(argv[-1]) and self.fail == 'interrupt-verify':
+                raise SyntheticInterrupt()
+            return self.result(argv)
+        if tool == '/usr/bin/ditto':
+            if '-k' in argv or '-c' in argv or '-x' in argv:
+                raise AssertionError('zip archive step remains: ' + str(argv))
+            shutil.copytree(argv[-2], argv[-1], symlinks=True)
+            return self.result(argv)
+        if tool == '/usr/bin/hdiutil':
+            return self.hdiutil(argv)
+        raise AssertionError('Unexpected native boundary ' + str(argv))
+
+    def hdiutil(self, argv):
+        verb = argv[1]
+        if verb == 'create':
+            source = Path(flag(argv, '-srcfolder'))
+            image = Path(argv[-1])
+            snapshot = self.store / str(len(self.images))
+            shutil.copytree(source, snapshot, symlinks=True)
+            self.created.append({'argv': argv, 'entries': sorted(os.listdir(source)),
+                                 'link': os.readlink(source / 'Applications') if (source / 'Applications').is_symlink() else None,
+                                 'app_signed_before': any(c[0] == '/usr/bin/codesign' and '--force' in c for c in self.calls)})
+            token = ('SYNTHETIC disk image ' + str(len(self.images))).encode()
+            image.write_bytes(token)
+            self.images[token] = snapshot
+            return self.result(argv)
+        if verb == 'attach':
+            mountpoint = flag(argv, '-mountpoint')
+            image = Path(argv[-1])
+            fresh = not os.path.exists(mountpoint) or not os.listdir(mountpoint)
+            self.mounts.append({'argv': argv, 'mountpoint': mountpoint, 'fresh': fresh, 'image': image.name})
+            if self.fail == 'attach':
+                return self.result(argv, code=1)
+            if os.path.exists(mountpoint):
+                os.rmdir(mountpoint)
+            shutil.copytree(self.images[image.read_bytes()], mountpoint, symlinks=True)
+            self.mounted = mountpoint
+            self.alter(Path(mountpoint))
+            if self.fail == 'attach-after-mount':
+                return self.result(argv, code=1)
+            if self.fail == 'interrupt-attach':
+                raise SyntheticInterrupt()
+            return self.result(argv)
+        if verb == 'detach':
+            mountpoint = next((m['mountpoint'] for m in self.mounts if m['mountpoint'] in argv), None)
+            if mountpoint is None:
+                raise AssertionError('detach of an unknown mountpoint ' + str(argv))
+            self.detaches.append(argv)
+            if self.mounted is None or self.fail in ('detach', 'detach-always'):
+                return self.result(argv, code=1)
+            if self.fail == 'detach-once' and len(self.detaches) == 1:
+                return self.result(argv, code=1)
+            for child in Path(mountpoint).iterdir():
+                if child.is_dir() and not child.is_symlink():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+            self.mounted = None
+            return self.result(argv)
+        raise AssertionError('Unexpected hdiutil verb ' + str(argv))
+
+    def alter(self, mount):
+        app = mount / 'tap-n-filter.app'
+        resources = app / 'Contents/Resources/tap-n-filter_tap-n-filter.bundle/Resources'
+        if self.damage == 'link-target':
+            (mount / 'Applications').unlink()
+            (mount / 'Applications').symlink_to('/private/tmp')
+        elif self.damage == 'link-relative':
+            (mount / 'Applications').unlink()
+            (mount / 'Applications').symlink_to('Applications')
+        elif self.damage == 'link-folder':
+            (mount / 'Applications').unlink()
+            (mount / 'Applications').mkdir()
+        elif self.damage == 'link-missing':
+            (mount / 'Applications').unlink()
+        elif self.damage == 'extra-file':
+            (mount / 'README.txt').write_text('SYNTHETIC extra')
+        elif self.damage == 'extra-launcher':
+            (mount / 'Launch tap-n-filter.command').write_text('SYNTHETIC launcher')
+        elif self.damage == 'app-missing':
+            shutil.rmtree(app)
+        elif self.damage == 'resource-bytes':
+            (resources / 'nested/file.bin').write_bytes(b'SYNTHETIC changed resource')
+        elif self.damage == 'resource-extra':
+            (resources / 'unexpected.bin').write_bytes(b'SYNTHETIC extra resource')
+        elif self.damage == 'resource-missing':
+            (resources / 'nested/file.bin').unlink()
+        elif self.damage == 'icon':
+            (app / 'Contents/Resources/AppIcon.icns').write_bytes(b'SYNTHETIC different icon')
+        elif self.damage == 'executable':
+            (app / 'Contents/MacOS/tap-n-filter').write_bytes(b'SYNTHETIC different, validly signed executable')
+        elif self.damage == 'info-plist':
+            info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+            info['CFBundleIdentifier'] = 'com.example.other'
+            (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
+        elif self.damage == 'app-extra':
+            (app / 'Contents/MacOS/helper').write_bytes(b'SYNTHETIC extra executable')
+        elif self.damage == 'hidden-payload':
+            (mount / '.private-notes').write_text('SYNTHETIC hidden payload')
+        elif self.damage == 'hidden-app-payload':
+            (app / 'Contents/.private-notes').write_text('SYNTHETIC hidden payload inside the app')
+        elif self.damage == 'fseventsd':
+            (mount / '.fseventsd').mkdir()
+            (mount / '.fseventsd/fseventsd-uuid').write_bytes(b'SYNTHETIC filesystem metadata')
+
+
+class DiskImageBuildTests(unittest.TestCase):
+    """build_at end to end with every native command synthetic (S4)."""
+
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(prefix='tnf-launcher-synthetic-')
+        self.tmp = tempfile.TemporaryDirectory(prefix='tnf-dmg-synthetic-')
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        self.session = self.root / 'sessions' / TAG
-        self.open_call = self.root / 'open-call'
+        self.work = self.root / 'source'
+        make_info(self.work / 'Sources/tap-n-filter/Resources/Info.plist')
+        self.product = self.root / 'products'
+        make_product(self.product)
+        self.name = 'tap-n-filter-' + TAG + '-macos-15-arm64'
 
-    def run_launcher(self, count='0', status=0):
-        owner = self.root / 'synthetic-owner'
-        owner.write_text("#!/bin/bash\ncat >/dev/null\nprintf '%s\\n' " + shlex.quote(count) + "\nexit " + str(status) + "\n")
-        owner.chmod(0o755)
-        opener = self.root / 'synthetic-open'
-        opener.write_text("#!/bin/bash\nprintf '%s\\0' \"$@\" > " + shlex.quote(str(self.open_call)) + "\n")
-        opener.chmod(0o755)
-        script = r.launcher(TAG).replace('/usr/bin/osascript', str(owner)).replace('/usr/bin/open', str(opener))
-        script = script.replace('$HOME/Library/Application Support/tap-n-filter/versions/', str(self.root / 'sessions') + '/')
-        launcher = self.root / 'launch.command'
-        launcher.write_text(script)
-        return subprocess.run(['/bin/bash', str(launcher)], capture_output=True, text=True, timeout=5)
+    def run_build(self, damage=None, fail=None, tag=TAG, output=None):
+        native = SyntheticNative(self.root, self.product, damage, fail)
+        self.last_native = native
+        output = output or self.root / 'assets'
+        with patch('release.subprocess.run', side_effect=native):
+            r.build_at(self.work, self.root / 'scratch', dict(r.version(tag), commit=COMMIT), 'macos-15', output)
+        return native, output
 
-    def test_incumbent_and_unknown_owner_refuse_without_open_or_data_creation(self):
-        for count, status in [('1', 0), ('2', 0), ('unknown', 0), ('', 0), ('0', 9)]:
-            with self.subTest(count=count, status=status):
-                outcome = self.run_launcher(count, status)
-                self.assertNotEqual(outcome.returncode, 0)
-                self.assertFalse(self.open_call.exists())
-                self.assertFalse(self.session.exists())
+    def hdiutil_calls(self, native, verb):
+        return [i for i, c in enumerate(native.calls) if c[:2] == ['/usr/bin/hdiutil', verb]]
 
-    def test_no_owner_uses_launchservices_without_new_instance_and_private_directory(self):
-        outcome = self.run_launcher()
-        self.assertEqual(outcome.returncode, 0, outcome.stderr)
-        self.assertEqual(self.session.stat().st_mode & 0o777, 0o700)
-        self.assertEqual(self.session.parent.stat().st_mode & 0o777, 0o700)
-        arguments = self.open_call.read_bytes().decode().rstrip('\0').split('\0')
-        self.assertEqual(arguments, ['-a', str(self.root / 'tap-n-filter.app'), '--args', '--library-session-file', str(self.session / 'library-v5.json')])
-        self.assertNotIn('-n', arguments)
+    def test_assets_are_one_dmg_and_its_provenance_without_launcher_or_zip(self):
+        native, output = self.run_build()
+        self.assertEqual(sorted(os.listdir(output)), [self.name + '.dmg', self.name + '.json'])
+        self.assertFalse(any(p.suffix in ('.zip', '.command') for p in self.root.rglob('*') if 'synthetic-image-store-' not in str(p)))
+        provenance = json.loads((output / (self.name + '.json')).read_text())
+        self.assertEqual(set(provenance), PROVENANCE_FIELDS)
+        self.assertEqual(provenance['asset'], self.name + '.dmg')
+        self.assertEqual(provenance['sha256'], r.digest(output / (self.name + '.dmg')))
+        self.assertEqual(provenance['launch'], LAUNCH)
+        self.assertEqual(provenance['architecture'], 'arm64')
+        self.assertEqual(provenance['resources'], r.regular_files(self.product / 'tap-n-filter_tap-n-filter.bundle'))
 
-    def test_existing_version_data_and_permissions_are_not_rewritten(self):
-        self.session.mkdir(parents=True)
-        self.session.chmod(0o750)
-        saved = self.session / 'library-v5.json'
-        saved.write_bytes(b'SYNTHETIC existing owned data, not a real library')
-        outcome = self.run_launcher()
-        self.assertEqual(outcome.returncode, 0, outcome.stderr)
-        self.assertEqual(self.session.stat().st_mode & 0o777, 0o750)
-        self.assertEqual(saved.read_bytes(), b'SYNTHETIC existing owned data, not a real library')
+    def test_image_is_compressed_named_and_holds_exactly_signed_app_and_applications_link(self):
+        native, output = self.run_build()
+        self.assertEqual(len(native.created), 1)
+        created = native.created[0]
+        self.assertEqual(flag(created['argv'], '-format'), 'UDZO')
+        self.assertEqual(flag(created['argv'], '-volname'), 'tap-n-filter 0.2.0-beta.1')
+        self.assertTrue(created['argv'][-1].endswith('.dmg'))
+        self.assertEqual(created['entries'], ['Applications', 'tap-n-filter.app'])
+        self.assertEqual(created['link'], '/Applications')
+        self.assertTrue(created['app_signed_before'], 'image made before the app was ad-hoc signed')
+        for tag, volume in (('v0.1.0-alpha.2', 'tap-n-filter 0.1.0-alpha.2'), ('v1.2.3', 'tap-n-filter 1.2.3')):
+            with self.subTest(tag=tag):
+                native, _ = self.run_build(tag=tag, output=self.root / ('assets-' + tag))
+                self.assertEqual(flag(native.created[0]['argv'], '-volname'), volume)
 
-    def test_generated_owner_predicate_covers_bundle_executable_and_try_families(self):
-        query = r.launcher(TAG).split("<<'JXA'\n", 1)[1].split('\nJXA', 1)[0]
-        rows = [
-            ({'id': 'com.loganrooks.tap-n-filter', 'executable': 'unusual', 'bundle': 'Other.app'}, '1'),
-            ({'id': 'com.loganrooks.tap-n-filter.operator-try', 'executable': 'unusual', 'bundle': 'Other.app'}, '1'),
-            ({'id': 'local.private.pin', 'executable': 'tap-n-filter', 'bundle': 'Pinned.app'}, '1'),
-            ({'id': 'local.private.try', 'executable': 'unusual', 'bundle': 'TNF-Trial.app'}, '1'),
-            ({'id': 'local.private.pin', 'executable': 'unusual', 'bundle': 'TNF.app'}, '1'),
-            ({'id': 'local.private.try', 'executable': 'unusual', 'bundle': 'TNF-operator-try-04.app'}, '1'),
-            ({'id': 'com.apple.Safari', 'executable': 'Safari', 'bundle': 'Safari.app'}, '0'),
-        ]
-        prefix = "var ObjC={import:function(){},unwrap:function(v){return v;}};"
-        def execute(items):
-            fixture = json.dumps(items)
-            mock = "var rows=" + fixture + ";var apps={count:rows.length,objectAtIndex:function(i){var r=rows[i];return {bundleIdentifier:r.id,executableURL:{lastPathComponent:r.executable},bundleURL:{lastPathComponent:r.bundle}};}};var $={NSWorkspace:{sharedWorkspace:{runningApplications:apps}}};"
-            return subprocess.run(['node', '-e', prefix + mock + query + ';console.log(run());'], capture_output=True, text=True, timeout=5)
-        for row, expected in rows:
-            with self.subTest(row=row):
-                result = execute([row])
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(result.stdout.strip(), expected)
-        self.assertNotEqual(execute([{}]).returncode, 0)
-        self.assertEqual(execute([]).stdout.strip(), '0')
+    def test_verification_attaches_read_only_hidden_at_fresh_mountpoint_checks_then_detaches(self):
+        native, output = self.run_build()
+        attaches, detaches = self.hdiutil_calls(native, 'attach'), self.hdiutil_calls(native, 'detach')
+        self.assertEqual(len(attaches), 1)
+        self.assertEqual(len(detaches), 1)
+        attach = native.calls[attaches[0]]
+        self.assertIn('-readonly', attach)
+        self.assertIn('-nobrowse', attach)
+        mount = native.mounts[0]
+        self.assertTrue(mount['fresh'], 'mountpoint was not fresh')
+        self.assertEqual(mount['image'], self.name + '.dmg')
+        self.assertFalse(mount['mountpoint'].startswith('/Volumes/'))
+        self.assertFalse(Path(mount['mountpoint']).resolve().is_relative_to(output.resolve()))
+        between = native.calls[attaches[0] + 1:detaches[0]]
+        def on_mount(c):
+            return any(a == mount['mountpoint'] or a.startswith(mount['mountpoint'] + '/') for a in c[1:])
+        self.assertTrue(any(c[0] == '/usr/bin/codesign' and '--verify' in c and on_mount(c) for c in between), 'mounted signature not checked')
+        self.assertTrue(any(c[0] == '/usr/bin/lipo' and on_mount(c) for c in between), 'mounted architecture not checked')
+        self.assertIn(mount['mountpoint'], native.calls[detaches[0]])
+        self.assertLess(attaches[0], detaches[0])
+        self.assertIsNone(native.mounted)
+        second, _ = self.run_build(output=self.root / 'assets-second')
+        self.assertNotEqual(second.mounts[0]['mountpoint'], mount['mountpoint'])
+
+    def test_image_content_mismatch_refuses_and_always_detaches(self):
+        for damage in ('link-target', 'link-relative', 'link-folder', 'link-missing', 'extra-file', 'extra-launcher', 'app-missing',
+                       'architecture', 'signature', 'resource-bytes', 'resource-extra', 'resource-missing', 'icon'):
+            with self.subTest(damage=damage):
+                output = self.root / ('assets-' + damage)
+                with self.assertRaises(r.Refused):
+                    self.run_build(damage=damage, output=output)
+                native = self.last_native
+                self.assertEqual(len(self.hdiutil_calls(native, 'attach')), 1)
+                self.assertEqual(len(self.hdiutil_calls(native, 'detach')), 1, 'image left attached after refusal')
+                self.assertIsNone(native.mounted)
+                self.assertFalse(output.exists() and any(p.suffix == '.json' for p in output.iterdir()), 'provenance written for a refused image')
+
+    def test_attach_or_detach_failure_refuses(self):
+        for fail in ('attach', 'detach'):
+            with self.subTest(fail=fail):
+                output = self.root / ('assets-' + fail)
+                with self.assertRaises(r.Refused):
+                    self.run_build(fail=fail, output=output)
+                self.assertFalse(output.exists() and any(p.suffix == '.json' for p in output.iterdir()), 'provenance written after a failed attach/detach')
+
+    def assert_refused_and_detached(self, damage=None, fail=None):
+        output = self.root / ('assets-' + str(damage) + '-' + str(fail))
+        with self.assertRaises(r.Refused):
+            self.run_build(damage=damage, fail=fail, output=output)
+        native = self.last_native
+        self.assertFalse(output.exists() and any(p.suffix == '.json' for p in output.iterdir()), 'provenance written for a refused image')
+        return native
+
+    def test_round1_app_that_differs_from_staging_refuses_D1_3(self):
+        for damage in ('executable', 'info-plist', 'app-extra', 'hidden-app-payload'):
+            with self.subTest(damage=damage):
+                native = self.assert_refused_and_detached(damage=damage)
+                self.assertIsNone(native.mounted, 'image left attached after refusal')
+
+    def test_round1_hidden_payload_refuses_but_filesystem_metadata_is_accepted_D1_4(self):
+        native = self.assert_refused_and_detached(damage='hidden-payload')
+        self.assertIsNone(native.mounted)
+        native, output = self.run_build(damage='fseventsd', output=self.root / 'assets-fseventsd')
+        self.assertEqual(sorted(os.listdir(output)), [self.name + '.dmg', self.name + '.json'])
+
+    def test_round1_partial_attach_is_detached_D1_5(self):
+        native = self.assert_refused_and_detached(fail='attach-after-mount')
+        mountpoint = native.mounts[0]['mountpoint']
+        self.assertTrue(any(mountpoint in c for c in native.detaches), 'no detach after an attach that mounted then failed')
+        self.assertIsNone(native.mounted, 'image left attached after a partial attach')
+
+    def test_round1_failed_detach_retries_bounded_then_refuses_keeping_mountpoint_D1_5(self):
+        native = self.assert_refused_and_detached(fail='detach-always')
+        mountpoint = native.mounts[0]['mountpoint']
+        self.assertGreaterEqual(len(native.detaches), 2, 'no detach retry')
+        self.assertLessEqual(len(native.detaches), 5, 'detach retry unbounded')
+        self.assertTrue(any('-force' in c for c in native.detaches), 'no -force detach retry')
+        self.assertTrue(all(mountpoint in c for c in native.detaches))
+        self.assertTrue(os.path.isdir(os.path.join(mountpoint, 'tap-n-filter.app')), 'mountpoint contents removed while still mounted')
+
+    def test_round1_detach_that_succeeds_on_retry_completes_and_removes_mountpoint_D1_5(self):
+        native, output = self.run_build(fail='detach-once', output=self.root / 'assets-detach-once')
+        self.assertEqual(sorted(os.listdir(output)), [self.name + '.dmg', self.name + '.json'])
+        self.assertEqual(len(native.detaches), 2)
+        self.assertIsNone(native.mounted)
+        self.assertFalse(os.path.exists(native.mounts[0]['mountpoint']), 'mountpoint kept after a confirmed detach')
+
+    def test_round2_interrupt_after_attach_detaches_and_reraises_R2_3(self):
+        for fail in ('interrupt-verify', 'interrupt-attach'):
+            with self.subTest(fail=fail):
+                output = self.root / ('assets-' + fail)
+                with self.assertRaises(SyntheticInterrupt):
+                    self.run_build(fail=fail, output=output)
+                native = self.last_native
+                mountpoint = native.mounts[0]['mountpoint']
+                self.assertTrue(any(mountpoint in c for c in native.detaches), 'no detach after an interrupt')
+                self.assertIsNone(native.mounted, 'image left attached after an interrupt')
+                self.assertFalse(output.exists() and any(p.suffix == '.json' for p in output.iterdir()), 'provenance written after an interrupt')
+
+    def test_round1_mountpoint_removed_after_clean_detach(self):
+        native, _ = self.run_build(output=self.root / 'assets-clean-mount')
+        self.assertFalse(os.path.exists(native.mounts[0]['mountpoint']))
 
 
 class PackageTests(unittest.TestCase):
@@ -190,24 +457,16 @@ class PackageTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.product = self.root / 'products'
-        self.resource = self.product / 'tap-n-filter_tap-n-filter.bundle/Resources'
-        self.resource.mkdir(parents=True)
-        (self.resource / 'neck1.pdf').write_bytes(b'SYNTHETIC glyph, not actual native evidence')
-        (self.resource / 'nested').mkdir()
-        (self.resource / 'nested/file.bin').write_bytes(b'SYNTHETIC nested resource')
-        (self.product / 'tap-n-filter').write_bytes(b'SYNTHETIC not a Mach-O executable')
-        (self.product / 'tap-n-filter').chmod(0o755)
-        (self.product / 'Tests.bundle').mkdir()
-        (self.product / 'Tests.bundle/private.txt').write_text('SYNTHETIC must not be copied')
+        make_product(self.product)
         self.info = self.root / 'Info.plist'
-        self.info.write_bytes(plistlib.dumps({'CFBundleIdentifier': 'com.loganrooks.tap-n-filter', 'CFBundleExecutable': 'tap-n-filter', 'LSUIElement': True}))
+        make_info(self.info)
         self.calls = []
 
     def synthetic_native(self, command):
         self.calls.append(list(map(str, command)))
         return 'arm64' if command[0] == '/usr/bin/lipo' else ''
 
-    def test_minimal_nested_resources_version_launcher_and_archive(self):
+    def test_minimal_nested_resources_version_icon_and_no_launcher(self):
         output = self.root / 'package'
         app, arch, resources = r.package(self.product, self.info, output, dict(r.version(TAG), commit=COMMIT), 'macos-15', self.synthetic_native)
         self.assertEqual(arch, 'arm64')
@@ -215,24 +474,21 @@ class PackageTests(unittest.TestCase):
         info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
         self.assertEqual(info['CFBundleShortVersionString'], '0.2.0')
         self.assertEqual(info['CFBundleVersion'], '1.2.0b1')
+        self.assertEqual(info['CFBundleIconFile'], 'AppIcon')
+        self.assertEqual((app / 'Contents/Resources/AppIcon.icns').read_bytes(), ICON)
         self.assertFalse(any('Tests.bundle' in str(p) for p in output.rglob('*')))
-        launcher = output / 'Launch tap-n-filter.command'
-        self.assertIn('versions/' + TAG, launcher.read_text())
-        self.assertIn('--library-session-file "$session_dir/library-v5.json"', launcher.read_text())
-        self.assertNotIn(str(self.root), launcher.read_text())
-        archive = self.root / 'asset.zip'
-        r.archive(output, archive)
-        with zipfile.ZipFile(archive) as zipped:
-            self.assertIn('tap-n-filter.app/Contents/Resources/tap-n-filter_tap-n-filter.bundle/Resources/nested/file.bin', zipped.namelist())
-            self.assertEqual(zipped.getinfo('Launch tap-n-filter.command').external_attr >> 16 & 0o777, 0o755)
-        second = self.root / 'asset2.zip'
-        r.archive(output, second)
-        self.assertEqual(r.digest(archive), r.digest(second))
+        self.assertFalse(any(p.suffix in ('.command', '.zip') for p in output.rglob('*')), 'launcher or zip left in package')
         self.assertEqual([c[1] for c in self.calls if c[0] == '/usr/bin/codesign'], ['--force', '--verify'])
         with self.assertRaises(r.Refused):
             r.package(self.product, self.info, output, r.version(TAG), 'macos-15', self.synthetic_native)
 
+    def test_missing_icon_refuses(self):
+        (self.info.parent / 'AppIcon.icns').unlink()
+        with self.assertRaises(r.Refused):
+            r.package(self.product, self.info, self.root / 'out', r.version(TAG), 'macos-15', self.synthetic_native)
+
     def test_missing_or_symlink_resource_refuses(self):
+        self.resource = self.product / 'tap-n-filter_tap-n-filter.bundle/Resources'
         (self.resource / 'neck1.pdf').unlink()
         with self.assertRaises(r.Refused):
             r.package(self.product, self.info, self.root / 'out', r.version(TAG), 'macos-15', self.synthetic_native)
@@ -318,9 +574,9 @@ class PublishTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         for runner in ('macos-15', 'macos-26'):
             name = 'tap-n-filter-' + TAG + '-' + runner + '-arm64'
-            zip_path = self.root / (name + '.zip')
-            zip_path.write_bytes(b'SYNTHETIC non-native archive')
-            (self.root / (name + '.json')).write_text(json.dumps({'tag': TAG, 'commit': COMMIT, 'runner': runner, 'architecture': 'arm64', 'asset': zip_path.name, 'sha256': r.digest(zip_path)}))
+            image = self.root / (name + '.dmg')
+            image.write_bytes(b'SYNTHETIC non-native disk image ' + runner.encode())
+            (self.root / (name + '.json')).write_text(json.dumps({'tag': TAG, 'commit': COMMIT, 'runner': runner, 'architecture': 'arm64', 'asset': image.name, 'sha256': r.digest(image)}))
         self.assets = r.asset_plan(self.root, TAG, COMMIT)
 
     def test_prerelease_publishes_only_after_upload_and_identical_rerun_is_noop(self):
@@ -410,10 +666,32 @@ class PublishTests(unittest.TestCase):
             r.publish(api, 'v1.2.3', COMMIT, self.assets)
         self.assertEqual(api.calls, [])
 
+    def test_publish_uploads_exactly_the_dmg_and_json_pairs(self):
+        api = SyntheticAPI()
+        r.publish(api, TAG, COMMIT, self.assets)
+        uploaded = sorted(c[3].name for c in api.calls if c[0] == 'POST' and '/assets?' in c[1])
+        expected = sorted('tap-n-filter-' + TAG + '-' + runner + '-arm64' + suffix for runner in ('macos-15', 'macos-26') for suffix in ('.dmg', '.json'))
+        self.assertEqual(uploaded, expected)
+        self.assertEqual(sorted(self.assets), expected)
+
+    def test_zip_pairs_are_no_longer_release_assets(self):
+        with tempfile.TemporaryDirectory(prefix='tnf-zip-synthetic-') as tmp:
+            folder = Path(tmp)
+            for runner in ('macos-15', 'macos-26'):
+                name = 'tap-n-filter-' + TAG + '-' + runner + '-arm64'
+                archive = folder / (name + '.zip')
+                archive.write_bytes(b'SYNTHETIC old zip archive')
+                (folder / (name + '.json')).write_text(json.dumps({'tag': TAG, 'commit': COMMIT, 'runner': runner, 'architecture': 'arm64', 'asset': archive.name, 'sha256': r.digest(archive)}))
+            with self.assertRaises(r.Refused):
+                r.asset_plan(folder, TAG, COMMIT)
+        (self.root / 'Launch tap-n-filter.command').write_text('SYNTHETIC launcher')
+        with self.assertRaises(r.Refused):
+            r.asset_plan(self.root, TAG, COMMIT)
+
     def test_wrong_commit_digest_or_extra_files_refuse(self):
         with self.assertRaises(r.Refused):
             r.asset_plan(self.root, TAG, 'b' * 40)
-        target = next(self.root.glob('*.zip'))
+        target = next(self.root.glob('*.dmg'))
         target.write_bytes(b'SYNTHETIC changed bytes')
         with self.assertRaises(r.Refused):
             r.asset_plan(self.root, TAG, COMMIT)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tag admission, minimal ad-hoc app packaging and immutable prerelease assets."""
+"""Tag admission, minimal ad-hoc app packaging in a DMG and immutable prerelease assets."""
 import argparse
 import hashlib
 import json
@@ -10,10 +10,10 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import zipfile
 
 
 class Refused(ValueError):
@@ -110,47 +110,6 @@ def regular_files(folder):
     return files
 
 
-def launcher(tag):
-    version(tag)
-    return r'''#!/bin/bash
-set -euo pipefail
-base="$(cd -- "$(dirname -- "$0")" && pwd)"
-if ! owners="$(/usr/bin/osascript -l JavaScript <<'JXA'
-ObjC.import('AppKit');
-function run() {
-    var apps = $.NSWorkspace.sharedWorkspace.runningApplications;
-    if (!apps) throw new Error('Registered TNF ownership unavailable');
-    var total = Number(apps.count);
-    if (!Number.isInteger(total) || total < 0) throw new Error('Application enumeration unavailable');
-    var count = 0;
-    for (var i = 0; i < total; i++) {
-        var app = apps.objectAtIndex(i);
-        var id = ObjC.unwrap(app.bundleIdentifier);
-        var executable = ObjC.unwrap(app.executableURL.lastPathComponent);
-        var bundle = ObjC.unwrap(app.bundleURL.lastPathComponent);
-        if (!id && !executable && !bundle) throw new Error('Application identity unavailable');
-        if ((id && /^com\.loganrooks\.tap-n-filter(?:[.-]|$)/.test(id)) ||
-            (executable && /^(tap-n-filter|TNF)$/i.test(executable)) ||
-            (bundle && /^(TNF(?:[- ].*)?|tap-n-filter(?:[- ].*)?)\.app$/i.test(bundle))) count++;
-    }
-    return String(count);
-}
-JXA
-)"; then
-    printf '%s\n' 'TNF ownership could not be checked; nothing launched.' >&2
-    exit 1
-fi
-if [[ "$owners" != 0 ]]; then
-    printf '%s\n' 'TNF is running or ownership is unknown. Nothing was changed or launched.' >&2
-    exit 1
-fi
-umask 077
-session_dir="$HOME/Library/Application Support/tap-n-filter/versions/''' + tag + '''"
-mkdir -p -m 700 -- "$session_dir"
-exec /usr/bin/open -a "$base/tap-n-filter.app" --args --library-session-file "$session_dir/library-v5.json"
-'''
-
-
 def package(product_dir, info_source, destination, identity, runner, run=command):
     require(runner in ('macos-15', 'macos-26'), 'unsupported release runner')
     require(not destination.exists(), 'package destination already exists; never overwrite')
@@ -163,6 +122,9 @@ def package(product_dir, info_source, destination, identity, runner, run=command
     require(any(name.endswith('/neck1.pdf') or name == 'neck1.pdf' for name in inventory), 'neck1 resource missing')
     info = plistlib.loads(info_source.read_bytes())
     require(info.get('CFBundleExecutable') == 'tap-n-filter' and info.get('CFBundleIdentifier') == 'com.loganrooks.tap-n-filter' and info.get('LSUIElement') is True, 'App identity differs')
+    require(info.get('CFBundleIconFile') == 'AppIcon', 'App icon declaration missing')
+    icon = info_source.parent / 'AppIcon.icns'
+    require(icon.is_file() and not icon.is_symlink() and icon.stat().st_size > 0, 'App icon missing or aliased')
     require('TNFLibrarySessionFile' not in info and 'TNFSessionFile' not in info and 'TNFTrialSessionFile' not in info, 'private packaged data path refused')
     arch = run(['/usr/bin/lipo', '-archs', binary])
     require(arch in ('arm64', 'x86_64'), 'expected single native runner architecture')
@@ -176,29 +138,100 @@ def package(product_dir, info_source, destination, identity, runner, run=command
     require(regular_files(target) == inventory, 'nested SwiftPM resource copy differs')
     info.update(CFBundleShortVersionString=identity['version'], CFBundleVersion=identity['bundleVersion'])
     (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
+    shutil.copy2(icon, app / 'Contents/Resources/AppIcon.icns')
     run(['/usr/bin/codesign', '--force', '--deep', '--sign', '-', app])
     run(['/usr/bin/codesign', '--verify', '--deep', '--strict', app])
     require(run(['/usr/bin/lipo', '-archs', macos / binary.name]) == arch, 'packaged architecture differs')
     signed = regular_files(target)
     require(all(signed.get(name) == value for name, value in inventory.items()), 'signing changed compiled resource bytes')
     require(set(signed) - set(inventory) <= {'_CodeSignature/CodeResources', 'Contents/_CodeSignature/CodeResources'}, 'unexpected signed resources')
-    executable = destination / 'Launch tap-n-filter.command'
-    executable.write_text(launcher(identity['tag']))
-    executable.chmod(0o755)
+    require((app / 'Contents/Resources/AppIcon.icns').read_bytes() == icon.read_bytes(), 'signing changed icon bytes')
     return app, arch, inventory
 
 
-def archive(folder, output):
-    require(not output.exists(), 'archive already exists; never overwrite')
-    with zipfile.ZipFile(output, 'x', compression=zipfile.ZIP_DEFLATED) as bundle:
-        for path in sorted(folder.rglob('*')):
-            require(not path.is_symlink(), 'package symlink refused')
-            if path.is_file():
-                info = zipfile.ZipInfo(str(path.relative_to(folder)), (2020, 1, 1, 0, 0, 0))
-                info.create_system = 3
-                info.external_attr = (path.stat().st_mode & 0xffff) << 16
-                info.compress_type = zipfile.ZIP_DEFLATED
-                bundle.writestr(info, path.read_bytes())
+def volume_name(identity):
+    return 'tap-n-filter ' + identity['version'] + (identity['tag'].split(identity['version'], 1)[1] if identity['prerelease'] else '')
+
+
+def make_dmg(app, identity, output, run=command):
+    """Compressed image holding the app and an Applications link, and nothing else."""
+    require(not output.exists(), 'disk image already exists; never overwrite')
+    folder = Path(tempfile.mkdtemp(prefix='tnf-dmg-', dir='/private/tmp'))
+    try:
+        shutil.copytree(app, folder / app.name, symlinks=True)
+        (folder / 'Applications').symlink_to('/Applications')
+        run(['/usr/bin/hdiutil', 'create', '-quiet', '-srcfolder', folder, '-volname', volume_name(identity),
+             '-fs', 'HFS+', '-format', 'UDZO', '-ov', output])
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+HIDDEN_VOLUME_METADATA = {'.fseventsd'}
+
+
+def app_inventory(app):
+    """Every entry of the app, dot-files and signature included: path -> sha256, link target or 'dir'."""
+    require(app.is_dir() and not app.is_symlink(), 'app missing or aliased')
+    rows = {}
+    for folder, dirnames, filenames in os.walk(app):
+        for name in dirnames + filenames:
+            path = Path(folder) / name
+            key = str(path.relative_to(app))
+            if path.is_symlink():
+                rows[key] = 'link:' + os.readlink(path)
+            elif path.is_dir():
+                rows[key] = 'dir'
+            else:
+                rows[key] = digest(path)
+    return rows
+
+
+def detach_image(mountpoint, run):
+    """Bounded recovery: one plain detach, then forced retries. True only when a detach succeeded."""
+    for force in (False, True, True):
+        try:
+            run(['/usr/bin/hdiutil', 'detach'] + (['-force'] if force else []) + [mountpoint])
+            return True
+        except Refused:
+            time.sleep(0.2)
+    return False
+
+
+def verify_dmg(image, app, arch, run=command):
+    """Attach read-only and hidden at a fresh mountpoint; always try to detach; any mismatch refuses."""
+    mountpoint = Path(tempfile.mkdtemp(prefix='tnf-mount-', dir='/private/tmp'))
+    attempted = False
+    attached = False
+    problem = None
+    try:
+        attempted = True
+        run(['/usr/bin/hdiutil', 'attach', '-readonly', '-nobrowse', '-noverify', '-noautoopen', '-mountpoint', mountpoint, image])
+        attached = True
+        names = set(path.name for path in mountpoint.iterdir()) - HIDDEN_VOLUME_METADATA
+        require(names == {'Applications', 'tap-n-filter.app'}, 'disk image must hold exactly the app and Applications')
+        link = mountpoint / 'Applications'
+        require(link.is_symlink() and os.readlink(link) == '/Applications', 'Applications link target differs')
+        mounted = mountpoint / 'tap-n-filter.app'
+        require(mounted.is_dir() and not mounted.is_symlink(), 'app missing or aliased in disk image')
+        run(['/usr/bin/codesign', '--verify', '--deep', '--strict', mounted])
+        require(run(['/usr/bin/lipo', '-archs', mounted / 'Contents/MacOS/tap-n-filter']) == arch, 'image architecture differs')
+        require(app_inventory(mounted) == app_inventory(app), 'image app differs from the staged app')
+    except BaseException as error:
+        problem = error
+    detached = detach_image(mountpoint, run) if attempted else True
+    if detached:
+        shutil.rmtree(mountpoint, ignore_errors=True)
+    else:
+        try:
+            mountpoint.rmdir()
+        except OSError:
+            pass
+        if isinstance(problem, KeyboardInterrupt):
+            raise problem
+        if attached or problem is None:
+            raise Refused('disk image could not be detached; mountpoint kept' + (': ' + str(problem) if problem else '')) from problem
+    if problem is not None:
+        raise problem
 
 
 def build(identity, runner, output):
@@ -231,19 +264,13 @@ def build_at(work, scratch, identity, runner, output):
     staging = output / 'staging'
     app, arch, resources = package(product, work / 'Sources/tap-n-filter/Resources/Info.plist', staging, identity, runner)
     name = 'tap-n-filter-' + identity['tag'] + '-' + runner + '-' + arch
-    zip_path = output / (name + '.zip')
-    archive(staging, zip_path)
-    extracted = output / 'archive-check'
-    command(['/usr/bin/ditto', '-x', '-k', zip_path, extracted])
-    unpacked = extracted / 'tap-n-filter.app'
-    command(['/usr/bin/codesign', '--verify', '--deep', '--strict', unpacked])
-    require(command(['/usr/bin/lipo', '-archs', unpacked / 'Contents/MacOS/tap-n-filter']) == arch, 'archived architecture differs')
-    require(regular_files(unpacked / 'Contents/Resources/tap-n-filter_tap-n-filter.bundle') == regular_files(app / 'Contents/Resources/tap-n-filter_tap-n-filter.bundle'), 'archived resources differ')
-    shutil.rmtree(extracted)
+    image = output / (name + '.dmg')
+    make_dmg(app, identity, image)
+    verify_dmg(image, app, arch)
     toolchain = {'swift': command(['swift', '--version']), 'xcode': command(['xcodebuild', '-version'])}
     provenance = dict(identity, runner=runner, architecture=arch, toolchain=toolchain, signing='ad-hoc; not Developer ID signed or notarized',
-                      asset=zip_path.name, sha256=digest(zip_path), resources=resources, tests='swift test release; native/audio/device/window tests excluded by default',
-                      launch='Use adjacent launcher. Raw App Finder launch requires separate source follow-up.')
+                      asset=image.name, sha256=digest(image), resources=resources, tests='swift test release; native/audio/device/window tests excluded by default',
+                      launch='Open the DMG and drag tap-n-filter to Applications')
     (output / (name + '.json')).write_text(json.dumps(provenance, sort_keys=True, indent=2) + '\n')
     shutil.rmtree(staging)
 
@@ -251,13 +278,13 @@ def build_at(work, scratch, identity, runner, output):
 def asset_plan(folder, tag, commit):
     version(tag)
     files = sorted(folder.iterdir())
-    require(len(files) == 4 and all(p.is_file() and not p.is_symlink() and p.suffix in ('.json', '.zip') for p in files), 'expected exactly two zip/provenance pairs')
+    require(len(files) == 4 and all(p.is_file() and not p.is_symlink() and p.suffix in ('.json', '.dmg') for p in files), 'expected exactly two dmg/provenance pairs')
     manifests = [json.loads(p.read_text()) for p in files if p.suffix == '.json']
     require(len(manifests) == 2 and {p.get('runner') for p in manifests} == {'macos-15', 'macos-26'}, 'both runner packages required')
     for row in manifests:
         require(row.get('tag') == tag and row.get('commit') == commit, 'artifact commit/tag differs')
         name = 'tap-n-filter-' + tag + '-' + row['runner'] + '-' + row['architecture']
-        require(row['architecture'] in ('arm64', 'x86_64') and row['asset'] == name + '.zip', 'artifact identity differs')
+        require(row['architecture'] in ('arm64', 'x86_64') and row['asset'] == name + '.dmg', 'artifact identity differs')
         require((folder / (name + '.json')).is_file() and digest(folder / row['asset']) == row['sha256'], 'artifact digest differs')
     return {p.name: {'path': p, 'sha256': digest(p), 'size': p.stat().st_size} for p in files}
 
