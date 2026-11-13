@@ -26,14 +26,15 @@ def require(condition, message):
 
 
 def version(tag):
-    match = re.fullmatch(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-beta\.([1-9][0-9]*))?', tag)
-    require(match is not None, 'expected vX.Y.Z or vX.Y.Z-beta.N')
-    major, minor, patch, beta = match.groups()
+    match = re.fullmatch(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(alpha|beta)\.([1-9][0-9]*))?', tag)
+    require(match is not None, 'expected vX.Y.Z, vX.Y.Z-alpha.N or vX.Y.Z-beta.N')
+    major, minor, patch, stage, build = match.groups()
     require(len(major) <= 4 and int(major) < 9999 and len(minor) <= 2 and len(patch) <= 2,
             'version must fit Apple bundle version components')
-    require(beta is None or int(beta) <= 255, 'beta build number must be 1 through 255')
+    if build is not None:
+        require(int(build) <= 255, stage + ' build number must be 1 through 255')
     base = '.'.join((major, minor, patch))
-    return {'tag': tag, 'version': base, 'bundleVersion': str(int(major) + 1) + '.' + minor + '.' + patch + ('b' + beta if beta else ''), 'prerelease': beta is not None}
+    return {'tag': tag, 'version': base, 'bundleVersion': str(int(major) + 1) + '.' + minor + '.' + patch + (stage[0] + build if build else ''), 'prerelease': build is not None}
 
 
 def command(argv, cwd=None):
