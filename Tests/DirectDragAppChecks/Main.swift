@@ -128,6 +128,7 @@ struct DirectDragAppChecks {
         try controllerStopResumePolicy()
         try await controllerAsyncLifecycle()
         try await PR39RaceCases.run()
+        try await PR39HostedRaceCases.run()
         print("PASS direct-drag coordinator/row/controller pure fakes; no native App/window/audio/device path")
     }
     @MainActor static func rowsAndRelease() async throws {

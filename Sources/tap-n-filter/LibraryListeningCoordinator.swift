@@ -159,7 +159,7 @@ final class LibraryListeningCoordinator {
     func beginParameterGesture(identity: UUID? = nil) {
         sealSliderMoves()
         menuGestureIdentity = identity
-        menuGestureContext = identity == nil ? nil : positionContext ?? checkpointGestureContext ?? continuationGestureContext
+        menuGestureContext = identity == nil ? nil : positionContext ?? continuationGestureContext ?? checkpointGestureContext
         parameterEnabled = true
     }
     @discardableResult
@@ -635,15 +635,16 @@ final class LibraryListeningCoordinator {
     }
     func submitMenuMove(_ address: LibraryControlAddress, expected: LibraryMenuIdentity, to value: LibraryPosition,
                         optionGesture: LibraryOptionGesture?, expectedEpoch: UInt64?, gestureIdentity: UUID? = nil) throws -> Task<LibraryLiveMutation, Error> {
-        let checkpointChoice: Bool
-        if gestureIdentity == nil, let expectedEpoch, checkpointGestureContext?.epoch == expectedEpoch,
-           checkpointGestureContext?.identities.contains(expected) == true,
+        let preservedChoice: Bool
+        if gestureIdentity == nil, let expectedEpoch, [positionContext, continuationGestureContext, checkpointGestureContext].contains(where: {
+               $0?.epoch == expectedEpoch && $0?.identities.contains(expected) == true
+           }),
            let control = presentation?.uses.first(where: { $0.id == expected.binding.use })?.occurrences
             .first(where: { $0.path == address.path })?.controls.first(where: { $0.id == address.control }), case .choice = control.face {
-            checkpointChoice = true
-        } else { checkpointChoice = false }
-        guard acceptsMenuEpoch(expectedEpoch, gestureIdentity: gestureIdentity) || checkpointChoice else { return Task { .superseded } }
-        if checkpointChoice {
+            preservedChoice = true
+        } else { preservedChoice = false }
+        guard acceptsMenuEpoch(expectedEpoch, gestureIdentity: gestureIdentity) || preservedChoice else { return Task { .superseded } }
+        if preservedChoice {
             menuGestureIdentity = nil; menuGestureContext = nil
             return try enqueueMutation(preservingGestureAdmission: true) { session in
                 try await self.executeMenuOrdered(session, address: address, expected: expected, option: optionGesture, value: value).outcome
