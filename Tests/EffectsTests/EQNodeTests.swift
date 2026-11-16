@@ -5,6 +5,65 @@ import XCTest
 
 final class EQNodeTests: XCTestCase {
 
+    // MARK: Read-back diagnostics
+
+    /// Assert that a captured read-back equals `expected`, exactly or within
+    /// `accuracy`, with the same comparison a plain `XCTAssertEqual` makes.
+    ///
+    /// CI has occasionally seen one audio-unit write silently lost on a fresh
+    /// node (a frequency reading back as the unit's factory default), and it
+    /// has never reproduced locally. When that happens, the bare pair of
+    /// numbers does not tell us which fix to choose, so on a mismatch only
+    /// this helper adds evidence to the failure message: the node's own
+    /// `configurationWarnings`, its `debugStateDescription()`, the OS version,
+    /// and the result of writing the expected value once more through the
+    /// public API. The assertion is always made on `actual`, the value read
+    /// before any of this ran, so the diagnostic write can never turn a
+    /// failure into a pass. A passing read-back performs no extra writes.
+    private func assertReadBack(
+        _ actual: Float?,
+        equals expected: Float,
+        accuracy: Float? = nil,
+        of identifier: String,
+        on node: EQNode,
+        _ message: String = "",
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        func matches(_ value: Float?) -> Bool {
+            guard let accuracy = accuracy else { return value == expected }
+            return abs((value ?? 0) - expected) <= accuracy
+        }
+
+        var detail = message
+        if !matches(actual) {
+            // Capture the node's own view before the diagnostic rewrite.
+            let warnings = node.configurationWarnings
+            let state = node.debugStateDescription()
+            let rewrite: String
+            if (try? node.setParameter(identifier, value: expected)) == nil {
+                rewrite = "rewrite threw"
+            } else {
+                let reread = node.parameterValue(identifier)
+                rewrite = matches(reread)
+                    ? "rewrite landed"
+                    : "rewrite read back \(reread.map { "\($0)" } ?? "nil")"
+            }
+            let diagnostics = "[\(identifier) read back \(actual.map { "\($0)" } ?? "nil"); " +
+                "configurationWarnings: \(warnings); " +
+                "\(rewrite); " +
+                "OS: \(ProcessInfo.processInfo.operatingSystemVersionString); " +
+                "state: \(state)]"
+            detail = detail.isEmpty ? diagnostics : "\(detail) \(diagnostics)"
+        }
+
+        if let accuracy = accuracy {
+            XCTAssertEqual(actual ?? 0, expected, accuracy: accuracy, detail, file: file, line: line)
+        } else {
+            XCTAssertEqual(actual, expected, detail, file: file, line: line)
+        }
+    }
+
     // MARK: Parameter metadata
 
     func test_parameter_catalog_lists_four_parameters() {
@@ -15,10 +74,16 @@ final class EQNodeTests: XCTestCase {
 
     func test_parameter_default_values_match_spec() {
         let node = EQNode()
-        XCTAssertEqual(node.parameterValue("hp.frequency"), 80.0)
-        XCTAssertEqual(node.parameterValue("lp.frequency"), 800.0)
-        XCTAssertEqual(node.parameterValue("hp.Q") ?? 0, 0.707, accuracy: 0.001)
-        XCTAssertEqual(node.parameterValue("lp.Q") ?? 0, 0.707, accuracy: 0.001)
+        // Capture every read-back before any assertion can trigger a
+        // diagnostic rewrite.
+        let hpFrequency = node.parameterValue("hp.frequency")
+        let lpFrequency = node.parameterValue("lp.frequency")
+        let hpQ = node.parameterValue("hp.Q")
+        let lpQ = node.parameterValue("lp.Q")
+        assertReadBack(hpFrequency, equals: 80.0, of: "hp.frequency", on: node)
+        assertReadBack(lpFrequency, equals: 800.0, of: "lp.frequency", on: node)
+        assertReadBack(hpQ, equals: 0.707, accuracy: 0.001, of: "hp.Q", on: node)
+        assertReadBack(lpQ, equals: 0.707, accuracy: 0.001, of: "lp.Q", on: node)
     }
 
     // MARK: Q persistence (the macOS 15+ regression)
@@ -90,10 +155,11 @@ final class EQNodeTests: XCTestCase {
         let second = reloaded.snapshot()
 
         for key in ["hp.Q", "lp.Q", "hp.frequency", "lp.frequency"] {
-            XCTAssertEqual(
-                try XCTUnwrap(second.parameters[key]),
-                try XCTUnwrap(first.parameters[key]),
-                accuracy: 0.01,
+            let reloadedValue = try XCTUnwrap(second.parameters[key])
+            let savedValue = try XCTUnwrap(first.parameters[key])
+            assertReadBack(
+                reloadedValue, equals: savedValue, accuracy: 0.01,
+                of: key, on: reloaded,
                 "\(key) drifted between save generations."
             )
         }
@@ -240,10 +306,14 @@ final class EQNodeTests: XCTestCase {
         XCTAssertEqual(restored.displayName, "Custom EQ")
         XCTAssertEqual(restored.bypass, false)
         XCTAssertEqual(restored.wetDryMix, 0.8, accuracy: 0.0001)
-        XCTAssertEqual(restored.parameterValue("hp.frequency"), 100.0)
-        XCTAssertEqual(restored.parameterValue("lp.frequency"), 4_000.0)
-        XCTAssertEqual(restored.parameterValue("hp.Q") ?? 0, 1.5, accuracy: 0.01)
-        XCTAssertEqual(restored.parameterValue("lp.Q") ?? 0, 0.9, accuracy: 0.01)
+        let hpFrequency = restored.parameterValue("hp.frequency")
+        let lpFrequency = restored.parameterValue("lp.frequency")
+        let hpQ = restored.parameterValue("hp.Q")
+        let lpQ = restored.parameterValue("lp.Q")
+        assertReadBack(hpFrequency, equals: 100.0, of: "hp.frequency", on: restored)
+        assertReadBack(lpFrequency, equals: 4_000.0, of: "lp.frequency", on: restored)
+        assertReadBack(hpQ, equals: 1.5, accuracy: 0.01, of: "hp.Q", on: restored)
+        assertReadBack(lpQ, equals: 0.9, accuracy: 0.01, of: "lp.Q", on: restored)
     }
 
     func test_restore_throws_on_type_identifier_mismatch() {
