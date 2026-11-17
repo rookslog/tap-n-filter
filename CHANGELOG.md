@@ -9,7 +9,47 @@ Build history before the first release is recorded per phase under
 
 ## [Unreleased]
 
-Work toward v0.1.0. Nothing has been tagged or released yet.
+Work toward v0.1.0.
+
+### Changed
+
+- A release tag is admitted only when the required "Build and test" check
+  has passed on the tagged commit; the release workflow waits for it.
+
+## [0.1.0-alpha.2] - 2026-11-13
+
+Prerelease. Ad-hoc signed and not notarized, so the first launch needs
+right-click > Open (or Open Anyway in Privacy & Security).
+
+### Added
+
+- A normal Mac app delivered as a DMG: drag tap-n-filter to Applications.
+- An app icon.
+- The app keeps its data in `~/Library/Application Support/tap-n-filter/`
+  by default, and only one copy runs at a time.
+
+### Changed
+
+- In the Quick Menu choice control, a notch takes the sound's colour only
+  while that choice's extra controls are shown.
+
+## [0.1.0-alpha.1] - 2026-11-13
+
+First prerelease, delivered as a zip with a launcher script.
+
+### Added
+
+- The Everyday Quick Menu: per-app sounds with option sub-controls.
+- Tag-triggered prerelease builds on macOS 15 and macOS 26.
+
+### Changed
+
+- Slider dragging in the Quick Menu sends live values without rewriting the
+  saved document on every move.
+
+## Before the first prerelease
+
+Earlier work, not released under a version number.
 
 ### Added
 
@@ -75,4 +115,6 @@ Work toward v0.1.0. Nothing has been tagged or released yet.
   the newest-OS check is a manual pre-merge step on the maintainer's machine
   (ADR-022).
 
-[Unreleased]: https://github.com/rookslog/tap-n-filter/commits/main
+[Unreleased]: https://github.com/rookslog/tap-n-filter/compare/v0.1.0-alpha.2...main
+[0.1.0-alpha.2]: https://github.com/rookslog/tap-n-filter/releases/tag/v0.1.0-alpha.2
+[0.1.0-alpha.1]: https://github.com/rookslog/tap-n-filter/releases/tag/v0.1.0-alpha.1
