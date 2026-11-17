@@ -77,7 +77,16 @@ class API:
             raise Refused('GitHub API request failed with HTTP ' + str(error.code)) from error
 
 
-def admit(tag, commit, api, run=command):
+def required_check(api, commit):
+    response = api.request('GET', '/commits/' + commit + '/check-runs?check_name=Build%20and%20test')
+    runs = response.get('check_runs') if isinstance(response, dict) else None
+    matching = [item for item in runs if isinstance(item, dict) and item.get('name') == 'Build and test'
+                and isinstance(item.get('app'), dict) and item['app'].get('slug') == 'github-actions'
+                and isinstance(item.get('id'), int)] if isinstance(runs, list) else []
+    return max(matching, key=lambda item: item['id']) if matching else None
+
+
+def admit(tag, commit, api, run=command, sleep=time.sleep, wait_seconds=1500, poll_seconds=30):
     identity = version(tag)
     require(re.fullmatch(r'[0-9a-f]{40}', commit) is not None, 'exact commit required')
     require(run(['git', 'rev-parse', 'HEAD']) == commit, 'checkout differs from event commit')
@@ -89,7 +98,16 @@ def admit(tag, commit, api, run=command):
     require(remote is not None and remote.get('sha') == commit, 'remote tag differs from event')
     comparison = api.request('GET', '/compare/' + commit + '...main')
     require(comparison is not None and comparison.get('status') in ('ahead', 'identical'), 'tag commit is not reachable from current main')
-    return dict(identity, commit=commit)
+    polls = wait_seconds // poll_seconds
+    for attempt in range(polls + 1):
+        check = required_check(api, commit)
+        if check is not None and check.get('status') == 'completed':
+            require(check.get('conclusion') == 'success', 'CI did not pass on the tagged commit')
+            return dict(identity, commit=commit)
+        if attempt < polls:
+            sleep(poll_seconds)
+    require(check is not None, 'no CI result for the tagged commit')
+    require(False, 'CI has not finished on the tagged commit')
 
 
 def digest(path):

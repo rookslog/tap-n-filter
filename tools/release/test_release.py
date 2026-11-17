@@ -25,9 +25,18 @@ class SyntheticAPI:
         self.main_protected = True
         self.remote_commit = COMMIT
         self.status = 'ahead'
+        # One scripted response per check-runs request, in order; the last one repeats once the script runs out.
+        self.check_responses = []
+        self.check_requests = []
 
     def request(self, method, path, value=None, upload=None):
         self.calls.append((method, path, value, upload))
+        if '/check-runs' in path:
+            self.check_requests.append((method, path))
+            if not self.check_responses:
+                return None
+            index = min(len(self.check_requests), len(self.check_responses)) - 1
+            return self.check_responses[index]
         if path == '/branches/main':
             return {'protected': self.main_protected}
         if path.startswith('/commits/'):
@@ -55,7 +64,35 @@ class SyntheticAPI:
         raise AssertionError((method, path))
 
 
+CHECK_PATH = '/commits/' + COMMIT + '/check-runs?check_name=Build%20and%20test'
+
+
+def check_run(run_id, status='completed', conclusion='success', name='Build and test', slug='github-actions'):
+    return {'id': run_id, 'name': name, 'status': status, 'conclusion': conclusion if status == 'completed' else None, 'app': {'slug': slug}}
+
+
+def check_runs(*runs):
+    return {'total_count': len(runs), 'check_runs': list(runs)}
+
+
+def admitting_git(command):
+    return COMMIT if command[1] == 'rev-parse' else ''
+
+
 class AdmissionTests(unittest.TestCase):
+    def setUp(self):
+        self.sleeps = []
+        # Admission may wait only through the injected sleep; the real one fails the test.
+        real_sleep = patch('release.time.sleep', side_effect=AssertionError('real time.sleep called'))
+        real_sleep.start()
+        self.addCleanup(real_sleep.stop)
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+
+    def admit(self, api, run=admitting_git, **limits):
+        return r.admit(TAG, COMMIT, api, run, sleep=self.sleep, **limits)
+
     def test_valid_beta_and_stable_versions(self):
         self.assertEqual(r.version(TAG), {'tag': TAG, 'version': '0.2.0', 'bundleVersion': '1.2.0b1', 'prerelease': True})
         self.assertFalse(r.version('v1.2.3')['prerelease'])
@@ -72,16 +109,19 @@ class AdmissionTests(unittest.TestCase):
 
     def test_reachable_exact_tag_on_protected_main_accepts(self):
         api = SyntheticAPI()
+        api.check_responses = [check_runs(check_run(1))]
         calls = []
         def run(command):
             calls.append(command)
             return COMMIT if command[1] == 'rev-parse' else ''
-        self.assertEqual(r.admit(TAG, COMMIT, api, run)['commit'], COMMIT)
+        self.assertEqual(r.admit(TAG, COMMIT, api, run, sleep=self.sleep, wait_seconds=90, poll_seconds=30)['commit'], COMMIT)
         self.assertIn(['git', 'merge-base', '--is-ancestor', COMMIT, 'refs/remotes/origin/main'], calls)
 
     def test_wrong_checkout_tag_branch_only_and_unprotected_main_refuse(self):
         for wrong in ('checkout', 'tag', 'ancestry', 'remote', 'main', 'comparison'):
             api = SyntheticAPI()
+            # CI passes, so each refusal must come from the existing check under test.
+            api.check_responses = [check_runs(check_run(1))]
             api.main_protected = wrong != 'main'
             api.remote_commit = 'b' * 40 if wrong == 'remote' else COMMIT
             api.status = 'diverged' if wrong == 'comparison' else 'ahead'
@@ -92,7 +132,128 @@ class AdmissionTests(unittest.TestCase):
                     return 'b' * 40 if (wrong == 'checkout' and command[2] == 'HEAD') or (wrong == 'tag' and command[2] != 'HEAD') else COMMIT
                 return ''
             with self.subTest(wrong=wrong), self.assertRaises(r.Refused):
-                r.admit(TAG, COMMIT, api, run)
+                r.admit(TAG, COMMIT, api, run, sleep=self.sleep, wait_seconds=90, poll_seconds=30)
+
+    def assert_refused(self, api, fragment, **limits):
+        with self.assertRaises(r.Refused) as error:
+            self.admit(api, **limits)
+        self.assertIn(fragment, str(error.exception))
+        return error.exception
+
+    def test_ci_completed_success_admits_without_waiting(self):
+        api = SyntheticAPI()
+        api.check_responses = [check_runs(check_run(7))]
+        self.assertEqual(self.admit(api, wait_seconds=90, poll_seconds=30), dict(r.version(TAG), commit=COMMIT))
+        self.assertEqual(self.sleeps, [])
+        self.assertEqual(len(api.check_requests), 1)
+
+    def test_ci_completed_without_success_refuses_at_once(self):
+        for conclusion in ('failure', 'cancelled', 'timed_out', 'neutral', 'skipped', 'action_required', 'stale'):
+            with self.subTest(conclusion=conclusion):
+                self.sleeps.clear()
+                api = SyntheticAPI()
+                api.check_responses = [check_runs(check_run(7, conclusion=conclusion))]
+                self.assert_refused(api, 'CI did not pass', wait_seconds=90, poll_seconds=30)
+                self.assertEqual(self.sleeps, [])
+                self.assertEqual(len(api.check_requests), 1)
+
+    def test_ci_in_progress_then_success_admits_after_polling(self):
+        api = SyntheticAPI()
+        api.check_responses = [check_runs(check_run(7, status='queued')), check_runs(check_run(7, status='in_progress')), check_runs(check_run(7))]
+        self.assertEqual(self.admit(api, wait_seconds=90, poll_seconds=30), dict(r.version(TAG), commit=COMMIT))
+        self.assertEqual(self.sleeps, [30, 30])
+        self.assertEqual(len(api.check_requests), 3)
+
+    def test_ci_in_progress_then_failure_refuses(self):
+        api = SyntheticAPI()
+        api.check_responses = [check_runs(check_run(7, status='in_progress')), check_runs(check_run(7, conclusion='failure'))]
+        self.assert_refused(api, 'CI did not pass', wait_seconds=90, poll_seconds=30)
+        self.assertEqual(self.sleeps, [30])
+
+    def test_ci_still_pending_after_the_limit_refuses(self):
+        api = SyntheticAPI()
+        api.check_responses = [check_runs(check_run(7, status='in_progress'))]
+        self.assert_refused(api, 'CI has not finished', wait_seconds=90, poll_seconds=30)
+        self.assertEqual(self.sleeps, [30, 30, 30])
+        self.assertTrue(api.check_requests)
+
+    def test_ci_pending_uses_default_limits(self):
+        api = SyntheticAPI()
+        api.check_responses = [check_runs(check_run(7, status='in_progress'))]
+        with self.assertRaises(r.Refused) as error:
+            r.admit(TAG, COMMIT, api, admitting_git, sleep=self.sleep)
+        self.assertIn('CI has not finished', str(error.exception))
+        self.assertEqual(self.sleeps, [30] * (1500 // 30))
+
+    def test_no_ci_run_for_the_whole_wait_refuses(self):
+        api = SyntheticAPI()
+        api.check_responses = [check_runs()]
+        self.assert_refused(api, 'no CI result', wait_seconds=90, poll_seconds=30)
+        self.assertEqual(self.sleeps, [30, 30, 30])
+
+    def test_ci_run_appearing_late_is_used(self):
+        api = SyntheticAPI()
+        api.check_responses = [check_runs(), check_runs(check_run(7))]
+        self.admit(api, wait_seconds=90, poll_seconds=30)
+        self.assertEqual(self.sleeps, [30])
+
+    def test_runs_with_other_name_or_app_are_ignored(self):
+        others = (check_run(8, name='Build and test (macos-26)'), check_run(9, name='build and test'),
+                  check_run(10, slug='other-ci'), check_run(11, slug='github-actions-mirror'))
+        for other in others:
+            with self.subTest(other=other):
+                self.sleeps.clear()
+                api = SyntheticAPI()
+                api.check_responses = [check_runs(other)]
+                self.assert_refused(api, 'no CI result', wait_seconds=90, poll_seconds=30)
+                self.assertEqual(self.sleeps, [30, 30, 30])
+                # A newer foreign success must not outrank the real, older failure.
+                self.sleeps.clear()
+                api = SyntheticAPI()
+                api.check_responses = [check_runs(check_run(2, conclusion='failure'), other)]
+                self.assert_refused(api, 'CI did not pass', wait_seconds=90, poll_seconds=30)
+                self.assertEqual(self.sleeps, [])
+
+    def test_highest_id_decides(self):
+        api = SyntheticAPI()
+        api.check_responses = [check_runs(check_run(3, conclusion='failure'), check_run(4))]
+        self.admit(api, wait_seconds=90, poll_seconds=30)
+        api = SyntheticAPI()
+        api.check_responses = [check_runs(check_run(4), check_run(3, conclusion='failure'))]
+        self.admit(api, wait_seconds=90, poll_seconds=30)
+        api = SyntheticAPI()
+        api.check_responses = [check_runs(check_run(3), check_run(4, conclusion='failure'))]
+        self.assert_refused(api, 'CI did not pass', wait_seconds=90, poll_seconds=30)
+        api = SyntheticAPI()
+        api.check_responses = [check_runs(check_run(4, conclusion='failure'), check_run(3))]
+        self.assert_refused(api, 'CI did not pass', wait_seconds=90, poll_seconds=30)
+        self.sleeps.clear()
+        api = SyntheticAPI()
+        api.check_responses = [check_runs(check_run(3), check_run(4, status='in_progress'))]
+        self.assert_refused(api, 'CI has not finished', wait_seconds=90, poll_seconds=30)
+        self.assertEqual(self.sleeps, [30, 30, 30])
+
+    def test_none_or_malformed_response_counts_as_no_run(self):
+        for response in (None, {}, [], 'SYNTHETIC', {'check_runs': None}, {'check_runs': 'SYNTHETIC'}, {'total_count': 1}):
+            with self.subTest(response=response):
+                self.sleeps.clear()
+                api = SyntheticAPI()
+                api.check_responses = [response]
+                self.assert_refused(api, 'no CI result', wait_seconds=90, poll_seconds=30)
+                self.assertEqual(self.sleeps, [30, 30, 30])
+
+    def test_malformed_response_then_success_admits(self):
+        api = SyntheticAPI()
+        api.check_responses = [None, {'unexpected': True}, check_runs(check_run(7))]
+        self.admit(api, wait_seconds=90, poll_seconds=30)
+        self.assertEqual(self.sleeps, [30, 30])
+
+    def test_check_runs_request_names_exact_commit_and_check(self):
+        api = SyntheticAPI()
+        api.check_responses = [check_runs(), check_runs(check_run(7))]
+        self.admit(api, wait_seconds=90, poll_seconds=30)
+        self.assertEqual(api.check_requests, [('GET', CHECK_PATH)] * 2)
+        self.assertFalse(any(TAG in path for _, path in api.check_requests))
 
     def test_command_failure_keeps_diagnostics(self):
         outcome = subprocess.CompletedProcess(['SYNTHETIC'], 7, 'out', 'err')
