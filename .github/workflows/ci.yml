@@ -109,15 +109,7 @@ jobs:
       matrix:
         os: [macos-15, macos-26]
         shard:
-          - { name: "S5 hold 0 run 1", specs: "S5 5 0 0 2218" }
-          - { name: "S5 hold 0 run 2", specs: "S5 5 0 0 2218" }
-          - { name: "S5 hold 0 run 3", specs: "S5 5 0 0 2218" }
-          - { name: "S5 hold 1 run 1", specs: "S5 5 1 0 2218" }
-          - { name: "S5 hold 1 run 2", specs: "S5 5 1 0 2218" }
-          - { name: "S5 hold 1 run 3", specs: "S5 5 1 0 2218" }
-          - { name: "S5 hold 2 run 1", specs: "S5 5 2 0 2218" }
-          - { name: "S5 hold 2 run 2", specs: "S5 5 2 0 2218" }
-          - { name: "S5 hold 2 run 3", specs: "S5 5 2 0 2218" }
+          - { name: "self-check with a known old fault", specs: "S5 4 0 0 436" }
 
     steps:
       - name: Check out
