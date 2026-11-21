@@ -82,6 +82,9 @@ private final class PlaybackLane {
   var wakeStart = false
   /// A wake-up arrived while a wake attempt was under way: one more attempt if it ends in waiting.
   var wakePending = false
+  /// The list-change fold owes this lane an attempt: it was waiting when the fold was scheduled and has not
+  /// been attempted since.
+  var foldOwed = false
   let slot: PlaybackSinkSlot
   var sink: NativePlaybackSink? {
     get { slot.value }
@@ -125,7 +128,7 @@ public final class PlaybackController {
   private var samplingNotifications = PlaybackSamplingNotifications()
   private var terminationObserver: NSObjectProtocol?
   /// Waiting-state wake-ups. Nil in checks that do not script them.
-  private let wake: PlaybackWakeEnvironment?
+  private var wake: PlaybackWakeEnvironment?
   private var removeLaunchListener: (@MainActor () -> Void)?
   /// Installed only while at least one lane is waiting.
   private var removeListListener: (@MainActor () -> Void)?
@@ -134,6 +137,8 @@ public final class PlaybackController {
   private(set) var wakeAttemptsForTesting = 0
   /// Check seam: consulted for a running lane that has no sink (a testing lane never fills its sink slot).
   var sinkReadyForTesting: ((UUID) -> Bool)?
+  /// Check seam: awaited first in a lane start's task, before the quitting and operation check and the runtime.
+  var beforeStartEntersRuntimeForTesting: ((UUID) async -> Void)?
   var startedForTesting: ((UUID, String) -> Void)?
   var stoppedForTesting: ((UUID, String) -> Void)?
   public var changed: () -> Void = {}
@@ -173,7 +178,6 @@ public final class PlaybackController {
     probeEnabled = false
     hub = NativeOutputHub()
     leases = InputGuardLeaseCoordinator(port: guardPort, settingEnabled: true)
-    wake = PlaybackWakeEnvironment.system()
     installObservers()
   }
 
@@ -184,7 +188,6 @@ public final class PlaybackController {
     self.coreAudio = coreAudio
     self.leases = leases
     probeEnabled = probeOutputEnabled
-    wake = PlaybackWakeEnvironment.system()
     hub = NativeOutputHub(probeEnabled: probeOutputEnabled)
     hub.probeLog = { [weak self] value in self?.log(value) }
     installObservers()
@@ -205,6 +208,7 @@ public final class PlaybackController {
   }
 
   private func installObservers() {
+    wake = PlaybackWakeEnvironment.system(log: { [weak self] in self?.log($0) })
     hub.configurationChanged = { [weak self] in self?.invalidateAll(.formatChanged) }
     terminationObserver = NSWorkspace.shared.notificationCenter.addObserver(
       forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main
@@ -358,10 +362,9 @@ public final class PlaybackController {
     removeLaunchListener = nil
     removeListListener?()
     removeListListener = nil
-    cancelListFold?()
-    cancelListFold = nil
+    cancelFold()
+    for lane in lanes.values { lane.cancelBurst() }
     for (id, lane) in lanes {
-      lane.cancelBurst()
       lane.operation += 1
       _ = await lane.runtime.stop(AssignmentID(id))
       lane.sink = nil
@@ -420,6 +423,9 @@ public final class PlaybackController {
       guard let self else { return }
       defer { self.operationEnded() }
       guard let lane else { return }
+      await self.beforeStartEntersRuntimeForTesting?(assignment.id)
+      // A stop, switch-off or shutdown can have come in while this task was queued: do not enter the runtime.
+      guard !self.quitting, lane.operation == operation else { return }
       let result = await lane.runtime.start(request)
       guard lane.operation == operation else { return }
       let wasWake = lane.wakeStart
@@ -438,6 +444,7 @@ public final class PlaybackController {
         lane.state = .waiting
         lane.failure = nil
         lane.sourcePID = nil
+        lane.sink = nil  // the runtime has stopped the output; do not hold it while waiting
         if source == .replaced { self.startBurst(assignment.id, lane: lane) }
       case .failed(let error, _, _):
         lane.state = .failed
@@ -585,6 +592,10 @@ public final class PlaybackController {
       }
     }
     lane.cancelBurst()
+    // A wake attempt still starting when its app quits goes back to waiting, as a vanish at revalidation does.
+    let wasWake = lane.state == .starting && lane.wakeStart
+    lane.wakeStart = false
+    lane.wakePending = false
     lane.operation += 1
     let operation = lane.operation
     lane.state = .stopping
@@ -597,6 +608,12 @@ public final class PlaybackController {
       _ = await lane.runtime.report(condition: condition, for: AssignmentID(id), matching: token)
       guard operation == lane.operation else { return }
       lane.sink = nil
+      if wasWake, condition == .sourceDisappeared, !self.probeEnabled {
+        lane.state = .waiting
+        lane.sourcePID = nil
+        self.publishChange()
+        return
+      }
       lane.state = .failed
       lane.failure =
         condition == .sourceDisappeared ? "The source app closed." : "The audio route changed."
@@ -639,6 +656,7 @@ public final class PlaybackController {
 
   /// Keeps the audio-process-list listener installed exactly while a lane is waiting.
   private func reconcileWakeListener() {
+    guard !quitting else { return }
     // A lane that has moved on (running, failed, idle, stopping) leaves nothing scheduled behind.
     for lane in lanes.values where !lane.burst.isEmpty && lane.state != .waiting && lane.state != .starting {
       lane.cancelBurst()
@@ -647,13 +665,20 @@ public final class PlaybackController {
     if anyLaneWaiting {
       if removeListListener == nil {
         removeListListener = wake.listenForProcessListChanges { [weak self] in self?.processListChanged() }
+        // Subscribe, then look once: the audio process may have appeared between the failed read and now.
+        attemptAllWaiting()
       }
     } else {
       removeListListener?()
       removeListListener = nil
-      cancelListFold?()
-      cancelListFold = nil
+      cancelFold()
     }
+  }
+
+  private func cancelFold() {
+    cancelListFold?()
+    cancelListFold = nil
+    for lane in lanes.values { lane.foldOwed = false }
   }
 
   /// One attempt per change, with changes inside the fold window folded into one.
@@ -662,10 +687,15 @@ public final class PlaybackController {
     // A change during an attempt is remembered for that lane and does not join a fold.
     for lane in lanes.values where lane.state == .starting && lane.wakeStart { lane.wakePending = true }
     guard lanes.values.contains(where: { $0.state == .waiting }), cancelListFold == nil else { return }
+    for lane in lanes.values where lane.state == .waiting { lane.foldOwed = true }
     cancelListFold = wake.schedule(PlaybackWakeSchedule.listFold) { [weak self] in
       guard let self else { return }
       self.cancelListFold = nil
-      self.attemptAllWaiting()
+      // Only lanes owed an attempt: one that was woken since, or began waiting later, is not swept again.
+      for (id, lane) in self.lanes where lane.foldOwed {
+        lane.foldOwed = false
+        if lane.state == .waiting { self.attemptWaiting(id, lane: lane) }
+      }
     }
   }
 
@@ -729,6 +759,7 @@ public final class PlaybackController {
       stopResume.isAuthorized(assignment, desired: desired)
     else { return }
     wakeAttemptsForTesting += 1
+    lane.foldOwed = false
     do { try lane.factory.update(assignment, original: original) } catch {
       lane.state = .failed
       lane.failure = "The sound change could not be applied. \(error)"

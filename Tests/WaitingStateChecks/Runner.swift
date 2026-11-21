@@ -24,7 +24,7 @@ private struct Case {
   Case(id: "4", title: "launch with no audio: five attempts at 0.5,1,2,4,8 s, then none", pending: false) { try await Cases.case4() },
   Case(id: "4c", title: "burst cancels its remaining steps at once on success", pending: false) { try await Cases.case4c() },
   Case(id: "5", title: "menu open: one attempt per waiting lane only", pending: false) { try await Cases.case5() },
-  Case(id: "6", title: "nothing waiting: list change reads nothing, no timer", pending: false) { try await Cases.case6() },
+  Case(id: "6", title: "nothing waiting: list change reads nothing, no timer; listeners balanced", pending: false) { try await Cases.case6() },
   Case(id: "7", title: "twenty list changes inside 250 ms: one attempt", pending: false) { try await Cases.case7() },
   Case(id: "8", title: "vanish at revalidation mid-start: waiting, nothing stranded", pending: false) { try await Cases.case8() },
   Case(id: "8c", title: "quit while starting (termination path) ends waiting", pending: true) { try await Cases.case8c() },
@@ -36,6 +36,13 @@ private struct Case {
   Case(id: "14", title: "accessibility value: waiting card says \"not playing\"", pending: false) { try await Cases.case14() },
   Case(id: "15", title: "a wake-up during an attempt makes exactly one more attempt", pending: false) { try await Cases.case15() },
   Case(id: "16", title: "replaced at revalidation: waiting, launch burst", pending: false) { try await Cases.case16() },
+  Case(id: "17", title: "a retired listener registration's callback causes no attempt", pending: false) { try await Cases.case17() },
+  Case(id: "17c", title: "the real process-list listener is removed with the registration it was added with", pending: false) { try await Cases.case17c() },
+  Case(id: "18", title: "a process that appears before the listener is installed still starts the lane", pending: false) { try await Cases.case18() },
+  Case(id: "19", title: "a queued wake start then switch-off or shutdown: nothing starts or is stranded", pending: false) { try await Cases.case19() },
+  Case(id: "20", title: "one list change with one lane woken and one waiting: one attempt each", pending: false) { try await Cases.case20() },
+  Case(id: "21", title: "shutdown installs no list listener, even when a start ends in waiting during it", pending: false) { try await Cases.case21() },
+  Case(id: "22", title: "a quiet wake publishes nothing", pending: false) { try await Cases.case22() },
 ]
 
 public enum WaitingStateChecks {

@@ -58,19 +58,36 @@ func demand(_ condition: Bool, _ message: @autoclosure () -> String) throws {
 /// Stands in for the HAL process-list listener and the NSWorkspace launch notification.
 @MainActor final class WakeEvents {
   private var listHandlers: [Int: @MainActor () -> Void] = [:]
+  /// Handlers of registrations that were removed, kept so a check can deliver a late callback through one,
+  /// as the HAL may for a callback already queued when the listener was removed.
+  private var retiredListHandlers: [Int: @MainActor () -> Void] = [:]
   private var launchHandlers: [Int: @MainActor (String) -> Void] = [:]
   private var nextID = 0
   private(set) var listInstalls = 0
+  /// How many times each list registration's removal was called, by registration (in install order).
+  private(set) var listRemovals: [Int: Int] = [:]
+  private var listOrder: [Int] = []
 
   var listListenerInstalled: Bool { !listHandlers.isEmpty }
+  var activeListListeners: Int { listHandlers.count }
+  /// Removal calls per registration, in install order: `[1, 1]` is two registrations each removed once.
+  var removalsPerRegistration: [Int] { listOrder.map { listRemovals[$0] ?? 0 } }
 
   func installListListener(_ handler: @escaping @MainActor () -> Void) -> @MainActor () -> Void {
     nextID += 1
     let id = nextID
     listHandlers[id] = handler
     listInstalls += 1
-    return { [weak self] in self?.listHandlers[id] = nil }
+    listOrder.append(id)
+    return { [weak self] in
+      guard let self else { return }
+      self.listRemovals[id, default: 0] += 1
+      if let removed = self.listHandlers.removeValue(forKey: id) { self.retiredListHandlers[id] = removed }
+    }
   }
+
+  /// A callback arrives through every registration that has already been removed.
+  func deliverToRetiredListListeners() { for handler in retiredListHandlers.values { handler() } }
 
   func installLaunchListener(_ handler: @escaping @MainActor (String) -> Void) -> @MainActor () -> Void {
     nextID += 1
@@ -126,16 +143,33 @@ func demand(_ condition: Bool, _ message: @autoclosure () -> String) throws {
 // MARK: Capture and output
 
 /// A small one-shot gate a fake can pause on, so a check can act while a start is in progress.
+/// A release that comes before the pause lets that pause pass at once.
 @MainActor final class Gate {
   private var waiter: CheckedContinuation<Void, Never>?
   private var arrivals: [CheckedContinuation<Void, Never>] = []
+  private var open = false
   private(set) var reached = false
   func pause() async {
     reached = true
+    if open { open = false; return }
     await withCheckedContinuation { waiter = $0; for a in arrivals { a.resume() }; arrivals = [] }
   }
   func entered() async { if waiter == nil { await withCheckedContinuation { arrivals.append($0) } } }
-  func release() { waiter?.resume(); waiter = nil }
+  func release() {
+    if let waiter { waiter.resume(); self.waiter = nil } else { open = true }
+  }
+}
+
+/// Holds the first call made after it is armed, until released. Later calls pass.
+@MainActor final class OneShotHold {
+  private var armed = false
+  let gate = Gate()
+  func arm() { armed = true }
+  func hold() async {
+    guard armed else { return }
+    armed = false
+    await gate.pause()
+  }
 }
 
 @MainActor final class Trace {
@@ -153,6 +187,9 @@ func demand(_ condition: Bool, _ message: @autoclosure () -> String) throws {
   /// Bundles whose next capture prepare pauses at `prepareGate`.
   var holdPrepare: Set<String> = []
   let prepareGate = Gate()
+  /// Bundles whose next output stop pauses at `sinkStopGate`.
+  var holdSinkStop: Set<String> = []
+  let sinkStopGate = Gate()
 
   func observed(_ bundle: String, _ observation: LifecycleObservation) {
     switch observation.event {
@@ -197,7 +234,7 @@ func demand(_ condition: Bool, _ message: @autoclosure () -> String) throws {
   func prepare(_ capture: CapturePreparation) async throws {}
   func update(_ assignment: ListeningRenderAssignment, original: Bool) throws {}
   func start() throws { trace.outputStarts[bundle, default: 0] += 1 }
-  func stop() async {}
+  func stop() async { if trace.holdSinkStop.remove(bundle) != nil { await trace.sinkStopGate.pause() } }
 }
 
 // MARK: Rig
@@ -210,6 +247,10 @@ func demand(_ condition: Bool, _ message: @autoclosure () -> String) throws {
   let trace: Trace
   let leases = InputGuardLeaseCoordinator(port: InertGuard(), settingEnabled: false)
   private(set) var controller: PlaybackController!
+  /// How many times the controller told the menu something changed.
+  private(set) var publications = 0
+  /// Holds a start between being queued and entering the runtime, once armed.
+  let startHold = OneShotHold()
   private var ids: [String: UUID] = [:]
 
   init() {
@@ -227,6 +268,7 @@ func demand(_ condition: Bool, _ message: @autoclosure () -> String) throws {
           leases: leases, observe: { observation in trace.observed(bundle, observation); observe(observation) })
         return (factory, runtime)
       }, events: events, clock: clock)
+    controller.changed = { [weak self] in self?.publications += 1 }
     controller.startedForTesting = { [weak self] id, state in
       guard let self, let bundle = self.ids.first(where: { $0.value == id })?.key else { return }
       self.trace.startCompletions[bundle, default: []].append(state)
@@ -288,6 +330,19 @@ func demand(_ condition: Bool, _ message: @autoclosure () -> String) throws {
   func launched(_ bundle: String) async { events.launched(bundle); await settle() }
   func menuOpened() async { Product.menuOpened(controller); await settle() }
   func menuOpenedWithoutSettling() { Product.menuOpened(controller) }
+
+  /// Every start waits on `startHold` before it enters the runtime; the hold only bites once armed.
+  func installStartHold() {
+    let hold = startHold
+    Product.beforeStartEntersRuntime(controller) { _ in await hold.hold() }
+  }
+
+  func applyWithoutSettling(power: Bool, _ cards: [(String, Bool)]) {
+    controller.apply(snapshot(power: power, cards), original: false)
+  }
+
+  /// Lets queued main-actor work run without waiting for held operations.
+  func drainQueued(_ times: Int = 50) async { for _ in 0..<times { await Task.yield() } }
 
   func state(_ bundle: String) -> String? { Product.laneState(controller, id(bundle)) }
   func activity(_ bundle: String) -> Activity { Product.activity(controller, id(bundle)) }

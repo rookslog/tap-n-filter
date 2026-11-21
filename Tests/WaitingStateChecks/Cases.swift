@@ -24,12 +24,13 @@ enum Cases {
     try demand(rig.state(A) == Product.waitingState, "absent app at start is waiting: \(rig.describe(A))")
     try demand(rig.problem == nil, "waiting is not a problem (the attention row is driven by problem): \(rig.describe(A))")
     try demand(rig.activity(A) == .waiting, "card activity is waiting: \(rig.describe(A))")
-    try demand(rig.attempts(A) == 1 && rig.captureStarts(A) == 0, "one attempt, no capture: \(rig.describe(A))")
+    let base = rig.attempts(A)  // the first attempt, and the one look after subscribing (case 18 counts it)
+    try demand(base >= 1 && rig.captureStarts(A) == 0, "attempted, no capture: \(rig.describe(A))")
     try demand(rig.nothingStranded(A), "no lease or tap held while waiting: \(rig.describe(A))")
     try demand(rig.events.listListenerInstalled, "the process-list wake-up is listening while a lane waits")
     // No polling: with no event, a minute passes and nothing is tried.
     await rig.advance(to: 60)
-    try demand(rig.attempts(A) == 1 && rig.clock.pending == 0, "no attempt or timer without a wake-up: \(rig.describe(A))")
+    try demand(rig.attempts(A) == base && rig.clock.pending == 0, "no attempt or timer without a wake-up: \(rig.describe(A))")
     await rig.shutdown()
   }
 
@@ -37,16 +38,17 @@ enum Cases {
   static func case2() async throws {
     let rig = Rig()
     await rig.apply([(A, true)])
+    let base = rig.attempts(A)
     rig.world.appear(A, pids: [101])
     await rig.listChanged()
     await rig.advance(by: 1)
     try demand(rig.state(A) == "running" && rig.activity(A) == .running, "list change starts the waiting lane: \(rig.describe(A))")
     try demand(rig.problem == nil, "no problem once running: \(rig.describe(A))")
-    try demand(rig.attempts(A) == 2 && rig.captureStarts(A) == 1, "exactly one start after one list change: \(rig.describe(A))")
+    try demand(rig.attempts(A) == base + 1 && rig.captureStarts(A) == 1, "exactly one start after one list change: \(rig.describe(A))")
     try demand(rig.trace.resolvedPIDs[A]?.last == 101, "the lane runs the process that appeared")
     // A running lane is not tried again by later list changes.
     for _ in 0..<3 { await rig.listChanged(); await rig.advance(by: 1) }
-    try demand(rig.attempts(A) == 2 && rig.captureStarts(A) == 1, "running lane is not re-attempted: \(rig.describe(A))")
+    try demand(rig.attempts(A) == base + 1 && rig.captureStarts(A) == 1, "running lane is not re-attempted: \(rig.describe(A))")
     try demand(rig.clock.pending == 0, "no scheduled work once nothing waits: \(rig.describe(A))")
     await rig.shutdown()
   }
@@ -81,7 +83,7 @@ enum Cases {
       await rig.advance(to: 10)
       await rig.launched(A)  // launch at t = 10
       await rig.advance(to: 40)
-      let burst = rig.attemptTimes(A).dropFirst().map { $0 - 10 }
+      let burst = rig.attemptTimes(A).filter { $0 > 10.0001 }.map { $0 - 10 }
       try demand(sameTimes(Array(burst), [0.5, 1, 2, 4, 8]), "five attempts at 0.5, 1, 2, 4, 8 s after launch: \(rig.describe(A))")
       try demand(rig.state(A) == Product.waitingState && rig.problem == nil, "still waiting, quietly, after the burst: \(rig.describe(A))")
       try demand(rig.clock.pending == 0, "nothing scheduled after the burst: \(rig.describe(A))")
@@ -97,7 +99,7 @@ enum Cases {
       await rig.advance(to: 2)
       try demand(rig.state(A) == "running", "burst attempt at 2 s starts the lane: \(rig.describe(A))")
       await rig.advance(to: 30)
-      try demand(sameTimes(rig.attemptTimes(A), [0, 0.5, 1, 2]) && rig.captureStarts(A) == 1, "burst stops at first success: \(rig.describe(A))")
+      try demand(sameTimes(rig.attemptTimes(A).filter { $0 > 0.0001 }, [0.5, 1, 2]) && rig.captureStarts(A) == 1, "burst stops at first success: \(rig.describe(A))")
       await rig.shutdown()
     }
     // 4d: a launch of an unrelated app, or of an app whose lane is running, starts no burst.
@@ -105,11 +107,12 @@ enum Cases {
       let rig = Rig()
       rig.world.appear(B, pids: [202])
       await rig.apply([(A, true), (B, true)])
+      let baseA = rig.attempts(A)
       await rig.launched("test.unrelated")
       await rig.launched(B)
       try demand(rig.clock.pending == 0, "no burst for an unrelated or running app: \(rig.describe(A)) \(rig.describe(B))")
       await rig.advance(to: 30)
-      try demand(rig.attempts(A) == 1 && rig.attempts(B) == 1, "no attempts from unrelated launches: \(rig.describe(A)) \(rig.describe(B))")
+      try demand(rig.attempts(A) == baseA && rig.attempts(B) == 1, "no attempts from unrelated launches: \(rig.describe(A)) \(rig.describe(B))")
       await rig.shutdown()
     }
   }
@@ -164,23 +167,42 @@ enum Cases {
     await empty.settle()
     try demand(empty.clock.pending == 0 && empty.world.reads.isEmpty, "empty library: nothing scheduled, nothing read")
     await empty.shutdown()
+    // 6c: listener balance. Each time a lane stops waiting, no list listener is left registered and every
+    //     registration made was removed exactly once (a leaked listener fails here).
+    let bal = Rig()
+    await bal.apply([(A, true)])  // waiting: one registration
+    try demand(bal.events.activeListListeners == 1, "6c: one listener while waiting: adds \(bal.events.listInstalls) removals \(bal.events.removalsPerRegistration)")
+    await bal.apply([(A, false)])  // switched off
+    try demand(bal.events.activeListListeners == 0 && bal.events.removalsPerRegistration.allSatisfy { $0 == 1 },
+      "6c: off leaves no listener, each removed once: removals \(bal.events.removalsPerRegistration)")
+    await bal.apply([(A, true)])  // waiting again: a new registration
+    bal.world.appear(A, pids: [101])
+    await bal.listChanged()
+    await bal.advance(by: 1)  // running
+    try demand(bal.state(A) == "running", "6c: setup: running: \(bal.describe(A))")
+    try demand(bal.events.activeListListeners == 0 && bal.events.listInstalls == 2
+      && bal.events.removalsPerRegistration == [1, 1],
+      "6c: running leaves no listener, two registrations each removed once: adds \(bal.events.listInstalls) removals \(bal.events.removalsPerRegistration)")
+    await bal.shutdown()
+    try demand(bal.events.removalsPerRegistration == [1, 1], "6c: shutdown removes nothing twice: \(bal.events.removalsPerRegistration)")
   }
 
   // 7. Twenty list changes inside 250 ms: one attempt.
   static func case7() async throws {
     try demand(abs(Product.productFoldWindow - 0.25) < 0.001, "product fold window is 250 ms: \(Product.productFoldWindow)")
     let rig = Rig()
-    await rig.apply([(A, true)])  // attempt 1 at t = 0
+    await rig.apply([(A, true)])  // the first attempt (and any look after subscribing) at t = 0
+    let base = rig.attempts(A)
     for i in 0..<20 {
       await rig.advance(to: 1 + Double(i) * 0.01)  // changes at 1.00 ... 1.19 s
       await rig.listChanged()
     }
     await rig.advance(to: 3)
-    try demand(rig.attempts(A) == 2, "twenty changes inside 250 ms make one attempt: \(rig.describe(A))")
+    try demand(rig.attempts(A) == base + 1, "twenty changes inside 250 ms make one attempt: \(rig.describe(A))")
     // The fold ends: a change well after it makes its own attempt.
     await rig.listChanged()
     await rig.advance(to: 5)
-    try demand(rig.attempts(A) == 3, "a later change makes a new attempt: \(rig.describe(A))")
+    try demand(rig.attempts(A) == base + 2, "a later change makes a new attempt: \(rig.describe(A))")
     try demand(rig.problem == nil && rig.clock.pending == 0, "quiet, nothing left scheduled: \(rig.describe(A))")
     await rig.shutdown()
   }
@@ -273,6 +295,7 @@ enum Cases {
     for label in ["11a card off (full)", "11b card off (positions)", "11c All apps off"] {
       let rig = Rig()
       await rig.apply([(A, true)])
+      let base = rig.attempts(A)
       if label.hasPrefix("11a") { await rig.apply([(A, false)]) }
       else if label.hasPrefix("11b") { await rig.positions([(A, false)]) }
       else { await rig.apply(power: false, [(A, true)]) }
@@ -281,7 +304,7 @@ enum Cases {
       rig.world.appear(A, pids: [101])
       await rig.listChanged(); await rig.launched(A); await rig.menuOpened()
       await rig.advance(by: 30)
-      try demand(rig.attempts(A) == 1 && rig.captureStarts(A) == 0, "\(label): no attempt after off: \(rig.describe(A))")
+      try demand(rig.attempts(A) == base && rig.captureStarts(A) == 0, "\(label): no attempt after off: \(rig.describe(A))")
       try demand(rig.clock.pending == 0, "\(label): nothing scheduled: \(rig.describe(A))")
       await rig.shutdown()
     }
@@ -292,7 +315,7 @@ enum Cases {
     await rig.advance(to: 1.5)  // burst attempts at 0.5 and 1 made
     await rig.apply([(A, false)])
     await rig.advance(to: 30)
-    try demand(sameTimes(rig.attemptTimes(A), [0, 0.5, 1]) && rig.clock.pending == 0, "11d: off mid-burst cancels the rest: \(rig.describe(A))")
+    try demand(sameTimes(rig.attemptTimes(A).filter { $0 > 0.0001 }, [0.5, 1]) && rig.clock.pending == 0, "11d: off mid-burst cancels the rest: \(rig.describe(A))")
     await rig.shutdown()
   }
 
@@ -368,7 +391,8 @@ enum Cases {
     // 15b: several wake-ups during one attempt (list changes and a menu open), and still nothing there:
     //      exactly one more attempt, then quiet.
     let more = Rig()
-    await more.apply([(A, true)])  // attempt 1, waiting
+    await more.apply([(A, true)])  // waiting
+    let base = more.attempts(A)
     let gone = more.world.candidate(A, pid: 101)
     more.world.queue[A] = [[gone], [gone], []]
     more.trace.holdPrepare.insert(A)
@@ -380,7 +404,7 @@ enum Cases {
     more.trace.prepareGate.release()
     await more.settle()
     await more.advance(to: 10)
-    try demand(more.attempts(A) == 3, "15b: wake-ups during an attempt make exactly one more attempt: \(more.describe(A))")
+    try demand(more.attempts(A) == base + 2, "15b: the folded attempt, then exactly one more for the wake-ups during it: \(more.describe(A))")
     try demand(more.state(A) == Product.waitingState && more.problem == nil && more.clock.pending == 0, "15b: then quiet, nothing scheduled: \(more.describe(A))")
     await more.shutdown()
   }
@@ -400,6 +424,158 @@ enum Cases {
     await rig.shutdown()
   }
 
+  // 17. A callback from a retired listener registration causes no attempt. The lane waits, is switched off
+  //     (registration 1 removed), and waits again (registration 2); a late callback arrives through 1.
+  static func case17() async throws {
+    let rig = Rig()
+    await rig.apply([(A, true)])
+    await rig.apply([(A, false)])
+    await rig.apply([(A, true)])
+    try demand(rig.events.listInstalls == 2 && rig.events.activeListListeners == 1, "setup: a second registration is live: adds \(rig.events.listInstalls)")
+    let base = rig.attempts(A)
+    rig.events.deliverToRetiredListListeners()
+    await rig.settle()
+    await rig.advance(by: 1)
+    try demand(rig.attempts(A) == base && rig.clock.pending == 0, "a retired registration's callback does nothing: \(rig.describe(A))")
+    // The live registration still wakes the lane.
+    await rig.listChanged()
+    await rig.advance(by: 1)
+    try demand(rig.attempts(A) == base + 1, "the live registration still wakes it: \(rig.describe(A))")
+    await rig.shutdown()
+  }
+
+  // 17c. The real process-list listener on the system audio object is removed with exactly the
+  //      registration it was added with. Registers and removes a listener only: no audio, no device change.
+  static func case17c() async throws {
+    let result = Product.realListenerAddAndRemove()
+    try demand(result.add == 0, "the listener was added: status \(result.add)")
+    try demand(result.remove == 0, "removing it succeeds (the same registration): status \(String(describing: result.remove))")
+    try demand(result.again == nil, "a second removal has nothing to remove: \(String(describing: result.again))")
+  }
+
+  // 18. The read-to-subscribe gap. The first resolution finds nothing; the app's process appears before the
+  //     listener is installed, and nothing else changes. The lane must still start: one look after subscribing.
+  static func case18() async throws {
+    let rig = Rig()
+    rig.world.queue[A] = [[]]  // the first read finds nothing ...
+    rig.world.appear(A, pids: [101])  // ... and every later read finds the process
+    await rig.apply([(A, true)])
+    await rig.advance(by: 1)
+    try demand(rig.state(A) == "running" && rig.trace.resolvedPIDs[A]?.last == 101, "18a: the process that appeared in the gap runs: \(rig.describe(A))")
+    try demand(rig.attempts(A) == 2 && rig.captureStarts(A) == 1 && rig.problem == nil, "18a: the first attempt, then exactly one look: \(rig.describe(A))")
+    await rig.shutdown()
+    // 18b: nothing appears: exactly one look, then quiet.
+    let quiet = Rig()
+    await quiet.apply([(A, true)])
+    await quiet.advance(to: 30)
+    try demand(quiet.attempts(A) == 2 && quiet.state(A) == Product.waitingState && quiet.clock.pending == 0, "18b: one look after subscribing, then quiet: \(quiet.describe(A))")
+    await quiet.shutdown()
+  }
+
+  // 19. A wake start that is queued and has not entered the runtime yet, then a switch-off (19a) or a
+  //     shutdown (19b): no capture starts, no lease is held, nothing is stranded.
+  static func case19() async throws {
+    // 19a: the queued start is held before the runtime while the switch-off's stop goes first.
+    let rig = Rig()
+    rig.installStartHold()
+    await rig.apply([(A, true)])  // waiting
+    rig.world.appear(A, pids: [101])  // a start now would succeed
+    rig.startHold.arm()
+    rig.menuOpenedWithoutSettling()  // the wake start is queued and holds before the runtime
+    await rig.startHold.gate.entered()
+    rig.applyWithoutSettling(power: true, [(A, false)])  // switched off while the start is queued
+    await rig.drainQueued()
+    rig.startHold.gate.release()
+    await rig.settle()
+    await rig.advance(by: 1)
+    try demand(rig.captureStarts(A) == 0 && (rig.trace.outputStarts[A] ?? 0) == 0, "19a: no capture or output starts after the switch-off: \(rig.describe(A))")
+    try demand(rig.nothingStranded(A) && rig.state(A) == "idle", "19a: no lease, nothing stranded, lane idle: \(rig.describe(A))")
+    await rig.shutdown()
+    // 19b: shutdown begins in the same turn as the wake, before the queued start runs (no hook needed).
+    let quit = Rig()
+    await quit.apply([(A, true)])
+    quit.world.appear(A, pids: [101])
+    quit.menuOpenedWithoutSettling()
+    await quit.shutdown()
+    await quit.settle()
+    try demand(quit.captureStarts(A) == 0 && (quit.trace.outputStarts[A] ?? 0) == 0, "19b: no capture or output starts after shutdown: \(quit.describe(A))")
+    try demand(quit.nothingStranded(A), "19b: no lease, nothing stranded after shutdown: \(quit.describe(A))")
+  }
+
+  // 20. Two lanes: A is being woken (its attempt under way), B is waiting, and the list changes once.
+  //     A gets exactly one more attempt (the remembered one) and B gets one; the fold does not sweep A again.
+  static func case20() async throws {
+    let rig = Rig()
+    await rig.apply([(A, true), (B, true)])  // both waiting
+    let a = rig.world.candidate(A, pid: 101)
+    rig.world.queue[A] = [[a], [a], []]  // A's next attempt reaches prepare, then finds nothing
+    rig.trace.holdPrepare.insert(A)
+    rig.menuOpenedWithoutSettling()  // A's attempt holds at prepare; B's attempt finds nothing
+    await rig.trace.prepareGate.entered()
+    for _ in 0..<200 where rig.state(B) != Product.waitingState { await Task.yield() }
+    try demand(rig.state(B) == Product.waitingState, "setup: B is waiting again: \(rig.describe(B))")
+    let a0 = rig.attempts(A), b0 = rig.attempts(B)
+    rig.events.processListChanged()  // one change: A is being woken, B is waiting
+    rig.trace.prepareGate.release()
+    await rig.settle()
+    await rig.advance(by: 1)
+    let da = rig.attempts(A) - a0, db = rig.attempts(B) - b0
+    try demand(da == 1, "A, woken when the change came, gets exactly one more attempt: \(da): \(rig.describe(A))")
+    try demand(db == 1, "B, waiting when the change came, gets one attempt: \(db): \(rig.describe(B))")
+    try demand(rig.clock.pending == 0 && rig.problem == nil, "then quiet: \(rig.describe(A))")
+    await rig.shutdown()
+  }
+
+  // 21. Shutdown while one lane is stopping and another's first start ends in waiting during that stop:
+  //     no list listener is installed after shutdown begins. Shutdown visits lanes in an order the check
+  //     cannot choose, so each try uses fresh lanes; the requirement is checked on every try.
+  static func case21() async throws {
+    var orders: [String] = []
+    for attempt in 1...24 {
+      let rig = Rig()
+      rig.world.appear(A, pids: [101])
+      await rig.apply([(A, true)])  // A running
+      let b = rig.world.candidate(B, pid: 201)
+      rig.world.queue[B] = [[b], [b], []]  // B's first start reaches prepare, then finds nothing
+      rig.trace.holdPrepare.insert(B)
+      rig.applyWithoutSettling([(A, true), (B, true)])
+      await rig.trace.prepareGate.entered()
+      rig.trace.holdSinkStop.insert(A)  // shutdown's stop of A holds at A's output
+      let addsBefore = rig.events.listInstalls
+      let done = Task { @MainActor in await rig.shutdown() }
+      await rig.drainQueued()
+      let aFirst = rig.trace.sinkStopGate.reached
+      orders.append(aFirst ? "A" : "B")
+      rig.trace.prepareGate.release()  // B's start finishes, in waiting, while shutdown is under way
+      await rig.drainQueued()
+      rig.trace.sinkStopGate.release()
+      await done.value
+      try demand(rig.events.listInstalls == addsBefore && !rig.events.listListenerInstalled,
+        "try \(attempt) (shutdown stopped \(aFirst ? "A" : "B") first): no listener installed after shutdown began: adds \(addsBefore) -> \(rig.events.listInstalls)")
+    }
+    print("case 21 shutdown orders: \(orders.joined())")
+  }
+
+  // 22. A quiet wake (waiting, an attempt, waiting again) tells the menu nothing; a wake that starts the
+  //     lane does.
+  static func case22() async throws {
+    let rig = Rig()
+    await rig.apply([(A, true)])
+    let p0 = rig.publications, a0 = rig.attempts(A)
+    await rig.menuOpened()
+    await rig.listChanged()
+    await rig.advance(by: 1)
+    await rig.launched(A)
+    await rig.advance(by: 20)
+    try demand(rig.attempts(A) >= a0 + 7, "setup: menu, list and burst attempts were made: \(rig.describe(A))")
+    try demand(rig.publications == p0, "quiet wakes publish nothing: \(p0) -> \(rig.publications)")
+    rig.world.appear(A, pids: [101])
+    await rig.listChanged()
+    await rig.advance(by: 1)
+    try demand(rig.state(A) == "running" && rig.publications > p0, "a wake that starts the lane publishes: \(rig.publications)")
+    await rig.shutdown()
+  }
+
   // 16. A different process found at revalidation (`replaced`) counts as a relaunch: the
   //     lane waits, quietly, and the launch burst starts.
   static func case16() async throws {
@@ -413,7 +589,7 @@ enum Cases {
       try demand(rig.state(A) == Product.waitingState && rig.problem == nil, "\(label): replaced is waiting, not a problem: \(rig.describe(A))")
       try demand(rig.nothingStranded(A) && rig.captureStarts(A) == 0, "\(label): nothing stranded or started: \(rig.describe(A))")
       await rig.advance(to: 40)
-      let burst = rig.attemptTimes(A).dropFirst().map { $0 - 5 }
+      let burst = rig.attemptTimes(A).filter { $0 > 5.0001 }.map { $0 - 5 }
       try demand(sameTimes(Array(burst), [0.5, 1, 2, 4, 8]), "\(label): the launch burst follows at 0.5, 1, 2, 4, 8 s: \(rig.describe(A))")
       try demand(rig.state(A) == Product.waitingState && rig.problem == nil && rig.clock.pending == 0, "\(label): still quiet, nothing left scheduled: \(rig.describe(A))")
       await rig.shutdown()
@@ -424,9 +600,9 @@ enum Cases {
     rig.world.queue[A] = [[old], [new]]
     rig.world.appear(A, pids: [102])
     await rig.apply([(A, true)])
-    try demand(rig.state(A) == Product.waitingState, "16c: replaced is waiting: \(rig.describe(A))")
+    try demand(rig.problem == nil, "16c: replaced is not a problem: \(rig.describe(A))")
     await rig.advance(to: 0.5)
-    try demand(rig.state(A) == "running" && rig.trace.resolvedPIDs[A]?.last == 102, "16c: the burst's first step runs the new process: \(rig.describe(A))")
+    try demand(rig.state(A) == "running" && rig.trace.resolvedPIDs[A]?.last == 102, "16c: the new process runs by the burst's first step: \(rig.describe(A))")
     try demand(rig.clock.pending == 0, "16c: the rest of the burst is cancelled at once: \(rig.describe(A))")
     await rig.shutdown()
   }

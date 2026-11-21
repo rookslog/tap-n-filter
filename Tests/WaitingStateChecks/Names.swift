@@ -1,6 +1,7 @@
 // The only file in these checks that names the product's waiting-state code. If a name changes in the
 // product, change it here and nowhere else.
 
+import CoreAudio
 import Foundation
 import PlaybackLifecycle
 import PlaybackRuntime
@@ -51,6 +52,25 @@ enum Product {
 
   /// The manual retry: what App.swift calls when the menu opens.
   static func menuOpened(_ controller: PlaybackController) { controller.menuOpened() }
+
+  /// Hook (asked for): awaited inside a lane start's task before it enters the runtime, ahead of any
+  /// check the controller makes there, so a check can stop or shut down while a start is queued.
+  static func beforeStartEntersRuntime(
+    _ controller: PlaybackController, _ hold: @escaping (UUID) async -> Void
+  ) {
+    controller.beforeStartEntersRuntimeForTesting = hold
+  }
+
+  /// The real process-list listener on the system audio object: add, remove, remove again.
+  /// Hook (asked for): `addStatus` is the add call's status, and `remove()` returns the remove call's
+  /// status, or nil when there is nothing registered to remove.
+  static func realListenerAddAndRemove() -> (add: OSStatus, remove: OSStatus?, again: OSStatus?) {
+    let listener = AudioProcessListListener(handler: {})
+    let add = listener.addStatus
+    let remove = listener.remove()
+    let again = listener.remove()
+    return (add, remove, again)
+  }
 
   /// The product's fold window and launch burst, checked against the expected values in cases 7 and 4.
   static var productFoldWindow: TimeInterval { PlaybackWakeSchedule.listFold }
