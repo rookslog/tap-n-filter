@@ -658,7 +658,10 @@ public final class PlaybackController {
 
   /// One attempt per change, with changes inside the fold window folded into one.
   private func processListChanged() {
-    guard !quitting, anyLaneWaiting, cancelListFold == nil, let wake else { return }
+    guard !quitting, anyLaneWaiting, let wake else { return }
+    // A change during an attempt is remembered for that lane and does not join a fold.
+    for lane in lanes.values where lane.state == .starting && lane.wakeStart { lane.wakePending = true }
+    guard lanes.values.contains(where: { $0.state == .waiting }), cancelListFold == nil else { return }
     cancelListFold = wake.schedule(PlaybackWakeSchedule.listFold) { [weak self] in
       guard let self else { return }
       self.cancelListFold = nil
