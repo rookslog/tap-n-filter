@@ -468,7 +468,11 @@ final class LibraryListeningCoordinator {
         guard lifecycle != .closed, let apply else { return }
         switch mode {
         case .positions: guard applied?.snapshot != snapshot || applied?.compare != compare else { return }
-        case .activation: guard activated?.snapshot != snapshot || activated?.compare != compare else { return }
+        // An activation is a repeat only when it equals both the last activation and what playback holds now:
+        // a positions delivery in between may have moved playback away from it (activation A, positions B, activation A).
+        case .activation:
+            guard activated?.snapshot != snapshot || activated?.compare != compare
+                || applied?.snapshot != snapshot || applied?.compare != compare else { return }
         }
         applied = (snapshot, compare)
         if mode == .activation { activated = (snapshot, compare) }
