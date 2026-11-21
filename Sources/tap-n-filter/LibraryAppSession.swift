@@ -220,7 +220,8 @@ final class LibraryAppSession {
             Task {
                 do {
                     switch try await task.value {
-                    case .coalesced, .live: break
+                    case .coalesced: break
+                    case .live: applyDidSucceed()
                     case .delivered(let result), .fenced(let result):
                         perfMutationCompleted?(result)
                         applyDidSucceed()

@@ -41,11 +41,47 @@ private actor UnitAPort: LibraryPersistence {
 @MainActor private final class UnitAObserver {
     weak var app: LibraryAppSession?
     private(set) var seen: [String?] = []
-    func note() { seen.append(app?.problem) }
+    private var clearWaiters: [(id: UUID, continuation: CheckedContinuation<Bool, Never>)] = []
+    func note() {
+        let current = app?.problem
+        seen.append(current)
+        guard current == nil else { return }
+        let ready = clearWaiters; clearWaiters = []
+        for waiter in ready { waiter.continuation.resume(returning: true) }
+    }
+    /// True once a notification after `count` saw no problem. The deadline only turns a missing
+    /// notification into a reported failure instead of a hang; no passing result depends on it.
+    func waitForClear(since count: Int, deadline: Duration = .seconds(20)) async -> Bool {
+        if seen.dropFirst(count).contains(where: { $0 == nil }) { return true }
+        let id = UUID()
+        return await withCheckedContinuation { continuation in
+            clearWaiters.append((id, continuation))
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: deadline)
+                guard let self, let index = self.clearWaiters.firstIndex(where: { $0.id == id }) else { return }
+                self.clearWaiters.remove(at: index).continuation.resume(returning: false)
+            }
+        }
+    }
 }
 
-/// Controls the `move:` override: a non-nil `failure` makes the next live move throw with that marker.
-@MainActor private final class UnitAFlip { var failure: String? }
+/// Counts calls from `@Sendable` closures (reads, checkpoint delays).
+private final class UnitACounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func bump() { lock.lock(); count += 1; lock.unlock() }
+    var value: Int { lock.lock(); defer { lock.unlock() }; return count }
+}
+
+/// Controls the fakes. `failure`: the `move:` override throws with that marker (ordered fixture).
+/// Drag fixture: `failures` counts down the live-apply and menu-move failures, each thrown with `mark`;
+/// `followers` are sent from inside the next live apply, while that sample is still in flight.
+@MainActor private final class UnitAFlip {
+    var failure: String?
+    var failures = 0
+    var mark = "UNIT-A-DRAG"
+    var followers: [EverydayMenuAction] = []
+}
 
 @MainActor private final class UnitAReply {
     private var result: String?
@@ -67,13 +103,19 @@ private actor UnitAPort: LibraryPersistence {
     let port: UnitAPort
     let observer: UnitAObserver
     let flip: UnitAFlip
+    let reads: UnitACounter
+    let delays: UnitACounter
     private var names = 0
 
-    private init(app: LibraryAppSession, port: UnitAPort, observer: UnitAObserver, flip: UnitAFlip) {
-        self.app = app; self.port = port; self.observer = observer; self.flip = flip
+    private init(app: LibraryAppSession, port: UnitAPort, observer: UnitAObserver, flip: UnitAFlip,
+                 reads: UnitACounter, delays: UnitACounter) {
+        self.app = app; self.port = port; self.observer = observer; self.flip = flip; self.reads = reads; self.delays = delays
     }
 
-    static func make() async throws -> UnitAFixture {
+    /// `drag: false` (default): live moves go through the `move:` override, so the ordered path runs.
+    /// `drag: true`: no `move:` override, so a menu drag reaches the optimised live path (`.live`, `.coalesced`);
+    /// failures come from `applyFailureForTesting` and the `menuMove:` override.
+    static func make(drag: Bool = false) async throws -> UnitAFixture {
         let limits = try LibraryAppSession.normalLimits(), seed = UnitAPort(nil)
         guard case .fresh(let seedOwner) = await SoundLibrarySession.open(persistence: seed, limits: limits, builtins: .quickMenu) else {
             throw UnitAMark(description: "setup: seed library did not open fresh")
@@ -83,20 +125,35 @@ private actor UnitAPort: LibraryPersistence {
         _ = try await seedOwner.select(everyday.id, on: "com.apple.Safari")
         _ = try await seedOwner.checkpoint()
         let port = UnitAPort(await seed.data), observer = UnitAObserver(), flip = UnitAFlip()
+        let reads = UnitACounter(), delays = UnitACounter()
+        let ordered: LibraryListeningCoordinator.Move = { _, _, _, _, _ in
+            if let mark = flip.failure { throw UnitAMark(description: mark) }
+            return .changed
+        }
+        let menuMove: LibraryListeningCoordinator.MenuMove = { session, address, identity, option, value in
+            if flip.failures > 0 { flip.failures -= 1; throw UnitAMark(description: flip.mark) }
+            return try await session.moveForMenu(address, expected: identity, optionGesture: option, to: value)
+        }
         let app = LibraryAppSession(changed: { observer.note() }, attentionChanged: { observer.note() },
+            read: { reads.bump(); return try await $0.menuState() },
             // No debounced checkpoint: a save behind a live command would clear a save problem by itself.
-            checkpointDelay: { throw CancellationError() },
-            move: { _, _, _, _, _ in
-                if let mark = flip.failure { throw UnitAMark(description: mark) }
-                return .changed
-            })
+            checkpointDelay: { delays.bump(); throw CancellationError() },
+            move: drag ? nil : ordered,
+            menuMove: drag ? menuMove : nil)
         observer.app = app
+        if drag {
+            app.coordinator.applyFailureForTesting = { [weak app] in
+                let followers = flip.followers; flip.followers = []
+                for action in followers { app?.send(action) }
+                if flip.failures > 0 { flip.failures -= 1; throw UnitAMark(description: flip.mark) }
+            }
+        }
         await app.start(persistence: port, limits: limits)
         await app.quiescent()
         guard app.isReady, app.problem == nil else {
             throw UnitAMark(description: "setup: session not ready or already has a problem: \(String(describing: app.problem))")
         }
-        return UnitAFixture(app: app, port: port, observer: observer, flip: flip)
+        return UnitAFixture(app: app, port: port, observer: observer, flip: flip, reads: reads, delays: delays)
     }
 
     var problem: String? { app.problem }
@@ -126,13 +183,38 @@ private actor UnitAPort: LibraryPersistence {
         }
         return .libraryMove(try binding(), control.address, .scalar(option.position))
     }
-    /// A top-level slider: `listen` routes it through `submitSliderMove` and the slider success arms.
-    func sliderMove(_ value: Double) throws -> EverydayMenuAction {
+    func sliderControl() throws -> MenuSoundControl {
         guard let control = try card().controls.first(where: {
             guard $0.optionGesture == nil, case .slider = $0.face else { return false }
             return true
         }) else { throw UnitAMark(description: "setup: no top-level slider on the Everyday card") }
-        return .libraryMove(try binding(), control.address, .scalar(value))
+        return control
+    }
+    /// A top-level slider: `listen` routes it through `submitSliderMove` and the slider success arms.
+    func sliderMove(_ value: Double) throws -> EverydayMenuAction {
+        .libraryMove(try binding(), try sliderControl().address, .scalar(value))
+    }
+    /// One sample of a menu drag `gesture` on the slider, addressed to the card as it is now.
+    func dragSample(_ gesture: UUID, _ value: Double) throws -> EverydayMenuAction {
+        let card = try card(), control = try sliderControl()
+        guard let identity = card.menuIdentity, let epoch = card.menuEpoch else {
+            throw UnitAMark(description: "setup: the Safari card has no menu identity or epoch")
+        }
+        return .gestureMove(gesture, identity, epoch, control.address, control.optionGesture, .scalar(value))
+    }
+    /// Drag fixture: one drag whose first sample fails, leaving an apply problem; the failure ends the drag.
+    func failDrag(_ mark: String) async throws {
+        let gesture = UUID()
+        app.send(.beginMenuGesture(gesture))
+        flip.mark = mark; flip.failures = 1
+        let sample = try dragSample(gesture, 0.3)
+        let outcome = await live(sample)
+        flip.failures = 0
+        app.send(.endGesture)
+        await app.quiescent()
+        guard outcome == "failed", has(app.problem, mark) else {
+            throw UnitAMark(description: "setup: the drag sample did not fail (\(outcome), \(String(describing: app.problem)))")
+        }
     }
 
     /// Sends one live action, waits for its completion or failure callback, then for quiescence.
@@ -213,6 +295,8 @@ enum ProblemClearCases {
         try await p4AcceptedResultsKeepApply()
         try await p5SecondApplyFailureReplaces()
         try await p6SupersededCompletionClearsApply()
+        try await p7LiveDragSampleClearsApply()
+        try await p8CoalescedSampleKeepsApply()
         try await d1DismissClearsShownApply()
         try await d2DismissKeepsSave()
         try await d3DismissKeepsRead()
@@ -420,6 +504,63 @@ enum ProblemClearCases {
         let power = await f.live(.libraryPower(stale, true))
         check(power == "completed" && f.problem == nil, "P6",
             "a power command answered superseded (stale binding, no throw) still clears the apply problem: \(power) problem=\(String(describing: f.problem))")
+    }
+
+    /// A drag sample delivered on the optimised path (`.live`) clears the apply problem, and the `.live` arm asks
+    /// for no save and no refresh (the drag's end does both).
+    @MainActor static func p7LiveDragSampleClearsApply() async throws {
+        let f = try await UnitAFixture.make(drag: true)
+        try await f.failDrag("UNIT-A-P7")
+        let gesture = UUID()
+        f.app.send(.beginMenuGesture(gesture))
+        let sample = try f.dragSample(gesture, 0.42)
+        let evaluated = UnitAReply()
+        f.app.coordinator.perfParameterEvaluated = { _, _ in evaluated.finish("live") }
+        let before = f.notifications, reads = f.reads.value, delays = f.delays.value, writes = await f.port.writes
+        f.app.send(sample)
+        let path = await evaluated.value()
+        f.app.coordinator.perfParameterEvaluated = nil
+        let cleared = await f.observer.waitForClear(since: before)
+        // A refresh or save request would start within a few main-actor turns; quiescence is not awaited mid-drag.
+        for _ in 0..<50 { await Task.yield() }
+        let readsAfter = f.reads.value, delaysAfter = f.delays.value, writesAfter = await f.port.writes
+        check(path == "live", "P7a", "setup: the sample took the optimised live path: \(path)")
+        check(cleared && f.problem == nil, "P7b",
+            "a .live drag sample clears the apply problem and the menu is told: cleared=\(cleared) problem=\(String(describing: f.problem))")
+        check(readsAfter == reads && delaysAfter == delays && writesAfter == writes, "P7c",
+            "the .live arm requests no refresh and no save: reads \(reads)->\(readsAfter) checkpoint delays \(delays)->\(delaysAfter) writes \(writes)->\(writesAfter)")
+        f.app.send(.endGesture)
+        await f.app.quiescent()
+    }
+
+    /// A coalesced drag sample (replaced before it ran) leaves the apply problem. The samples around it fail,
+    /// so nothing else in the sequence may clear it; a clear by the coalesced arm shows as a notification seeing nil.
+    @MainActor static func p8CoalescedSampleKeepsApply() async throws {
+        let f = try await UnitAFixture.make(drag: true)
+        try await f.failDrag("UNIT-A-P8-FIRST")
+        let gesture = UUID()
+        f.app.send(.beginMenuGesture(gesture))
+        let first = try f.dragSample(gesture, 0.2), replaced = try f.dragSample(gesture, 0.25), last = try f.dragSample(gesture, 0.3)
+        var coalesced = 0, failed = 0
+        let done = UnitAReply()
+        f.app.coordinator.perfSliderCoalesced = { coalesced += 1 }
+        f.app.perfMutationCompleted = { _ in done.finish("completed") }
+        f.app.perfMutationFailed = { failed += 1; if failed == 2 { done.finish("two failures") } }
+        // `first` is in flight when `replaced` and `last` arrive: `last` replaces `replaced`, which finishes coalesced.
+        // `first` and `last` both fail, so only the coalesced arm could clear the problem.
+        f.flip.mark = "UNIT-A-P8-SECOND"; f.flip.failures = 2; f.flip.followers = [replaced, last]
+        let before = f.notifications
+        f.app.send(first)
+        let outcome = await done.value()
+        f.flip.failures = 0; f.flip.followers = []
+        f.app.perfMutationCompleted = nil; f.app.perfMutationFailed = nil; f.app.coordinator.perfSliderCoalesced = nil
+        f.app.send(.endGesture)
+        await f.app.quiescent()
+        let sawClear = f.observer.seen.dropFirst(before).contains { $0 == nil }
+        check(coalesced == 1 && outcome == "two failures", "P8a",
+            "setup: one sample coalesced and the two around it failed: coalesced=\(coalesced) outcome=\(outcome) failed=\(failed)")
+        check(!sawClear && f.problem != nil, "P8b",
+            "a .coalesced drag sample does not clear the apply problem: sawClear=\(sawClear) problem=\(String(describing: f.problem))")
     }
 
     // MARK: Dismissing the alert
