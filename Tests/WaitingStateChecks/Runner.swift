@@ -42,7 +42,18 @@ private struct Case {
   Case(id: "19", title: "a queued wake start then switch-off or shutdown: nothing starts or is stranded", pending: false) { try await Cases.case19() },
   Case(id: "20", title: "one list change with one lane woken and one waiting: one attempt each", pending: false) { try await Cases.case20() },
   Case(id: "21", title: "shutdown installs no list listener, even when a start ends in waiting during it", pending: false) { try await Cases.case21() },
-  Case(id: "22", title: "a quiet wake publishes nothing", pending: false) { try await Cases.case22() },
+  Case(id: "22", title: "a quiet wake publishes nothing and makes exactly the attempts its events allow", pending: false) { try await Cases.case22() },
+  Case(id: "23", title: "a lane whose first start misses while another holds the listener still starts", pending: false) { try await Cases.case23() },
+  Case(id: "24", title: "a fold owed to a lane does not survive switching it off and on", pending: false) { try await Cases.case24() },
+  Case(id: "25", title: "positions-only switch-off during a wake leaves no listener", pending: false) { try await Cases.case25() },
+  Case(id: "26", title: "a switched-off lane never ends in waiting after a quit during a wake", pending: false) { try await Cases.case26() },
+  Case(id: "27", title: "two queued wake starts and shutdown in the same turn: nothing starts", pending: false) { try await Cases.case27() },
+  Case(id: "28", title: "a lane's fold mark is cleared when it is attempted before the fold", pending: false) { try await Cases.case28() },
+  Case(id: "29", title: "a burst step that finds nothing leaves the remaining steps scheduled", pending: false) { try await Cases.case29() },
+  Case(id: "30", title: "resolve finds it and revalidation loses it ten times: attempts stay bounded", pending: false) { try await Cases.case30() },
+  Case(id: "31", title: "a relaunch during the quit teardown of a woken lane starts it when the teardown ends", pending: false) { try await Cases.case31() },
+  Case(id: "32", title: "a launch during that teardown starts the burst when it ends", pending: false) { try await Cases.case32() },
+  Case(id: "33", title: "a start returning replaced during shutdown schedules no timer", pending: false) { try await Cases.case33() },
 ]
 
 public enum WaitingStateChecks {

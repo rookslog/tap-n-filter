@@ -530,30 +530,50 @@ enum Cases {
   //     no list listener is installed after shutdown begins. Shutdown visits lanes in an order the check
   //     cannot choose, so each try uses fresh lanes; the requirement is checked on every try.
   static func case21() async throws {
-    var orders: [String] = []
+    var orders: [String] = [], witnessed = 0
     for attempt in 1...24 {
       let rig = Rig()
-      rig.world.appear(A, pids: [101])
-      await rig.apply([(A, true)])  // A running
       let b = rig.world.candidate(B, pid: 201)
-      rig.world.queue[B] = [[b], [b], []]  // B's first start reaches prepare, then finds nothing
-      rig.trace.holdPrepare.insert(B)
-      rig.applyWithoutSettling([(A, true), (B, true)])
-      await rig.trace.prepareGate.entered()
-      rig.trace.holdSinkStop.insert(A)  // shutdown's stop of A holds at A's output
-      let addsBefore = rig.events.listInstalls
-      let done = Task { @MainActor in await rig.shutdown() }
-      await rig.drainQueued()
-      let aFirst = rig.trace.sinkStopGate.reached
-      orders.append(aFirst ? "A" : "B")
-      rig.trace.prepareGate.release()  // B's start finishes, in waiting, while shutdown is under way
-      await rig.drainQueued()
-      rig.trace.sinkStopGate.release()
-      await done.value
-      try demand(rig.events.listInstalls == addsBefore && !rig.events.listListenerInstalled,
-        "try \(attempt) (shutdown stopped \(aFirst ? "A" : "B") first): no listener installed after shutdown began: adds \(addsBefore) -> \(rig.events.listInstalls)")
+      let race = await shutdownRace(rig, bReads: [[b], [b], []])  // B's first start finds nothing at the end
+      orders.append(race.aFirst ? "A" : "B")
+      if race.bEndedDuringShutdown { witnessed += 1 }
+      try demand(rig.events.listInstalls == race.addsBefore && !rig.events.listListenerInstalled,
+        "try \(attempt) (shutdown stopped \(race.aFirst ? "A" : "B") first): no listener installed after shutdown began: adds \(race.addsBefore) -> \(rig.events.listInstalls)")
     }
-    print("case 21 shutdown orders: \(orders.joined())")
+    print("case 21 shutdown orders: \(orders.joined()); B's start ended during shutdown in \(witnessed) tries")
+    try demand(witnessed > 0, "B's start never ended during shutdown in 24 tries, so the case proved nothing: orders \(orders.joined())")
+  }
+
+  /// Shutdown while A is running (its output stop held) and B's first start is held at prepare. B's start
+  /// is released while shutdown is under way; in the tries where shutdown stops A first, B's start ends
+  /// during shutdown. Returns once shutdown has finished.
+  private static func shutdownRace(_ rig: Rig, bReads: [[ProcessCandidate]])
+    async -> (aFirst: Bool, bEndedDuringShutdown: Bool, addsBefore: Int)
+  {
+    rig.world.appear(A, pids: [101])
+    await rig.apply([(A, true)])  // A running
+    rig.world.queue[B] = bReads
+    rig.trace.holdPrepare.insert(B)
+    rig.applyWithoutSettling([(A, true), (B, true)])
+    await rig.trace.prepareGate.entered()
+    rig.trace.holdSinkStop.insert(A)  // shutdown's stop of A holds at A's output
+    let addsBefore = rig.events.listInstalls
+    let done = Task { @MainActor in await rig.shutdown() }
+    await rig.drainQueued()
+    let aFirst = rig.trace.sinkStopGate.reached
+    rig.trace.prepareGate.release()  // B's start goes on while shutdown is under way
+    // The witness is the runtime's own report that B's start ended, so it does not depend on what the
+    // controller then does with the result.
+    if aFirst {
+      for _ in 0..<1000 where (rig.trace.failures[B] ?? []).isEmpty { await Task.yield() }
+      await rig.drainQueued()  // let the controller handle the result before shutdown goes on
+    } else {
+      await rig.drainQueued()
+    }
+    let ended = !(rig.trace.failures[B] ?? []).isEmpty
+    rig.trace.sinkStopGate.release()
+    await done.value
+    return (aFirst, ended, addsBefore)
   }
 
   // 22. A quiet wake (waiting, an attempt, waiting again) tells the menu nothing; a wake that starts the
@@ -567,13 +587,244 @@ enum Cases {
     await rig.advance(by: 1)
     await rig.launched(A)
     await rig.advance(by: 20)
-    try demand(rig.attempts(A) >= a0 + 7, "setup: menu, list and burst attempts were made: \(rig.describe(A))")
+    try demand(rig.attempts(A) == a0 + 7, "exactly 7 quiet attempts (menu 1, list 1, burst 5), no extra retries: \(rig.attempts(A) - a0): \(rig.describe(A))")
     try demand(rig.publications == p0, "quiet wakes publish nothing: \(p0) -> \(rig.publications)")
     rig.world.appear(A, pids: [101])
     await rig.listChanged()
     await rig.advance(by: 1)
     try demand(rig.state(A) == "running" && rig.publications > p0, "a wake that starts the lane publishes: \(rig.publications)")
     await rig.shutdown()
+  }
+
+  // 23. A second lane's first start misses while another lane already holds the listener; its audio then
+  //     appears with no further event. The lane must still start: each lane whose ordinary start ends in
+  //     waiting gets one look of its own, and no other lane is attempted because it started waiting.
+  static func case23() async throws {
+    // 23a: B's first read finds nothing, every later read finds B's process, and nothing else happens.
+    do {
+      let rig = Rig()
+      await rig.apply([(A, true)])  // A waiting, listener installed
+      let a0 = rig.attempts(A)
+      rig.world.queue[B] = [[]]
+      rig.world.appear(B, pids: [201])
+      await rig.apply([(A, true), (B, true)])
+      await rig.advance(by: 1)
+      try demand(rig.state(B) == "running" && rig.trace.resolvedPIDs[B]?.last == 201, "23a: B starts without another event: \(rig.describe(B))")
+      try demand(rig.attempts(B) == 2, "23a: B's first start, then exactly one look: \(rig.describe(B))")
+      try demand(rig.attempts(A) == a0, "23a: A is not attempted because B started waiting: \(rig.describe(A))")
+      await rig.shutdown()
+    }
+    // 23b: the list changes while B's first start is under way (so the fold is owed to A only), and B's
+    //      first read finds nothing. B must still start.
+    do {
+      let rig = Rig()
+      rig.installStartHold()
+      await rig.apply([(A, true)])  // A waiting
+      rig.world.queue[B] = [[]]
+      rig.world.appear(B, pids: [201])
+      rig.startHold.arm()
+      rig.applyWithoutSettling([(A, true), (B, true)])  // B's first start holds before the runtime
+      await rig.startHold.gate.entered()
+      rig.events.processListChanged()  // B's process appeared; A is waiting, B is starting
+      rig.startHold.gate.release()
+      await rig.settle()
+      await rig.advance(by: 1)
+      try demand(rig.state(B) == "running" && rig.trace.resolvedPIDs[B]?.last == 201, "23b: B starts although the change came during its first start: \(rig.describe(B))")
+      await rig.shutdown()
+    }
+    // 23c: B absent: B gets its first start and exactly one look; A gets nothing from it.
+    do {
+      let rig = Rig()
+      await rig.apply([(A, true)])
+      let a0 = rig.attempts(A)
+      await rig.apply([(A, true), (B, true)])
+      await rig.advance(to: 30)
+      try demand(rig.attempts(B) == 2 && rig.state(B) == Product.waitingState, "23c: B's first start and one look: \(rig.describe(B))")
+      try demand(rig.attempts(A) == a0 && rig.clock.pending == 0, "23c: A untouched, nothing scheduled: \(rig.describe(A))")
+      await rig.shutdown()
+    }
+  }
+
+  // 24. A fold owed to a lane does not survive switching that lane off and on again: the new activation's
+  //     own start and look are all it gets, while another lane keeps the fold alive.
+  static func case24() async throws {
+    let rig = Rig()
+    await rig.apply([(A, true), (B, true)])  // both waiting
+    rig.events.processListChanged()  // a fold for A and B, due at 0.25 s
+    await rig.settle()
+    await rig.apply([(A, false), (B, true)])  // A off ...
+    await rig.apply([(A, true), (B, true)])  // ... and on again, at t = 0
+    await rig.advance(to: 1)
+    let aLate = rig.attemptTimes(A).filter { $0 > 0.0001 }
+    let bLate = rig.attemptTimes(B).filter { $0 > 0.0001 }
+    try demand(aLate.isEmpty, "the old fold does not attempt A's new activation: A's attempts after t=0: \(aLate)")
+    try demand(sameTimes(bLate, [0.25]), "B still gets its fold: \(bLate)")
+    await rig.shutdown()
+  }
+
+  // 25. A positions-only switch-off of the only waiting lane while it is being woken leaves no listener and
+  //     no fold timer once the stop has finished.
+  static func case25() async throws {
+    let rig = Rig()
+    rig.installStartHold()
+    await rig.apply([(A, true)])  // waiting, listener installed
+    rig.startHold.arm()
+    rig.menuOpenedWithoutSettling()  // the wake start holds before the runtime
+    await rig.startHold.gate.entered()
+    rig.positionsWithoutSettling([(A, false)])  // switched off by a positions-only delivery
+    rig.startHold.gate.release()
+    await rig.settle()
+    await rig.advance(by: 1)
+    try demand(rig.state(A) == "idle", "setup: the lane is idle: \(rig.describe(A))")
+    try demand(!rig.events.listListenerInstalled && rig.clock.pending == 0, "no listener or timer left once nothing waits: active \(rig.events.activeListListeners): \(rig.describe(A))")
+    await rig.shutdown()
+  }
+
+  // 26. A lane that is switched off never ends in waiting: its app quits during a wake attempt, the lane is
+  //     switched off during the teardown, and the teardown then ends.
+  static func case26() async throws {
+    let rig = Rig()
+    await rig.apply([(A, true)])  // waiting
+    rig.world.appear(A, pids: [101])
+    rig.trace.holdPrepare.insert(A)
+    rig.menuOpenedWithoutSettling()  // the wake attempt holds at prepare
+    await rig.trace.prepareGate.entered()
+    rig.sourceQuit(A)  // the app quits during the wake attempt
+    rig.applyWithoutSettling(power: true, [(A, false)])  // switched off during the teardown
+    let a0 = rig.attempts(A)
+    rig.trace.prepareGate.release()
+    await rig.settle()
+    await rig.advance(by: 10)
+    try demand(rig.state(A) == "idle" && rig.activity(A) != .waiting, "a switched-off lane ends idle, not waiting: \(rig.describe(A))")
+    try demand(!rig.events.listListenerInstalled && rig.clock.pending == 0, "no listener or timer for it: \(rig.describe(A))")
+    try demand(rig.attempts(A) == a0 && rig.problem == nil && rig.nothingStranded(A), "no attempt, no problem, nothing stranded: \(rig.describe(A))")
+    await rig.shutdown()
+  }
+
+  // 27. Two lanes' wake starts are queued and shutdown begins in the same turn. Shutdown reaches the lanes
+  //     one at a time, so the second lane's start is stopped only by the quit check: no capture, no lease.
+  static func case27() async throws {
+    for attempt in 1...8 {
+      let rig = Rig()
+      await rig.apply([(A, true), (B, true)])  // both waiting
+      rig.world.appear(A, pids: [101])
+      rig.world.appear(B, pids: [201])
+      rig.menuOpenedWithoutSettling()  // both wake starts queued
+      await rig.shutdown()
+      await rig.settle()
+      try demand(rig.captureStarts(A) == 0 && rig.captureStarts(B) == 0
+        && (rig.trace.outputStarts[A] ?? 0) == 0 && (rig.trace.outputStarts[B] ?? 0) == 0,
+        "try \(attempt): no capture or output starts after shutdown: \(rig.describe(A)) | \(rig.describe(B))")
+      try demand(rig.nothingStranded(A) && rig.nothingStranded(B), "try \(attempt): no lease, nothing stranded: \(rig.describe(A)) | \(rig.describe(B))")
+    }
+  }
+
+  // 28. A fold mark already set on a lane is cleared when that lane is attempted by something else before
+  //     the fold runs: A's burst step comes first, so the fold attempts only B.
+  static func case28() async throws {
+    let rig = Rig()
+    await rig.apply([(A, true), (B, true)])  // both waiting
+    await rig.launched(A)  // A's burst: 0.5, 1, 2, 4, 8 s
+    await rig.advance(to: 0.4)
+    await rig.listChanged()  // fold for A and B, due at 0.65 s
+    await rig.advance(to: 0.9)
+    let aWindow = rig.attemptTimes(A).filter { $0 > 0.3 && $0 < 0.95 }
+    let bWindow = rig.attemptTimes(B).filter { $0 > 0.3 && $0 < 0.95 }
+    try demand(sameTimes(aWindow, [0.5]), "A: its burst step only; the fold mark it carried was cleared: \(aWindow)")
+    try demand(sameTimes(bWindow, [0.65]), "B: the fold: \(bWindow)")
+    await rig.shutdown()
+  }
+
+  // 29. A burst step that finds nothing leaves the burst's remaining steps scheduled.
+  static func case29() async throws {
+    let rig = Rig()
+    await rig.apply([(A, true)])
+    await rig.launched(A)
+    await rig.advance(to: 0.6)  // the 0.5 s step has failed
+    try demand(rig.state(A) == Product.waitingState, "setup: still waiting: \(rig.describe(A))")
+    try demand(sameTimes(rig.clock.pendingDue, [1, 2, 4, 8]), "the remaining steps are still scheduled: \(rig.clock.pendingDue)")
+    await rig.advance(to: 20)
+    try demand(sameTimes(rig.attemptTimes(A).filter { $0 > 0.0001 }, [0.5, 1, 2, 4, 8]), "all five steps ran: \(rig.describe(A))")
+    await rig.shutdown()
+  }
+
+  // 30. The resolver finds the process and revalidation loses it, ten times running: attempts stay at what
+  //     the triggering events allow, with no self-sustaining retry.
+  static func case30() async throws {
+    let rig = Rig()
+    let p = rig.world.candidate(A, pid: 101)
+    rig.world.queue[A] = Array(repeating: [[p], []], count: 10).flatMap { $0 }
+    await rig.apply([(A, true)])
+    let base = rig.attempts(A)
+    try demand(base == 2, "the first start and one look: \(rig.describe(A))")
+    for _ in 0..<8 { await rig.menuOpened() }  // eight more triggering events
+    await rig.advance(to: 60)
+    try demand(rig.attempts(A) == base + 8, "one attempt per triggering event, no more: \(rig.describe(A))")
+    try demand(rig.world.reads[A] == 20 && (rig.world.queue[A] ?? []).isEmpty, "each attempt resolved once and revalidated once: reads \(rig.world.reads[A] ?? 0)")
+    try demand(rig.state(A) == Product.waitingState && rig.problem == nil && rig.clock.pending == 0 && rig.nothingStranded(A), "then quiet: \(rig.describe(A))")
+    await rig.shutdown()
+  }
+
+  /// A waiting (holding the listener); B is woken, B's app quits during the wake, and B's teardown is held
+  /// at B's output stop. Returns with the teardown held; release `sinkStopGate` to end it.
+  private static func quitDuringWake(_ rig: Rig) async {
+    await rig.apply([(A, true), (B, true)])  // both waiting
+    rig.world.appear(B, pids: [201])
+    rig.trace.holdPrepare.insert(B)
+    rig.trace.holdSinkStop.insert(B)
+    rig.menuOpenedWithoutSettling()  // B's wake attempt holds at prepare (A's finds nothing)
+    await rig.trace.prepareGate.entered()
+    rig.world.vanish(B)
+    rig.sourceQuit(B)  // B's app quits during the wake
+    rig.trace.prepareGate.release()
+    await rig.trace.sinkStopGate.entered()  // B's teardown is under way
+  }
+
+  // 31. A relaunch during the quit teardown of a lane that was being woken: the new process appears (and
+  //     the list changes) before the teardown ends. When it ends, the lane looks once and starts.
+  static func case31() async throws {
+    let rig = Rig()
+    await quitDuringWake(rig)
+    rig.world.appear(B, pids: [202])
+    rig.events.processListChanged()
+    rig.trace.sinkStopGate.release()
+    await rig.settle()
+    await rig.advance(by: 1)
+    try demand(rig.state(B) == "running" && rig.trace.resolvedPIDs[B]?.last == 202, "the relaunched process runs after the teardown: \(rig.describe(B))")
+    try demand(rig.problem == nil && rig.captureStarts(B) == 1, "no problem, one start: \(rig.describe(B))")
+    await rig.shutdown()
+  }
+
+  // 32. A launch of the app during that teardown is remembered: when the teardown ends in waiting, the
+  //     launch burst starts from then.
+  static func case32() async throws {
+    let rig = Rig()
+    await rig.advance(to: 10)
+    await quitDuringWake(rig)
+    rig.events.launched(B)  // during the teardown
+    rig.trace.sinkStopGate.release()
+    await rig.settle()  // the teardown ends at t = 10
+    try demand(rig.state(B) == Product.waitingState && rig.problem == nil, "setup: waiting after the teardown: \(rig.describe(B))")
+    await rig.advance(to: 40)
+    let burst = rig.attemptTimes(B).filter { $0 > 10.0001 }.map { $0 - 10 }
+    try demand(sameTimes(burst, [0.5, 1, 2, 4, 8]), "the remembered launch's burst runs from the teardown's end: \(rig.describe(B))")
+    await rig.shutdown()
+  }
+
+  // 33. A start that returns `replaced` while shutdown is under way schedules no timer. Same race as
+  //     case 21, with B's process replaced at its last revalidation.
+  static func case33() async throws {
+    var orders: [String] = [], witnessed = 0
+    for attempt in 1...24 {
+      let rig = Rig()
+      let b = rig.world.candidate(B, pid: 201), relaunched = rig.world.candidate(B, pid: 202)
+      let race = await shutdownRace(rig, bReads: [[b], [b], [relaunched]])
+      orders.append(race.aFirst ? "A" : "B")
+      if race.bEndedDuringShutdown { witnessed += 1 }
+      try demand(rig.clock.pending == 0, "try \(attempt) (shutdown stopped \(race.aFirst ? "A" : "B") first): nothing scheduled after shutdown: \(rig.clock.pendingDue)")
+    }
+    print("case 33 shutdown orders: \(orders.joined()); B's start ended during shutdown in \(witnessed) tries")
+    try demand(witnessed > 0, "B's start never ended during shutdown in 24 tries, so the case proved nothing: orders \(orders.joined())")
   }
 
   // 16. A different process found at revalidation (`replaced`) counts as a relaunch: the

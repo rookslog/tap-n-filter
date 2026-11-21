@@ -178,6 +178,8 @@ func demand(_ condition: Bool, _ message: @autoclosure () -> String) throws {
   /// Times of each resolve attempt (`.resolving`), per bundle.
   var attempts: [String: [TimeInterval]] = [:]
   var resolvedPIDs: [String: [Int32]] = [:]
+  /// Start failures the runtime reported (`.failed`), per bundle, whatever the controller then did.
+  var failures: [String: [RuntimeFailure]] = [:]
   var startCompletions: [String: [String]] = [:]
   var sessionsMade: [String: Int] = [:]
   var prepared: [String: Int] = [:]
@@ -195,6 +197,7 @@ func demand(_ condition: Bool, _ message: @autoclosure () -> String) throws {
     switch observation.event {
     case .resolving: attempts[bundle, default: []].append(clock.now)
     case .resolved(let process): resolvedPIDs[bundle, default: []].append(process.pid)
+    case .failed(let failure, _, _): failures[bundle, default: []].append(failure)
     default: break
     }
   }
@@ -339,6 +342,11 @@ func demand(_ condition: Bool, _ message: @autoclosure () -> String) throws {
 
   func applyWithoutSettling(power: Bool, _ cards: [(String, Bool)]) {
     controller.apply(snapshot(power: power, cards), original: false)
+  }
+
+  /// A positions-only delivery that does not wait for held operations.
+  func positionsWithoutSettling(power: Bool = true, _ cards: [(String, Bool)]) {
+    _ = controller.updatePositions(snapshot(power: power, cards), original: false)
   }
 
   /// Lets queued main-actor work run without waiting for held operations.
