@@ -36,6 +36,8 @@ struct SliceResult {
     var red = 0
     var unsupported = 0
     var seconds = 0.0
+    /// Sequences with a delivery first taken after the final release (S5 only; observation, not a failure).
+    var late = 0
     var redSequences: [String] = []
     /// Set when the slice could not start (for example its shared fixture could not be built).
     var setupFailure: String?
@@ -43,7 +45,7 @@ struct SliceResult {
     var clean: Bool { setupFailure == nil && red == 0 && unsupported == 0 && green == count }
     var summary: String {
         "ENUM-SUMMARY suite=\(suite) level=\(length) hold=\(hold.map { String($0) } ?? "x") from=\(from) count=\(count) total=\(total) "
-            + "green=\(green) red=\(red) unsupported=\(unsupported) result=\(clean ? "clean" : "FAIL") seconds=\(String(format: "%.1f", seconds))"
+            + "green=\(green) red=\(red) unsupported=\(unsupported) result=\(clean ? "clean" : "FAIL") late=\(late) seconds=\(String(format: "%.1f", seconds))"
             + (setupFailure.map { " setup=\"\($0)\"" } ?? "")
     }
 }

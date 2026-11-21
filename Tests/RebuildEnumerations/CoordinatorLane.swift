@@ -69,6 +69,8 @@ struct S5Result {
     var notes: [String] = []
     /// Once settled, what playback last received differs from the document (parts of the first app, or compare).
     var playbackStale: String?
+    /// Deliveries first taken after the held starts and stops were released at the end (observation only).
+    var lateTaken: [BEvent] = []
 }
 
 /// `saveDuringPowerOn` holds the activation refresh that follows the first power ON, lets the debounced
@@ -212,6 +214,7 @@ struct S5Result {
     trace.releaseAll()
     await f.debounce.setOpen(true)
     await settle()
+    result.lateTaken = pending
     take(pending); pending = []
     if let doc = try? await f.owner.snapshot(), let live = try? await f.owner.liveState() {
         let want = ListeningRenderSnapshot(library: doc)
@@ -262,6 +265,13 @@ func s5Verdict(_ actions: [S5Action], _ r: S5Result) -> [String] {
             reached += 1
             print("ORDER S5 L\(length) hold \(hold) #\(from + offset) positions ON after OFF without activation ON: [\(text)] -> [\(r.translated.map(\.description).joined(separator: " "))]")
         }
+        // Observation only: neither line changes the verdict.
+        if !r.lateTaken.isEmpty {
+            result.late += 1
+            print("ENUM-LATE suite=S5 hold=\(hold) index=\(from + offset) taken=[\(r.lateTaken.map(\.description).joined(separator: " "))]")
+        }
+        let unsettled = r.notes.filter { $0 == "did not settle" }.count
+        if unsettled > 0 { print("ENUM-NOTE suite=S5 hold=\(hold) index=\(from + offset) did not settle (\(unsettled) time(s))") }
         let v = s5Verdict(actions, r)
         if ProcessInfo.processInfo.environment["S5_VERBOSE"] != nil {
             print("RUN #\(from + offset) [\(text)] delivered [\(r.translated.map(\.description).joined(separator: " "))] sounds \(r.observation.outputStarts) final \(r.observation.finalState) notes \(r.notes + r.observation.notes)")
@@ -272,7 +282,7 @@ func s5Verdict(_ actions: [S5Action], _ r: S5Result) -> [String] {
         let key = normalizeCause(v[0])
         if keys[key] == nil { keys[key] = (0, actions) }
         keys[key]!.0 += 1
-        print("RED S5 L\(length) hold \(hold) #\(from + offset) [\(text)] delivered [\(r.translated.map(\.description).joined(separator: " "))]")
+        print("RED S5 L\(length) hold \(hold) #\(from + offset) [\(text)] delivered [\(r.translated.map(\.description).joined(separator: " "))] late=\(r.lateTaken.isEmpty ? "no" : "yes")")
         for x in v.prefix(3) { print("    violates: \(x)") }
         for n in (r.notes + r.observation.notes).prefix(3) { print("    note: \(n)") }
     }

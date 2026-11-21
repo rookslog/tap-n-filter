@@ -109,7 +109,12 @@ jobs:
       matrix:
         os: [macos-15, macos-26]
         shard:
-          - { name: "rerun 971", specs: "S5 5 2 971 1;S5 5 2 971 1;S5 5 2 971 1;S5 5 2 971 1;S5 5 2 971 1;S5 5 2 971 1;S5 5 2 971 1;S5 5 2 971 1;S5 5 2 971 1;S5 5 2 971 1;S5 5 2 971 1;S5 5 2 971 1;S5 5 2 971 1;S5 5 2 971 1;S5 5 2 971 1;S5 5 2 971 1;S5 5 2 971 1;S5 5 2 971 1;S5 5 2 971 1;S5 5 2 971 1;S5 5 0 971 1;S5 5 0 971 1;S5 5 0 971 1;S5 5 0 971 1;S5 5 0 971 1;S5 5 1 971 1;S5 5 1 971 1;S5 5 1 971 1;S5 5 1 971 1;S5 5 1 971 1" }
+          - { name: "g S5 hold 2 repeat 1", specs: "S5 5 2 0 2218" }
+          - { name: "g S5 hold 2 repeat 2", specs: "S5 5 2 0 2218" }
+          - { name: "g S5 hold 2 repeat 3", specs: "S5 5 2 0 2218" }
+          - { name: "g S5 hold 2 repeat 4", specs: "S5 5 2 0 2218" }
+          - { name: "g S5 hold 2 repeat 5", specs: "S5 5 2 0 2218" }
+          - { name: "g S5 hold 2 repeat 6", specs: "S5 5 2 0 2218" }
 
     steps:
       - name: Check out
