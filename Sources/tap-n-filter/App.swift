@@ -297,7 +297,7 @@ final class TNFDelegate: NSObject, NSApplicationDelegate {
     if let library {
       switch action {
       case .quit: requestTermination()
-      case .refreshSources: refreshSources(); library.menuOpened()
+      case .refreshSources: refreshSources(); library.menuOpened(); playback?.menuOpened()
       case .showProblem: showProblem()
       default: library.send(action)
       }
@@ -313,7 +313,7 @@ final class TNFDelegate: NSObject, NSApplicationDelegate {
       requestTermination()
       return
     case .refreshSources:
-      if !smoke { refreshSources() }
+      if !smoke { refreshSources(); playback?.menuOpened() }
       return
     case .showProblem:
       showProblem()
@@ -390,6 +390,19 @@ final class TNFDelegate: NSObject, NSApplicationDelegate {
     library?.problem != nil || problem != nil || playback?.problem != nil ? "Audio Needs Attention…" : nil
   }
 
+  /// Per-card lane activity for the icon rule and the accessibility value of a waiting card.
+  private var menuLanes: [UUID: MenuLaneActivity] {
+    guard let playback else { return [:] }
+    let phases = playback.laneActivities.mapValues { activity -> MenuLaneActivity.Phase in
+      switch activity {
+      case .running: .running
+      case .waiting: .waiting
+      case .other: .other
+      }
+    }
+    return MenuLaneActivity.cards(phases)
+  }
+
   private func refreshAttention() { surface?.updateProblem(menuProblem) }
 
   private func refreshMenu(snapshotOrigin: MenuSnapshotOrigin = .cached) {
@@ -405,7 +418,7 @@ final class TNFDelegate: NSObject, NSApplicationDelegate {
       }
       surface?.update(data: data, positionContext: library.coordinator.positionContext, pendingApps: Set(library.roster.pending.keys), apps: apps,
         comparing: snapshot.compareOriginal, compareAvailable: playback?.compareAvailable == true,
-        problem: menuProblem)
+        problem: menuProblem, lanes: menuLanes)
       return
     }
     guard let snapshot else { return }
@@ -414,7 +427,7 @@ final class TNFDelegate: NSObject, NSApplicationDelegate {
       snapshot: snapshot, apps: apps, comparing: original,
       compareAvailable: playback?.compareAvailable == true,
       problem: problem != nil || playback?.problem != nil ? "Audio Needs Attention…" : nil,
-      snapshotOrigin: snapshotOrigin)
+      lanes: menuLanes, snapshotOrigin: snapshotOrigin)
   }
 
   private func scheduleSave() {

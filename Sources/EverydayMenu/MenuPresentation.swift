@@ -223,6 +223,7 @@ final class MenuPresentation: ObservableObject {
     @Published var compareAvailable = false
     @Published var problem: String?
     @Published var levels: [UUID: MenuLevelFrame] = [:]
+    @Published var lanes: [UUID: MenuLaneActivity] = [:]
     @Published var more: Set<UUID> = []
     @Published var interaction = MenuInteractionState()
     @Published var highlighted: UUID?

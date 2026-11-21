@@ -86,25 +86,26 @@ public final class EverydayMenu: NSObject, NSMenuDelegate {
     /// Optional level input is dormant without an owner; no timer or audio producer exists here.
     public func update(snapshot: ListeningSnapshot, apps: [SourceAppInfo], comparing: Bool,
                        compareAvailable: Bool, problem: String?, levels: [UUID: MenuLevelFrame] = [:],
-                       snapshotOrigin: MenuSnapshotOrigin = .cached) {
+                       lanes: [UUID: MenuLaneActivity] = [:], snapshotOrigin: MenuSnapshotOrigin = .cached) {
         librarySnapshot = nil
         let projected = MenuSoundData(legacy: snapshot)
         if state.snapshot != projected { state.snapshot = projected }
         if case .authoritative = snapshotOrigin {
             state.interaction.acknowledgeAuthoritative(Set(snapshot.assignments.map(\.bundleIdentifier)))
         }
-        updateCommon(apps: apps, comparing: comparing, compareAvailable: compareAvailable, problem: problem, levels: levels)
+        updateCommon(apps: apps, comparing: comparing, compareAvailable: compareAvailable, problem: problem, levels: levels, lanes: lanes)
     }
 
     public func update(snapshot: LibrarySnapshot, pendingApps: Set<String>, apps: [SourceAppInfo], comparing: Bool,
-                       compareAvailable: Bool, problem: String?, levels: [UUID: MenuLevelFrame] = [:]) {
+                       compareAvailable: Bool, problem: String?, levels: [UUID: MenuLevelFrame] = [:],
+                       lanes: [UUID: MenuLaneActivity] = [:]) {
         if librarySnapshot != snapshot {
             librarySnapshot = snapshot
             let projected = MenuSoundData(library: snapshot)
             if state.snapshot != projected { state.snapshot = projected }
         }
         state.libraryPending = pendingApps
-        updateCommon(apps: apps, comparing: comparing, compareAvailable: compareAvailable, problem: problem, levels: levels)
+        updateCommon(apps: apps, comparing: comparing, compareAvailable: compareAvailable, problem: problem, levels: levels, lanes: lanes)
     }
 
     public func updateProblem(_ problem: String?) {
@@ -114,7 +115,7 @@ public final class EverydayMenu: NSObject, NSMenuDelegate {
     }
 
     private func updateCommon(apps: [SourceAppInfo], comparing: Bool, compareAvailable: Bool,
-                              problem: String?, levels: [UUID: MenuLevelFrame]) {
+                              problem: String?, levels: [UUID: MenuLevelFrame], lanes: [UUID: MenuLaneActivity]) {
         if !state.apps.elementsEqual(apps, by: {
             $0.bundleIdentifier == $1.bundleIdentifier && $0.name == $1.name && $0.isSelectable == $1.isSelectable && $0.icon === $1.icon
         }) { state.apps = apps }
@@ -122,6 +123,7 @@ public final class EverydayMenu: NSObject, NSMenuDelegate {
         if state.compareAvailable != compareAvailable { state.compareAvailable = compareAvailable }
         updateProblem(problem)
         if state.levels != levels { state.levels = levels }
+        if state.lanes != lanes { state.lanes = lanes }
         let current = Set(state.snapshot.assignments.map(\.id))
         let retainedMore = state.more.intersection(current)
         if retainedMore != state.more { state.more = retainedMore }
@@ -135,13 +137,14 @@ public final class EverydayMenu: NSObject, NSMenuDelegate {
 
     public func update(data: MenuSoundData, positionContext: MenuPositionContext? = nil,
                        pendingApps: Set<String>, apps: [SourceAppInfo], comparing: Bool,
-                       compareAvailable: Bool, problem: String?, levels: [UUID: MenuLevelFrame] = [:]) {
+                       compareAvailable: Bool, problem: String?, levels: [UUID: MenuLevelFrame] = [:],
+                       lanes: [UUID: MenuLaneActivity] = [:]) {
         librarySnapshot = nil
         state.positionContext = positionContext
         let current = positionContext.map { data.contextualized($0) } ?? data
         if state.snapshot != current { state.snapshot = current }
         state.libraryPending = pendingApps
-        updateCommon(apps: apps, comparing: comparing, compareAvailable: compareAvailable, problem: problem, levels: levels)
+        updateCommon(apps: apps, comparing: comparing, compareAvailable: compareAvailable, problem: problem, levels: levels, lanes: lanes)
     }
 
     @discardableResult

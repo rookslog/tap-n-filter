@@ -20,14 +20,27 @@ enum PlaybackSamplingScheduler {
   }
 }
 
+/// What a lane is doing, as far as the menu card's icon and accessibility value are concerned.
+public enum PlaybackLaneActivity: Equatable, Sendable {
+  /// The app's sound is running through TNF.
+  case running
+  /// The assignment is on and its app has no audio process yet (waiting state).
+  case waiting
+  /// Anything else: off, starting, stopping, or failed.
+  case other
+}
+
 struct PlaybackSamplingNotifications {
   private struct Value: Equatable {
     let compareAvailable: Bool
     let problem: String?
+    let activity: [UUID: PlaybackLaneActivity]
   }
   private var last: Value?
-  mutating func shouldNotify(compareAvailable: Bool, problem: String?, force: Bool) -> Bool {
-    let next = Value(compareAvailable: compareAvailable, problem: problem)
+  mutating func shouldNotify(
+    compareAvailable: Bool, problem: String?, activity: [UUID: PlaybackLaneActivity] = [:], force: Bool
+  ) -> Bool {
+    let next = Value(compareAvailable: compareAvailable, problem: problem, activity: activity)
     let notify = force || next != last
     last = next
     return notify
@@ -54,20 +67,40 @@ private final class PlaybackLane {
   /// The lane states of the event table (B): I idle, S starting, R running, T stopping, F failed.
   /// State A, "stopping with restart authorized", is `.stopping` while `PlaybackStopResumePolicy`
   /// still authorizes this assignment (`laneStateForTesting` names it).
-  enum State { case idle, starting, running, stopping, failed }
+  /// `waiting`: the assignment is on and its app has no audio process yet. Not a failure: `failure` stays nil.
+  enum State { case idle, starting, running, stopping, failed, waiting }
   let factory: PlaybackCaptureFactory
   let runtime: PlaybackRuntime
   let generation: CaptureGeneration
-  var state = State.idle
+  var state = State.idle {
+    // Wake work follows lane state: the controller reconciles at every assignment.
+    didSet { stateChanged?() }
+  }
+  var stateChanged: (@MainActor () -> Void)?
   var operation: UInt64 = 0
   var token: PlanToken?
   var sourcePID: Int32?
+  /// The bundle this lane last started (or waits) for, so a changed assignment is noticed while waiting.
+  var bundle: String?
+  /// True while a start begun from `waiting` is in flight: compare ignores the lane, as it did while waiting.
+  var wakeStart = false
+  /// A wake-up arrived that this lane has not yet been attempted for. Set by a list change, a menu open or a
+  /// burst step while the lane is starting or waiting; cleared when an attempt for the lane begins, when it
+  /// reaches running, failed or idle, and when it is switched off.
+  var owed = false
   let slot: PlaybackSinkSlot
   var sink: NativePlaybackSink? {
     get { slot.value }
     set { slot.value = newValue }
   }
   var failure: String?
+  /// Cancels for the scheduled attempts of a launch burst (waiting state).
+  var burst: [@MainActor () -> Void] = []
+  func cancelBurst() {
+    let pending = burst
+    burst = []
+    for cancel in pending { cancel() }
+  }
 
   init(
     factory: PlaybackCaptureFactory, runtime: PlaybackRuntime, generation: CaptureGeneration,
@@ -97,6 +130,21 @@ public final class PlaybackController {
   private var timer: Timer?
   private var samplingNotifications = PlaybackSamplingNotifications()
   private var terminationObserver: NSObjectProtocol?
+  /// Waiting-state wake-ups. Nil in checks that do not script them.
+  private var wake: PlaybackWakeEnvironment?
+  private var removeLaunchListener: (@MainActor () -> Void)?
+  /// Installed only while at least one lane is waiting.
+  private var removeListListener: (@MainActor () -> Void)?
+  /// The number of the current list-listener registration; a handler from a retired one does nothing.
+  private var listRegistration: UInt64 = 0
+  private var currentListRegistration: UInt64?
+  private var cancelListFold: (@MainActor () -> Void)?
+  /// Attempts made to start a waiting lane by any wake-up (check seam).
+  private(set) var wakeAttemptsForTesting = 0
+  /// Check seam: consulted for a running lane that has no sink (a testing lane never fills its sink slot).
+  var sinkReadyForTesting: ((UUID) -> Bool)?
+  /// Check seam: awaited first in a lane start's task, before the quitting and operation check and the runtime.
+  var beforeStartEntersRuntimeForTesting: ((UUID) async -> Void)?
   var startedForTesting: ((UUID, String) -> Void)?
   var stoppedForTesting: ((UUID, String) -> Void)?
   public var changed: () -> Void = {}
@@ -125,6 +173,8 @@ public final class PlaybackController {
       stopResume.isAuthorized(assignment, desired: desired) { return "stopping+restart" }
     return String(describing: lane.state)
   }
+  /// Check seam: whether a wake-up is owed to this lane (false when there is no such lane).
+  func owedForTesting(_ id: UUID) -> Bool { lanes[id]?.owed ?? false }
   /// M4: a source or route condition for one assignment's lane.
   func injectConditionForTesting(_ id: UUID, _ condition: CaptureCondition) {
     if let lane = lanes[id] { invalidate(id, lane: lane, condition: condition) }
@@ -152,15 +202,21 @@ public final class PlaybackController {
   }
 
   /// Inert dependency seam for the real controller's asynchronous lifecycle checks.
-  init(testingLane: @escaping (ListeningRenderAssignment, @escaping @MainActor (LifecycleObservation) -> Void) -> (PlaybackCaptureFactory, PlaybackRuntime)) {
+  init(
+    testingLane: @escaping (ListeningRenderAssignment, @escaping @MainActor (LifecycleObservation) -> Void) -> (PlaybackCaptureFactory, PlaybackRuntime),
+    wake: PlaybackWakeEnvironment? = nil
+  ) {
+    self.wake = wake
     coreAudio = nil
     leases = nil
     probeEnabled = false
     hub = NativeOutputHub()
     self.testingLane = testingLane
+    removeLaunchListener = wake?.listenForLaunches { [weak self] in self?.applicationLaunched($0) }
   }
 
   private func installObservers() {
+    wake = PlaybackWakeEnvironment.system(log: { [weak self] in self?.log($0) })
     hub.configurationChanged = { [weak self] in self?.invalidateAll(.formatChanged) }
     terminationObserver = NSWorkspace.shared.notificationCenter.addObserver(
       forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main
@@ -173,6 +229,7 @@ public final class PlaybackController {
       Task { @MainActor [weak self] in self?.sourceTerminated(pid) }
     }
     timer = PlaybackSamplingScheduler.start { [weak self] in self?.sample() }
+    removeLaunchListener = wake?.listenForLaunches { [weak self] in self?.applicationLaunched($0) }
   }
 
   public var problem: String? { lanes.values.compactMap(\.failure).sorted().first }
@@ -182,12 +239,22 @@ public final class PlaybackController {
       .sorted { $0.assignment.uuidString < $1.assignment.uuidString }
   }
 
+  private func isWaitingOrWaking(_ lane: PlaybackLane?) -> Bool {
+    guard let lane else { return false }
+    return lane.state == .waiting || (lane.state == .starting && lane.wakeStart)
+  }
+
   public var compareAvailable: Bool {
-    let active = lanes.values.filter { $0.state == .running }
+    let active = lanes.filter { $0.value.state == .running }
+    // Waiting apps have nothing to compare, so they are left out of the "everything is ready" test.
     let expected =
-      desired?.isEnabled == true ? desired?.assignments.filter(\.isEnabled).count ?? 0 : 0
+      desired?.isEnabled == true
+      ? desired?.assignments.filter { $0.isEnabled && !isWaitingOrWaking(lanes[$0.id]) }.count ?? 0 : 0
     return expected > 0 && active.count == expected
-      && active.allSatisfy { $0.sink?.status().ready == true }
+      && active.allSatisfy { id, lane in
+        if let sink = lane.sink { return sink.status().ready }
+        return sinkReadyForTesting?(id) == true
+      }
   }
 
   public func setVisualizationDemand(_ request: VisualizationRequest?) {
@@ -225,6 +292,7 @@ public final class PlaybackController {
     let previous = desired
     desired = snapshot
     stopResume.withdraw(snapshot)
+    settleWaitingLanes(for: snapshot)
     let original = original && compareAvailable
     self.original = original
     let known = Dictionary(uniqueKeysWithValues: (previous?.assignments ?? []).map { ($0.id, $0.bundleIdentifier) })
@@ -257,16 +325,21 @@ public final class PlaybackController {
     for assignment in snapshot.assignments {
       let lane = lanes[assignment.id] ?? makeLane(assignment)
       lanes[assignment.id] = lane
+      if lane.state == .waiting, lane.bundle != assignment.bundleIdentifier {
+        clearWake(lane)
+        lane.state = .idle
+      }
       do { try lane.factory.update(assignment, original: original) } catch {
         lane.failure = "The sound change could not be applied. \(error)"
         stop(assignment.id, lane: lane, includesCurrentActivation: true)
         continue
       }
       if !snapshot.isEnabled || !assignment.isEnabled {
-        if lane.state == .failed {
+        if lane.state == .failed || lane.state == .waiting {
           lane.failure = nil
           lane.state = .idle
         }
+        clearWake(lane)
         stop(assignment.id, lane: lane, includesCurrentActivation: true)
       } else if lane.state == .idle, !authorizedOnly || stopResume.isAuthorized(assignment, desired: snapshot) {
         start(assignment, lane: lane)
@@ -293,6 +366,13 @@ public final class PlaybackController {
       NSWorkspace.shared.notificationCenter.removeObserver(terminationObserver)
     }
     self.terminationObserver = nil
+    removeLaunchListener?()
+    removeLaunchListener = nil
+    removeListListener?()
+    removeListListener = nil
+    currentListRegistration = nil
+    cancelFold()
+    for lane in lanes.values { lane.cancelBurst() }
     for (id, lane) in lanes {
       lane.operation += 1
       _ = await lane.runtime.stop(AssignmentID(id))
@@ -302,6 +382,15 @@ public final class PlaybackController {
   }
 
   private func makeLane(_ assignment: ListeningRenderAssignment) -> PlaybackLane {
+    let lane = buildLane(assignment)
+    lane.stateChanged = { [weak self, weak lane] in
+      guard let self, let lane else { return }
+      self.laneStateChanged(lane)
+    }
+    return lane
+  }
+
+  private func buildLane(_ assignment: ListeningRenderAssignment) -> PlaybackLane {
     if let testingLane {
       let (factory, runtime) = testingLane(assignment) { [weak self] in self?.observed($0) }
       return PlaybackLane(factory: factory, runtime: runtime, generation: CaptureGeneration(), slot: PlaybackSinkSlot())
@@ -332,12 +421,16 @@ public final class PlaybackController {
     return PlaybackLane(factory: factory, runtime: runtime, generation: generation, slot: slot)
   }
 
-  private func start(_ assignment: ListeningRenderAssignment, lane: PlaybackLane) {
+  /// `wake`: the start is an attempt from `waiting`; the lane keeps reading as waiting while it is under way.
+  private func start(_ assignment: ListeningRenderAssignment, lane: PlaybackLane, wake: Bool = false) {
     let epoch = lane.generation.advance()
     lane.operation += 1
     let operation = lane.operation
     let token = PlanToken(intent: epoch, source: epoch, format: epoch)
     lane.token = token
+    lane.bundle = assignment.bundleIdentifier
+    lane.wakeStart = wake
+    lane.owed = false  // an attempt begins: whatever was owed is being answered now
     lane.state = .starting
     lane.failure = nil
     let request = StartRequest(
@@ -348,12 +441,24 @@ public final class PlaybackController {
       guard let self else { return }
       defer { self.operationEnded() }
       guard let lane else { return }
+      await self.beforeStartEntersRuntimeForTesting?(assignment.id)
+      // A stop, switch-off or shutdown can have come in while this task was queued: do not enter the runtime.
+      guard !self.quitting, lane.operation == operation else { return }
       let result = await lane.runtime.start(request)
       guard lane.operation == operation else { return }
+      let wasWake = lane.wakeStart
+      lane.wakeStart = false
+      var followUp: (@MainActor () -> Void)?
       switch result.event {
       case .running:
         lane.state = .running
         if let desired = self.desired { _ = self.updatePositions(desired, original: self.original) }
+      case .failed(.source(let source), _, _)
+      where !self.probeEnabled && (source == .disappeared || source == .replaced):
+        // No audio process for the app (the app is closed, or open with nothing playing), or the process was
+        // replaced by a relaunch: waiting, not a failure. Teardown and lease release already happened inside
+        // the runtime's failure path. A replaced process is a miss like any other.
+        followUp = self.enterWaiting(assignment.id, lane: lane, fromWake: wasWake)
       case .failed(let error, _, _):
         lane.state = .failed
         lane.failure = self.message(error)
@@ -363,15 +468,22 @@ public final class PlaybackController {
       default: lane.state = .idle
       }
       self.startedForTesting?(assignment.id, String(describing: lane.state))
-      self.publishChange()
+      // An attempt from waiting that ends in waiting changed nothing a person can see: publish nothing.
+      if !(wasWake && lane.state == .waiting) { self.publishChange() }
+      followUp?()
     }
   }
 
   private func stop(_ id: UUID, lane: PlaybackLane, removing: Bool = false, includesCurrentActivation: Bool = false) {
     guard lane.state == .starting || lane.state == .running else {
-      if removing, lane.state != .stopping { lanes.removeValue(forKey: id) }
+      if removing, lane.state != .stopping {
+        clearWake(lane)
+        lanes.removeValue(forKey: id)
+        reconcileWake()
+      }
       return
     }
+    clearWake(lane)
     lane.operation += 1
     let operation = lane.operation
     let authorization = stopResume.stopping(assignment: id, includesCurrentActivation: includesCurrentActivation)
@@ -386,7 +498,10 @@ public final class PlaybackController {
       guard lane.operation == operation else { return }
       lane.sink = nil
       lane.state = lane.failure == nil ? .idle : .failed
-      if removing { self.lanes.removeValue(forKey: id) }
+      if removing {
+        self.lanes.removeValue(forKey: id)
+        self.reconcileWake()
+      }
       if !self.quitting, let desired = self.desired, self.stopResume.mayResume(authorization, desired: desired),
          lane.state == .idle, let assignment = desired.assignments.first(where: { $0.id == id }) {
         self.lanes[id] = lane
@@ -524,9 +639,207 @@ public final class PlaybackController {
   }
 
   private func publishChange(sampleOnly: Bool = false) {
-    if samplingNotifications.shouldNotify(compareAvailable: compareAvailable, problem: problem, force: !sampleOnly) {
+    if samplingNotifications.shouldNotify(
+      compareAvailable: compareAvailable, problem: problem, activity: laneActivities, force: !sampleOnly)
+    {
       changed()
     }
+  }
+
+  /// The activity of each lane, keyed by assignment id, for the menu card.
+  public var laneActivities: [UUID: PlaybackLaneActivity] {
+    lanes.mapValues { lane -> PlaybackLaneActivity in
+      if isWaitingOrWaking(lane) { return .waiting }
+      return lane.state == .running ? .running : .other
+    }
+  }
+
+  // MARK: Waiting state
+  //
+  // Each event handler below switches on the lane's state, one branch per case. One per-lane flag, `owed`, says
+  // a wake-up has arrived that the lane has not been attempted for. The listener and the fold follow lane
+  // state (`reconcileWake`); a burst is only an event source and follows its own rule (`startBurst`).
+
+  /// A lane a wake-up is for: waiting, or being started from waiting.
+  private var anyLaneWaiting: Bool { lanes.values.contains { isWaitingOrWaking($0) } }
+
+  private func isSwitchedOn(_ id: UUID) -> Bool {
+    guard let desired, desired.isEnabled else { return false }
+    return desired.assignments.first(where: { $0.id == id })?.isEnabled == true
+  }
+
+  /// Switch-off, in every state: nothing is owed and no burst runs.
+  private func clearWake(_ lane: PlaybackLane) {
+    lane.owed = false
+    lane.cancelBurst()
+  }
+
+  /// Run at every assignment of a lane's state.
+  private func laneStateChanged(_ lane: PlaybackLane) {
+    switch lane.state {
+    case .running, .failed, .idle, .stopping:
+      lane.owed = false
+      lane.cancelBurst()
+      lane.wakeStart = false
+    case .starting, .waiting:
+      break
+    }
+    reconcileWake()
+  }
+
+  /// A start that found no audio process ends here. A start that was not a wake attempt makes the lane owed
+  /// itself; a wake attempt leaves `owed` as events set it while it ran. If the lane is owed and no fold is open,
+  /// it is attempted now after the caller has published; with a fold open, the fold takes it. A switched-off
+  /// lane, or any lane while quitting, goes to idle instead.
+  private func enterWaiting(_ id: UUID, lane: PlaybackLane, fromWake: Bool) -> (@MainActor () -> Void)? {
+    lane.failure = nil
+    lane.sourcePID = nil
+    lane.sink = nil  // the runtime has stopped the output; do not hold it while waiting
+    guard !quitting, isSwitchedOn(id) else {
+      lane.state = .idle
+      return nil
+    }
+    lane.state = .waiting
+    if !fromWake { lane.owed = true }
+    guard lane.owed, cancelListFold == nil else { return nil }
+    return { [weak self, weak lane] in
+      guard let self, let lane else { return }
+      self.attemptWaiting(id, lane: lane)
+    }
+  }
+
+  /// Keeps the audio-process-list listener and the fold timer in step with lane state: while no lane is waiting
+  /// or being woken there are neither. It starts no attempt. A refused add leaves no listener, so the next
+  /// reconcile tries again.
+  private func reconcileWake() {
+    guard !quitting, let wake else { return }
+    if anyLaneWaiting {
+      if removeListListener == nil {
+        listRegistration += 1
+        let registration = listRegistration
+        currentListRegistration = registration
+        if let remove = wake.listenForProcessListChanges({ [weak self] in
+          self?.processListChanged(registration: registration)
+        }) {
+          removeListListener = remove
+        } else {
+          currentListRegistration = nil
+        }
+      }
+    } else {
+      removeListListener?()
+      removeListListener = nil
+      currentListRegistration = nil
+      cancelFold()
+    }
+  }
+
+  private func cancelFold() {
+    cancelListFold?()
+    cancelListFold = nil
+  }
+
+  /// A list change makes every switched-on lane that is starting or waiting owed, and opens the fold if none is
+  /// open (never a second).
+  private func processListChanged(registration: UInt64) {
+    guard registration == currentListRegistration, removeListListener != nil else { return }
+    guard !quitting, let wake else { return }
+    var any = false
+    for (id, lane) in lanes where isSwitchedOn(id) {
+      switch lane.state {
+      case .starting, .waiting:
+        lane.owed = true
+        any = true
+      case .idle, .stopping, .running, .failed:
+        break
+      }
+    }
+    guard any, cancelListFold == nil else { return }
+    cancelListFold = wake.schedule(PlaybackWakeSchedule.listFold) { [weak self] in
+      guard let self else { return }
+      self.cancelListFold = nil
+      // Every lane that is waiting and owed when the fold fires.
+      for (id, lane) in self.lanes where lane.state == .waiting && lane.owed {
+        self.attemptWaiting(id, lane: lane)
+      }
+    }
+  }
+
+  /// A launch of a switched-on lane's app, while the lane is starting or waiting, starts a burst; it replaces
+  /// any burst already running for that lane. Any other lane: nothing.
+  private func applicationLaunched(_ bundle: String) {
+    guard !quitting, let desired else { return }
+    for assignment in desired.assignments where assignment.bundleIdentifier == bundle {
+      guard let lane = lanes[assignment.id], isSwitchedOn(assignment.id) else { continue }
+      switch lane.state {
+      case .starting, .waiting: startBurst(assignment.id, lane: lane)
+      case .idle, .stopping, .running, .failed: break
+      }
+    }
+  }
+
+  /// Five steps after a launch. Each makes the lane owed and attempts it if it is waiting. The burst is only an
+  /// event source: no start outcome starts one, and a step that finds nothing leaves the rest running. It ends
+  /// when the lane reaches running, failed or idle, is switched off, or when quitting.
+  private func startBurst(_ id: UUID, lane: PlaybackLane) {
+    guard !quitting, let wake else { return }
+    lane.cancelBurst()
+    for delay in PlaybackWakeSchedule.launchBurst {
+      lane.burst.append(
+        wake.schedule(delay) { [weak self, weak lane] in
+          guard let self, let lane, !self.quitting else { return }
+          guard self.lanes[id] === lane, self.isSwitchedOn(id) else {
+            lane.cancelBurst()
+            return
+          }
+          switch lane.state {
+          case .waiting:
+            lane.owed = true
+            self.attemptWaiting(id, lane: lane)
+          case .starting:
+            lane.owed = true
+          case .idle, .stopping, .running, .failed:
+            lane.cancelBurst()
+          }
+        })
+    }
+  }
+
+  /// A positions-only delivery can switch an app or the whole thing off without a full apply: a lane that is
+  /// off owes nothing and has no burst, and a waiting one goes idle so no later wake-up starts it.
+  private func settleWaitingLanes(for snapshot: ListeningRenderSnapshot) {
+    for (id, lane) in lanes where !isSwitchedOn(id) {
+      clearWake(lane)
+      if lane.state == .waiting { lane.state = .idle }
+    }
+  }
+
+  /// Opening the menu is the manual retry: a waiting lane is attempted at once; a starting one is made owed.
+  public func menuOpened() {
+    guard !quitting else { return }
+    for (id, lane) in lanes where isSwitchedOn(id) {
+      switch lane.state {
+      case .waiting: attemptWaiting(id, lane: lane)
+      case .starting: lane.owed = true
+      case .idle, .stopping, .running, .failed: break
+      }
+    }
+  }
+
+  private func attemptWaiting(_ id: UUID, lane: PlaybackLane) {
+    guard !quitting, lanes[id] === lane, lane.state == .waiting, let desired, desired.isEnabled,
+      let assignment = desired.assignments.first(where: { $0.id == id }), assignment.isEnabled,
+      stopResume.isAuthorized(assignment, desired: desired)
+    else { return }
+    wakeAttemptsForTesting += 1
+    lane.owed = false
+    do { try lane.factory.update(assignment, original: original) } catch {
+      lane.failure = "The sound change could not be applied. \(error)"
+      lane.state = .failed
+      publishChange()
+      return
+    }
+    start(assignment, lane: lane, wake: true)
   }
 
   private func message(_ failure: RuntimeFailure) -> String {
