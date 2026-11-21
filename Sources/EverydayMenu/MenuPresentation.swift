@@ -15,6 +15,8 @@ public enum EverydayMenuAction: Sendable {
     case libraryPower(LibraryBinding, Bool)
     case libraryMove(LibraryBinding, LibraryControlAddress, LibraryPosition)
     case libraryOptionMove(LibraryBinding, LibraryControlAddress, LibraryOptionGesture, LibraryPosition)
+    /// A pointer drag sample on a card with no menu identity (D-1): carries the drag's identity like `gestureMove`.
+    case libraryGestureMove(UUID, LibraryBinding, LibraryControlAddress, LibraryOptionGesture?, LibraryPosition)
     case menuMove(LibraryMenuIdentity, UInt64, LibraryControlAddress, LibraryOptionGesture?, LibraryPosition)
     case gestureMove(UUID, LibraryMenuIdentity, UInt64, LibraryControlAddress, LibraryOptionGesture?, LibraryPosition)
     case compare(Bool)
@@ -300,9 +302,16 @@ final class MenuPresentation: ObservableObject {
         let assignment = currentCard(assignment, for: control) ?? assignment
         return MenuTrackGesture(change: { [weak self] value in
             guard let self, let action = assignment.movement(for: control, to: value) else { return }
-            if let gesture, case .menuMove(let identity, let epoch, let address, let option, let position) = action {
+            // D-1: every pointer drag sample carries the drag's identity, so a late callback is never a keyboard step.
+            switch (gesture, action) {
+            case (let gesture?, .menuMove(let identity, let epoch, let address, let option, let position)):
                 perform(.gestureMove(gesture, identity, epoch, address, option, position))
-            } else { perform(action) }
+            case (let gesture?, .libraryMove(let binding, let address, let position)):
+                perform(.libraryGestureMove(gesture, binding, address, nil, position))
+            case (let gesture?, .libraryOptionMove(let binding, let address, let option, let position)):
+                perform(.libraryGestureMove(gesture, binding, address, option, position))
+            default: perform(action)
+            }
         }, end: { [weak self] in
             guard let self, gestureIdentity == gesture else { return }
             endGesture()

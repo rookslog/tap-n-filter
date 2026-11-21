@@ -361,8 +361,11 @@ struct PR39HostedRaceCases {
 
     // R26 Requirement (click): a choice clicked in the menu while the editor is refreshing its view
     //   (an automatic display read, window A, or a follow-up editor query, window B) is applied and saved.
-    // R26 Requirement (retired-token / retired-epoch): in that same window, a drag that has already
-    //   ended, or a card shown before the last save, still cannot change the slider.
+    // R26 Requirement (retired-token): in that same window, a drag that has already ended still cannot
+    //   change the slider.
+    // R26 Requirement (retired-epoch, rewritten 2026-11-13): a save or a read doesn't make a shown card
+    //   stale (table A-K0), so in that same window a keyboard step on the card shown before the save is
+    //   admitted and saved (A-N1, A-NR). Only a real barrier makes a card stale; the RC4 controls cover that.
     @MainActor private static func r26(_ window: String, probe: Probe) async throws {
         let name = "R26-\(window)" + (probe == .click ? "" : probe == .retiredToken ? "-retired-token" : "-retired-epoch")
         let f = try await HostedMenuFixture(), card = f.card, slider = f.slider
@@ -400,13 +403,9 @@ struct PR39HostedRaceCases {
             followup = Task { _ = try await f.app.coordinator.editorQuery { try await $0.snapshot() } }
             await f.reads.gate.entered()
         }
-        let contextPresent = f.app.coordinator.positionContext != nil
+        // The window is open when the read is held; no assertion about internal epochs (A-K0, P-behaviour).
         let shown = f.card
-        print("HOSTED WINDOW \(name) setupMoves=\(setupMoves) capturedEpoch=\(String(describing: captured.menuEpoch)) shownEpoch=\(String(describing: shown.menuEpoch)) contextEpoch=\(String(describing: f.app.coordinator.positionContext?.epoch)) original=\(String(describing: original?.title)) target=\(target.title)")
-        guard !contextPresent else {
-            check(false, "\(name) INVALID precondition: a position context is installed while the read is held (contextEpoch=\(String(describing: f.app.coordinator.positionContext?.epoch)))")
-            await f.reads.gate.release(); _ = try? await followup?.value; await f.close(); return
-        }
+        print("HOSTED WINDOW \(name) setupMoves=\(setupMoves) capturedEpoch=\(String(describing: captured.menuEpoch)) shownEpoch=\(String(describing: shown.menuEpoch)) original=\(String(describing: original?.title)) target=\(target.title)")
 
         let result: String
         switch probe {
@@ -428,8 +427,8 @@ struct PR39HostedRaceCases {
             check(result == "superseded", "\(name) ended drag's move during the held read is refused: \(values)")
             check(savedSlider == .scalar(0.8), "\(name) reopen keeps 0.8, not the ended drag's 0.05: \(values)")
         case .retiredEpoch:
-            check(result == "superseded", "\(name) no-identity move with the pre-save card epoch is refused: \(values)")
-            check(savedSlider == .scalar(0.8), "\(name) reopen keeps 0.8, not the stale card's 0.05: \(values)")
+            check(result != "superseded", "\(name) keyboard step on the card shown before the save is admitted (no real barrier since): \(values)")
+            check(savedSlider == .scalar(0.05), "\(name) reopen shows the keyboard step's 0.05: \(values)")
         }
         await f.close()
     }
@@ -441,8 +440,10 @@ struct PR39HostedRaceCases {
     // P1 Requirement (click / drag): while a slider's release save is still writing, if the menu has been
     //   refreshed and shows a newer card, clicking a choice on that card and then clicking again, or starting
     //   a new drag, all take effect and are still there after reopening.
-    // P1 Requirement (retired-token / retired-epoch): in that same moment, a move from the drag that already
-    //   ended, or a slider move carrying the card shown before the save, still cannot change the slider.
+    // P1 Requirement (retired-token): in that same moment, a move from the drag that already ended still
+    //   cannot change the slider.
+    // P1 Requirement (retired-epoch, rewritten 2026-11-13): a save doesn't make the card shown before it
+    //   stale (A-K0), so a keyboard step on that card is admitted and saved (A-N1).
     @MainActor private static func p1NewerEpochDuringSave(_ follow: P1Follow) async throws {
         let name = "P1-\(follow.rawValue)"
         let f = try await HostedMenuFixture(), card = f.card, slider = f.slider
@@ -460,13 +461,13 @@ struct PR39HostedRaceCases {
         await f.port.gate.entered()
         let preSave = f.card
 
-        // An editor read completes during the held save and publishes a newer card epoch.
+        // An editor read completes during the held save and the menu shows its card. Whether that card's
+        // epoch differs is internal (A-K0); the checks below are on admission and the saved values.
         _ = try await f.app.coordinator.editorQuery { try await $0.snapshot() }
         let shown = f.card
-        let contextEpoch = f.app.coordinator.positionContext?.epoch
-        print("HOSTED WINDOW \(name) g1Moves=\(m1),\(m2) preSaveEpoch=\(String(describing: preSave.menuEpoch)) shownEpoch=\(String(describing: shown.menuEpoch)) contextEpoch=\(String(describing: contextEpoch)) original=\(String(describing: original?.title)) first=\(first.title) second=\(second.title)")
-        guard m1 != "superseded", m2 != "superseded", shown.menuEpoch != nil, shown.menuEpoch != preSave.menuEpoch, contextEpoch == shown.menuEpoch else {
-            check(false, "\(name) INVALID precondition: the editor read did not publish a newer on-screen epoch during the held save (g1Moves=\(m1),\(m2) preSave=\(String(describing: preSave.menuEpoch)) shown=\(String(describing: shown.menuEpoch)) context=\(String(describing: contextEpoch)))")
+        print("HOSTED WINDOW \(name) g1Moves=\(m1),\(m2) preSaveEpoch=\(String(describing: preSave.menuEpoch)) shownEpoch=\(String(describing: shown.menuEpoch)) original=\(String(describing: original?.title)) first=\(first.title) second=\(second.title)")
+        guard m1 != "superseded", m2 != "superseded", shown.menuIdentity != nil else {
+            check(false, "\(name) INVALID setup: the drag's moves were refused before the save (g1Moves=\(m1),\(m2))")
             await f.port.gate.release(); _ = await save1.value; await f.close(); return
         }
 
@@ -475,7 +476,7 @@ struct PR39HostedRaceCases {
         let click1 = await f.move(first.position, token: nil, card: shown, control: f.choice)
         await f.reads.gate.entered()
         let onScreen = f.card
-        print("HOSTED WINDOW \(name) click1=\(click1) onScreenEpoch=\(String(describing: onScreen.menuEpoch)) contextEpoch=\(String(describing: f.app.coordinator.positionContext?.epoch))")
+        print("HOSTED WINDOW \(name) click1=\(click1) onScreenEpoch=\(String(describing: onScreen.menuEpoch))")
 
         var outcomes: [String] = []
         var save2: Task<LibraryConsumerCommandResult, Never>?
@@ -508,8 +509,8 @@ struct PR39HostedRaceCases {
             check(outcomes == ["superseded"], "\(name) move from the drag that already ended is refused: \(values)")
             check(savedSlider == .scalar(0.5), "\(name) reopen keeps 0.5, not the ended drag's 0.05: \(values)")
         case .retiredEpoch:
-            check(outcomes == ["superseded"], "\(name) no-identity slider move with the pre-save card is refused: \(values)")
-            check(savedSlider == .scalar(0.5), "\(name) reopen keeps 0.5, not the stale card's 0.05: \(values)")
+            check(outcomes.allSatisfy { $0 != "superseded" }, "\(name) keyboard step on the card shown before the save is admitted (no real barrier since): \(values)")
+            check(savedSlider == .scalar(0.05), "\(name) reopen shows the keyboard step's 0.05: \(values)")
         }
         await f.close()
     }

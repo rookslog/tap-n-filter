@@ -134,7 +134,7 @@ final class LibraryEditorAdapter {
         guard textBytes <= 8192 else { throw LibraryEditorAdmissionError.oversized }
         guard queued < (barrier ? 264 : 256) else { throw LibraryEditorAdmissionError.capacity }
     }
-    private func queue(_ selected: Context?, barrier: Bool, gesture: UUID? = nil, reporting: Bool = false,
+    private func queue(_ selected: Context?, barrier: Bool, opensEdit: Bool = false, gesture: UUID? = nil, reporting: Bool = false,
         operation: @escaping @MainActor @Sendable (SoundLibrarySession) async throws -> LibraryEditorOutcome) throws -> LibraryEditorReceipt {
         try capacity(barrier: barrier)
         guard let coordinator else { throw LibraryEditorAdmissionError.unavailable }
@@ -145,7 +145,7 @@ final class LibraryEditorAdapter {
         let handle = selected?.snapshot?.handle
         let task: Task<LibraryEditorOutcome, Error>
         do {
-            task = try coordinator.enqueueMutation { [self] session in
+            task = try coordinator.enqueueMutation(realBarrier: opensEdit) { [self] session in
                 defer { queued -= 1 }
                 do {
                     let result = try await operation(session)
@@ -365,7 +365,7 @@ final class LibraryEditorAdapter {
         guard let coordinator else { throw LibraryEditorAdmissionError.unavailable }
         let old = context, next = Context(target)
         context = next
-        let receipt = try queue(next, barrier: true) { [self] session in
+        let receipt = try queue(next, barrier: true, opensEdit: true) { [self] session in
             try await close(old, session: session)
             return .model(try await session.beginEdit(target, admission: RenderAssignmentMapper.admitParts))
         }

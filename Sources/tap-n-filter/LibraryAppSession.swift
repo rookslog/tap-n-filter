@@ -27,6 +27,22 @@ final class LibraryAppSession {
     private let menuMove: LibraryListeningCoordinator.MenuMove?
     var perfMutationCompleted: ((LibraryLiveMutation) -> Void)?
     var perfMutationFailed: (() -> Void)?
+    /// M1: an admission receipt for each menu action, delivered synchronously at the decision (or at a failed apply).
+    enum AdmissionOutcome: Sendable { case admitted, superseded, failed }
+    /// Unarmed (nil) it does no work: no coordinator closure, no stored action, nothing captured (R1-6).
+    var admissionDecided: ((EverydayMenuAction, AdmissionOutcome) -> Void)? { didSet { wireAdmissionReceipt() } }
+    private func wireAdmissionReceipt() {
+        guard admissionDecided != nil else { coordinator.admissionDecided = nil; actionInFlight = nil; return }
+        coordinator.admissionDecided = { [weak self] decision in
+            guard let self, let action = actionInFlight else { return }
+            admissionDecided?(action, decision.admitted ? .admitted : .superseded)
+        }
+    }
+    private var actionInFlight: EverydayMenuAction?
+    /// Reads `actionInFlight` only while M1 is armed (R2-4); unarmed it is a constant nil and nothing is loaded.
+    private var armedAction: EverydayMenuAction? { admissionDecided == nil ? nil : actionInFlight }
+    /// M3: the coordinator's quiescence plus the issued gesture save.
+    func quiescent() async { _ = await gestureSave?.value; await coordinator.quiescent() }
     func perfRefresh(_ menu: EverydayMenu, apps: [SourceAppInfo]) {
         guard let presentation, let menuData else { return }
         menu.update(data: menuData, positionContext: coordinator.positionContext, pendingApps: [], apps: apps, comparing: presentation.compareOriginal,
@@ -40,9 +56,12 @@ final class LibraryAppSession {
     private let editRead: LibraryListeningCoordinator.EditRead
     private let read: LibraryListeningCoordinator.Read
     private let move: LibraryListeningCoordinator.Move?
-    private(set) lazy var coordinator = LibraryListeningCoordinator(
-        publish: { [weak self] in self?.receive($0) }, read: read, editRead: editRead, move: move,
-        menuMove: menuMove, positions: { [weak self] in self?.receivePositions($0, context: $1) ?? false })
+    private(set) lazy var coordinator: LibraryListeningCoordinator = {
+        let owner = LibraryListeningCoordinator(
+            publish: { [weak self] in self?.receive($0) }, read: read, editRead: editRead, move: move,
+            menuMove: menuMove, positions: { [weak self] in self?.receivePositions($0, context: $1) ?? false })
+        return owner
+    }()
 
     init(changed: @escaping () -> Void,
          attentionChanged: @escaping () -> Void = {},
@@ -131,6 +150,8 @@ final class LibraryAppSession {
     }
     func send(_ action: EverydayMenuAction) {
         guard coordinator.lifecycle != .closed else { return }
+        if admissionDecided != nil { actionInFlight = action }
+        defer { if admissionDecided != nil { actionInFlight = nil } }
         switch action {
         case .beginGesture: beginGesture(nil)
         case .beginMenuGesture(let identity): beginGesture(identity)
@@ -150,6 +171,8 @@ final class LibraryAppSession {
             listen(binding, address, position, option: nil)
         case .libraryOptionMove(let binding, let address, let gesture, let position):
             listen(binding, address, position, option: gesture)
+        case .libraryGestureMove(let drag, let binding, let address, let option, let position):
+            listen(binding, address, position, option: option, gestureIdentity: drag)
         case .compare(let comparing): live(save: false) { try $0.submitCompare(comparing) }
         default: break
         }
@@ -179,6 +202,7 @@ final class LibraryAppSession {
             }
             return
         }
+        let action = armedAction
         do {
             let task = try coordinator.submitSliderMove(address, expected: binding, to: position,
                 optionGesture: option, menuIdentity: identity, expectedEpoch: deliveryEpoch, gestureIdentity: gestureIdentity)
@@ -195,12 +219,13 @@ final class LibraryAppSession {
                         coordinator.requestRefresh(mode: .positions)
                         if !gesturing && epoch == saveEpoch { scheduleSave() }
                     }
-                } catch { perfMutationFailed?(); record(error) }
+                } catch { perfMutationFailed?(); record(error, action: action) }
             }
-        } catch { perfMutationFailed?(); record(error) }
+        } catch { perfMutationFailed?(); record(error, action: action) }
     }
     private func live(save: Bool = true, positionOnly: Bool = false,
                       _ action: (LibraryListeningCoordinator) throws -> Task<LibraryLiveMutation, Error>) {
+        let received = armedAction
         do {
             let task = try action(coordinator)
             let epoch = saveEpoch
@@ -211,13 +236,16 @@ final class LibraryAppSession {
                     coordinator.requestRefresh(mode: positionOnly ? .positions : .activation)
                     if save && !gesturing && epoch == saveEpoch { scheduleSave() }
                 }
-                catch { perfMutationFailed?(); record(error) }
+                catch { perfMutationFailed?(); record(error, action: received) }
             }
-        } catch { perfMutationFailed?(); record(error) }
+        } catch { perfMutationFailed?(); record(error, action: received) }
     }
-    private func record(_ error: Error) {
+    /// A-E1: a failed apply shows the problem once and ends the drag, saving the earlier values.
+    private func record(_ error: Error, action: EverydayMenuAction? = nil) {
         guard coordinator.lifecycle != .closed else { return }
         operationProblem = "The change could not be saved. \(error)"; changed()
+        if let action { admissionDecided?(action, .failed) }
+        coordinator.invalidate(.failedApply)
         if gesturing { gesturing = false; _ = flushSave() }
     }
     private func observe(_ task: Task<LibraryConsumerCommandResult, Never>) {
@@ -247,7 +275,12 @@ final class LibraryAppSession {
     func setInMenu(_ definition: UUID, visible: Bool) -> Task<LibraryConsumerCommandResult, Never> {
         let task = coordinator.submitInMenu(definition, visible: visible); observe(task); return task
     }
-    @discardableResult func menuOpened() -> Task<Void, Never> { Task { await coordinator.onMenuOpen() } }
+    /// A-M1: a drag the old menu never ended is over: the pointer is free and one save is issued as at end.
+    @discardableResult func menuOpened() -> Task<Void, Never> {
+        coordinator.invalidate(.menuOpened)
+        if gesturing { gesturing = false; gestureSave = flushSave() }
+        return Task { await coordinator.onMenuOpen() }
+    }
     func cancelPendingSave() {
         debounce?.cancel(); debounce = nil
     }

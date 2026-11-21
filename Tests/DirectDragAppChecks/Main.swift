@@ -344,7 +344,8 @@ struct DirectDragAppChecks {
         let f = try await Fixture(), app = f.app, card = f.card(), control = f.slider(), view = f.surface.view!
         let oldChange: (Double) -> Void = { value in view.move(control, on: card, to: value) }
         let oldGesture = view.beginMovement(control, on: card)
-        oldChange(0.6)
+        // The drag's own identified sample. An anonymous step during a held drag is refused (table A-N3).
+        oldGesture.change(0.6)
         await f.port.arm(); view.endGesture(); await f.port.entered()
         let first = app.gestureSave!
         let newerCard = f.card()
