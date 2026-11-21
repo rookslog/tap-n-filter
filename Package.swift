@@ -50,6 +50,9 @@ let package = Package(
         .testTarget(name: "PerfHarnessTests", dependencies: ["tap-n-filter", "SoundModel", "SessionStore", "EverydayMenu"], path: "Tests/PerfHarnessChecks"),
         .testTarget(name: "DirectDragModelTests", dependencies: ["SoundModel", "PlaybackRenderBridge", "FixedRender"], path: "Tests/DirectDragModelChecks"),
         .testTarget(name: "DirectDragAppTests", dependencies: ["tap-n-filter", "SoundModel", "EverydayMenu", "PlaybackRenderBridge", "PlaybackOutput"], path: "Tests/DirectDragAppChecks"),
+        // Diagnostic only: counts how a drag's ordered commit ends, with no fault armed. Skipped unless
+        // COMMIT_OUTCOME_COUNT=1 (see the count step in .github/workflows/ci.yml).
+        .testTarget(name: "CommitOutcomeCountTests", dependencies: ["tap-n-filter", "SoundModel", "EverydayMenu"], path: "Tests/CommitOutcomeCount"),
         .testTarget(name: "ParameterTests", dependencies: ["SoundModel", "PlaybackRenderBridge", "FixedRender"], path: "Tests/ParameterChecks"),
         .testTarget(name: "CompatibilityWitnessTests", dependencies: ["SoundModel"], path: "Tests/CompatibilityWitnessChecks", resources: [.copy("Fixtures")]),
         .target(name: "PlaybackRuntime", path: "Sources/PlaybackRuntime", swiftSettings: [.unsafeFlags(["-swift-version", "6"])]),

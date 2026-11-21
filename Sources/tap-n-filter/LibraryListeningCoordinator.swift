@@ -266,6 +266,10 @@ final class LibraryListeningCoordinator {
     /// M6b: runs in `executeMove` just before `session.move` (the ordered path: editor rows, no edit open); throwing makes that move
     /// fail through the normal failure path. Like M6 the closure clears itself for a single failure. Inert when nil.
     var moveFailureForTesting: (() throws -> Void)?
+    /// Told when a drag's ordered commit of its final value starts and how it ends, at the commit site itself.
+    /// `.started` is sent immediately before the ordered move is issued, with no suspension in between. Inert when nil.
+    enum ParameterCommitEvent: Sendable { case started, finished(LibraryLiveMutation), threw }
+    var parameterCommitForTesting: ((ParameterCommitEvent) -> Void)?
     /// A-G1: a new drag retires the earlier one. Moves are admitted by `admission`, never by what is in flight.
     func beginParameterGesture(identity: UUID? = nil) {
         sealSliderMoves()
@@ -299,8 +303,13 @@ final class LibraryListeningCoordinator {
                 let task = Task { @MainActor [self] () async throws -> LibraryLiveMutation? in
                     defer { if commitSerial == serial { parameterCommit = nil } }
                     _ = await previous?.result
-                    let result = try await executeMenuOrdered(owner, address: gesture.plan.address,
-                        expected: gesture.plan.identity, option: gesture.plan.option, value: latest)
+                    parameterCommitForTesting?(.started)
+                    let result: LibraryMenuMoveResult
+                    do {
+                        result = try await executeMenuOrdered(owner, address: gesture.plan.address,
+                            expected: gesture.plan.identity, option: gesture.plan.option, value: latest)
+                    } catch { parameterCommitForTesting?(.threw); throw error }
+                    parameterCommitForTesting?(.finished(result.outcome))
                     perfParameterDocumentCommit?(result.outcome)
                     editor.invalidateCoverage()
                     return result.outcome

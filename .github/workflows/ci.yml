@@ -9,7 +9,7 @@ jobs:
   matrix-build:
     name: Build and test on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 75
 
     strategy:
       # One runner failing should not mask the result on the others — a
@@ -45,6 +45,32 @@ jobs:
 
       - name: Test
         run: swift test -c debug --enable-code-coverage
+
+      # Diagnostic, this branch only: how a drag's ordered commit ends with no fault armed, at sequence length 3 in
+      # both send modes and for both drag targets (top-level slider; child of the clicked parent choice), after
+      # three self-checks with a fault armed. The step fails when the run itself fails (a
+      # self-check, a fixture, a hang, a missing result line or the step timeout). A non-zero count does not fail it.
+      - name: Count drag-commit outcomes (length 3)
+        if: ${{ !cancelled() && github.head_ref == 'diag/commit-outcome-count' }}
+        timeout-minutes: 45
+        shell: bash
+        env:
+          COMMIT_OUTCOME_COUNT: "1"
+          COMMIT_OUTCOME_LENGTH: "3"
+        run: |
+          set -o pipefail
+          status=0
+          swift test -c debug --enable-code-coverage --filter CommitOutcomeCountTests 2>&1 | tee commit-outcomes.log || status=$?
+          grep -E 'COMMIT-OUTCOMES' commit-outcomes.log | tee -a "$GITHUB_STEP_SUMMARY" || true
+          for line in 'COMMIT-OUTCOMES-SELFCHECK fault=throw target=top ' 'COMMIT-OUTCOMES-SELFCHECK fault=supersede target=top ' \
+                      'COMMIT-OUTCOMES-SELFCHECK fault=throw target=child ' \
+                      'COMMIT-OUTCOMES mode=await target=top ' 'COMMIT-OUTCOMES mode=send target=top ' \
+                      'COMMIT-OUTCOMES mode=await target=child ' 'COMMIT-OUTCOMES mode=send target=child '; do
+            if ! grep -qF "$line" commit-outcomes.log; then
+              echo "::error::missing result line: $line"; status=1
+            fi
+          done
+          exit $status
 
   # Aggregating gate. `main`'s branch protection requires a status check named
   # exactly "Build and test"; a matrix job cannot produce that name, because
