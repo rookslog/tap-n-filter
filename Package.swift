@@ -33,6 +33,7 @@ let package = Package(
         .target(name: "PlaybackOutput", dependencies: ["Capture", "OutputGate", "PlaybackDSP", "PlaybackRenderBridge", "PlaybackLifecycle", "PlaybackRuntime", "PlaybackRuntimeCaptureAdapters", "SoundModel", "FixedRender"], linkerSettings: [.linkedFramework("Accelerate")]),
         .target(name: "PlaybackLifecycle", dependencies: ["PlaybackRuntime", "SoundModel"]),
         .executableTarget(name: "tnf-playback-lifecycle-check", dependencies: ["PlaybackLifecycle", "PlaybackRuntime", "SoundModel"], path: "Tests/PlaybackLifecycleChecks"),
+        .executableTarget(name: "tnf-waiting-check", dependencies: ["PlaybackOutput", "PlaybackLifecycle", "PlaybackRuntime", "SoundModel", "EverydayMenu"], path: "Tests/WaitingStateChecks"),
         .target(name: "OutputGate", path: "Sources/OutputGate", publicHeadersPath: "include", cxxSettings: [.unsafeFlags(["-std=c++20"])]),
         .executableTarget(name: "tnf-output-gate-check", dependencies: ["OutputGate"], path: "Tests/OutputGateChecks", cxxSettings: [.unsafeFlags(["-std=c++20"])]),
         .executableTarget(name: "tnf-menu-check", dependencies: ["SoundModel", "SessionStore", "EverydayMenu"], path: "Sources/MenuFixture", resources: [.copy("Resources")]),

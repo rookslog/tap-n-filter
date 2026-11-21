@@ -79,13 +79,11 @@ struct MenuCardHeader: View {
            let definition = state.definition(assignment) {
             let source = state.source(assignment.bundleIdentifier)
             let on = assignment.isEnabled
+            let activity = state.lanes[id]
             VStack(spacing: 0) {
               HStack(spacing: 10) {
                 ZStack(alignment: .bottomTrailing) {
-                    Group {
-                        if let icon = source.icon { Image(nsImage: icon).resizable() }
-                        else { Image(systemName: "app.fill").resizable().foregroundStyle(.secondary) }
-                    }.frame(width: 30, height: 30).saturation(on ? 1 : 0).opacity(on ? 1 : 0.5)
+                    MenuCardIcon(icon: source.icon, on: on, running: activity?.isRunning)
                     MenuBlockMark(decoration: assignment.block, size: 8)
                         .foregroundStyle(.white).frame(width: 15, height: 15)
                         .background(assignment.block.tint, in: RoundedRectangle(cornerRadius: 4))
@@ -94,6 +92,7 @@ struct MenuCardHeader: View {
                 }.frame(width: 30, height: 30)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(source.name).font(.system(size: 13, weight: .semibold)).lineLimit(1).truncationMode(.tail)
+                        .modifier(MenuActivityValue(value: on ? activity?.accessibilityValue : nil))
                     Button { state.toggleChooser(id) } label: {
                         HStack(spacing: 3) {
                             Image(systemName: "chevron.down").font(.system(size: 11, weight: .medium))
@@ -134,6 +133,60 @@ struct MenuCardHeader: View {
                     .stroke(assignment.block.tint.opacity(0.1), lineWidth: 1) }
             }.padding(.horizontal, 10)
         }
+    }
+}
+
+/// Holds one icon's settle state. A class with `@Published`, as the rest of the menu does, because the
+/// installed toolchain cannot expand the `@State` macro.
+@MainActor
+private final class MenuIconModel: ObservableObject {
+    @Published var settle: MenuIconSettle
+    init(on: Bool, running: Bool?) { settle = MenuIconSettle(on: on, running: running) }
+
+    func follow(on: Bool, running: Bool?) async {
+        settle.update(on: on, running: running, now: ProcessInfo.processInfo.systemUptime)
+        while let deadline = settle.deadline {
+            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            if remaining > 0 { try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000)) }
+            if Task.isCancelled { return }
+            settle.update(on: on, running: running, now: ProcessInfo.processInfo.systemUptime)
+        }
+    }
+}
+
+/// The app's icon: in colour exactly while its sound runs through TNF (`MenuIconSettle`).
+private struct MenuCardIcon: View {
+    let icon: NSImage?
+    let on: Bool
+    let running: Bool?
+    @StateObject private var model: MenuIconModel
+
+    private struct Key: Equatable { let on: Bool; let running: Bool? }
+
+    init(icon: NSImage?, on: Bool, running: Bool?) {
+        self.icon = icon; self.on = on; self.running = running
+        _model = StateObject(wrappedValue: MenuIconModel(on: on, running: running))
+    }
+
+    var body: some View {
+        let coloured = model.settle.shows(on: on, running: running)
+        Group {
+            if let icon { Image(nsImage: icon).resizable() }
+            else { Image(systemName: "app.fill").resizable().foregroundStyle(.secondary) }
+        }.frame(width: 30, height: 30)
+            .saturation(MenuIconSettle.saturation(isColoured: coloured))
+            .opacity(MenuIconSettle.opacity(isColoured: coloured))
+            // The fade belongs to the settle only: an off card and a returning colour change at once, as before.
+            .animation(on && !coloured ? .easeOut(duration: MenuIconSettle.fade) : nil, value: coloured)
+            .task(id: Key(on: on, running: running)) { await model.follow(on: on, running: running) }
+    }
+}
+
+/// Adds an accessibility value only when there is one, so a card that is not waiting reads as before.
+private struct MenuActivityValue: ViewModifier {
+    let value: String?
+    func body(content: Content) -> some View {
+        if let value { content.accessibilityValue(value) } else { content }
     }
 }
 
