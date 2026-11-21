@@ -14,8 +14,9 @@ enum PlaybackWakeSchedule {
 /// Each `listen...` returns its own removal; adding and removing are always paired by the controller.
 @MainActor
 struct PlaybackWakeEnvironment {
-  /// Listens for changes to the system's audio-process list. Installed only while a lane is waiting.
-  var listenForProcessListChanges: (@escaping @MainActor () -> Void) -> (@MainActor () -> Void)
+  /// Listens for changes to the system's audio-process list. Installed only while a lane is waiting. Returns
+  /// nil when no listener could be installed, so the controller tries again at its next reconcile.
+  var listenForProcessListChanges: (@escaping @MainActor () -> Void) -> (@MainActor () -> Void)?
   /// Listens for application launches; the handler receives the launched app's bundle identifier.
   var listenForLaunches: (@escaping @MainActor (String) -> Void) -> (@MainActor () -> Void)
   /// Runs `work` once after `delay` seconds on the main actor; the result cancels it.
@@ -25,6 +26,7 @@ struct PlaybackWakeEnvironment {
     PlaybackWakeEnvironment(
       listenForProcessListChanges: { handler in
         let listener = AudioProcessListListener(log: log, handler: handler)
+        guard listener.addStatus == noErr else { return nil }
         return { _ = listener.remove() }
       },
       listenForLaunches: { handler in

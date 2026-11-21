@@ -41,6 +41,9 @@ enum Product {
 
   static let waitingState = "waiting"
 
+  /// Whether a wake-up is owed to the lane (false when there is no such lane).
+  static func owed(_ controller: PlaybackController, _ id: UUID) -> Bool { controller.owedForTesting(id) }
+
   static func activity(_ controller: PlaybackController, _ id: UUID) -> Activity {
     switch controller.laneActivities[id] {
     case .running?: .running

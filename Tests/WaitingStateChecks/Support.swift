@@ -73,7 +73,18 @@ func demand(_ condition: Bool, _ message: @autoclosure () -> String) throws {
   /// Removal calls per registration, in install order: `[1, 1]` is two registrations each removed once.
   var removalsPerRegistration: [Int] { listOrder.map { listRemovals[$0] ?? 0 } }
 
-  func installListListener(_ handler: @escaping @MainActor () -> Void) -> @MainActor () -> Void {
+  /// The next this-many list-listener adds are refused, as the system may refuse one (the add returns nil).
+  var refuseListAdds = 0
+  /// Every add the controller asked for, refused or not.
+  private(set) var listAddAttempts = 0
+  /// Called once per list change actually delivered to a live registration (for the per-lane bound).
+  var onListChangeDelivered: (@MainActor () -> Void)?
+  /// Called once per launch notification delivered (for the per-lane bound).
+  var onLaunchDelivered: (@MainActor (String) -> Void)?
+
+  func installListListener(_ handler: @escaping @MainActor () -> Void) -> (@MainActor () -> Void)? {
+    listAddAttempts += 1
+    if refuseListAdds > 0 { refuseListAdds -= 1; return nil }
     nextID += 1
     let id = nextID
     listHandlers[id] = handler
@@ -97,10 +108,16 @@ func demand(_ condition: Bool, _ message: @autoclosure () -> String) throws {
   }
 
   /// The system's audio-process list changed. Delivered only to an installed listener, as the HAL would.
-  func processListChanged() { for handler in listHandlers.values { handler() } }
+  func processListChanged() {
+    if !listHandlers.isEmpty { onListChangeDelivered?() }
+    for handler in listHandlers.values { handler() }
+  }
 
   /// An app launched.
-  func launched(_ bundle: String) { for handler in launchHandlers.values { handler(bundle) } }
+  func launched(_ bundle: String) {
+    onLaunchDelivered?(bundle)
+    for handler in launchHandlers.values { handler(bundle) }
+  }
 }
 
 // MARK: The system's audio processes
@@ -272,6 +289,11 @@ func demand(_ condition: Bool, _ message: @autoclosure () -> String) throws {
         return (factory, runtime)
       }, events: events, clock: clock)
     controller.changed = { [weak self] in self?.publications += 1 }
+    events.onListChangeDelivered = { [weak self] in self?.countForSwitchedOn { $0.listChanges += 1 } }
+    events.onLaunchDelivered = { [weak self] bundle in
+      guard let self, self.switchedOn[bundle] == true else { return }
+      self.allowance[bundle, default: Allowance()].launches += 1
+    }
     controller.startedForTesting = { [weak self] id, state in
       guard let self, let bundle = self.ids.first(where: { $0.value == id })?.key else { return }
       self.trace.startCompletions[bundle, default: []].append(state)
@@ -285,8 +307,42 @@ func demand(_ condition: Bool, _ message: @autoclosure () -> String) throws {
     return id
   }
 
+  /// What the events delivered to a lane while it was switched on allow it, at most.
+  struct Allowance {
+    var listChanges = 0, menuOpens = 0, launches = 0, deliveriesOn = 0
+    /// Attempts counts every source resolution, so a start that was not a wake attempt counts itself and the
+    /// one look it may earn. Bound: list changes + menu opens + burst steps (at most five per launch) + two per
+    /// such start (at most one start per delivery that has the lane switched on).
+    var bound: Int { listChanges + menuOpens + 5 * launches + 2 * deliveriesOn }
+  }
+  private(set) var allowance: [String: Allowance] = [:]
+  private var switchedOn: [String: Bool] = [:]
+  private func countForSwitchedOn(_ add: (inout Allowance) -> Void) {
+    for (bundle, on) in switchedOn where on { add(&allowance[bundle, default: Allowance()]) }
+  }
+
+  /// The checks every case ends with, run by `shutdown()` and reported through `RigAudit`:
+  /// at rest no waiting lane is owed, and per lane the attempts never exceed what its events allow.
+  func endChecks() async {
+    await settle()
+    await advance(by: 60)  // at rest: every fold and burst step has run
+    for bundle in ids.keys {
+      if state(bundle) == Product.waitingState, Product.owed(controller, id(bundle)) {
+        RigAudit.problems.append("at rest, waiting lane \(bundle) is still owed: \(describe(bundle))")
+      }
+      let bound = allowance[bundle]?.bound ?? 0
+      if attempts(bundle) > bound {
+        RigAudit.problems.append("lane \(bundle) made \(attempts(bundle)) attempts, more than its events allow (\(bound)): \(String(describing: allowance[bundle]))")
+      }
+    }
+  }
+
   func snapshot(power: Bool, _ cards: [(String, Bool)]) -> ListeningRenderSnapshot {
-    ListeningRenderSnapshot(isEnabled: power, assignments: cards.map {
+    for (bundle, on) in cards {
+      switchedOn[bundle] = power && on
+      if power && on { allowance[bundle, default: Allowance()].deliveriesOn += 1 }
+    }
+    return ListeningRenderSnapshot(isEnabled: power, assignments: cards.map {
       ListeningRenderAssignment(id: id($0.0), bundleIdentifier: $0.0, isEnabled: $0.1, parts: [])
     })
   }
@@ -331,8 +387,11 @@ func demand(_ condition: Bool, _ message: @autoclosure () -> String) throws {
 
   func listChanged() async { events.processListChanged(); await settle() }
   func launched(_ bundle: String) async { events.launched(bundle); await settle() }
-  func menuOpened() async { Product.menuOpened(controller); await settle() }
-  func menuOpenedWithoutSettling() { Product.menuOpened(controller) }
+  func menuOpened() async { menuOpenedWithoutSettling(); await settle() }
+  func menuOpenedWithoutSettling() {
+    countForSwitchedOn { $0.menuOpens += 1 }
+    Product.menuOpened(controller)
+  }
 
   /// Every start waits on `startHold` before it enters the runtime; the hold only bites once armed.
   func installStartHold() {
@@ -353,6 +412,7 @@ func demand(_ condition: Bool, _ message: @autoclosure () -> String) throws {
   func drainQueued(_ times: Int = 50) async { for _ in 0..<times { await Task.yield() } }
 
   func state(_ bundle: String) -> String? { Product.laneState(controller, id(bundle)) }
+  func owed(_ bundle: String) -> Bool { Product.owed(controller, id(bundle)) }
   func activity(_ bundle: String) -> Activity { Product.activity(controller, id(bundle)) }
   func attempts(_ bundle: String) -> Int { trace.attempts[bundle]?.count ?? 0 }
   func attemptTimes(_ bundle: String) -> [TimeInterval] { trace.attempts[bundle] ?? [] }
@@ -372,7 +432,24 @@ func demand(_ condition: Bool, _ message: @autoclosure () -> String) throws {
       + "leases=\(leases.activeLeaseCount) pending=\(clock.pendingDue) now=\(clock.now)"
   }
 
-  func shutdown() async { await controller.shutdown() }
+  /// Runs the end checks once, then shuts the controller down.
+  func shutdown() async {
+    if !checked { checked = true; await endChecks() }
+    await controller.shutdown()
+  }
+  private var checked = false
+
+  /// Shuts down in this turn, with no end checks first: for a case where shutdown must begin before queued
+  /// work runs.
+  func shutdownNow() async {
+    checked = true
+    await controller.shutdown()
+  }
+}
+
+/// End-check findings from every rig in the running case; the runner fails the case when any are left.
+@MainActor enum RigAudit {
+  static var problems: [String] = []
 }
 
 /// Times are compared to a millisecond.

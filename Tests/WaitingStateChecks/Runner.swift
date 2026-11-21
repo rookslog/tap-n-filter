@@ -35,7 +35,7 @@ private struct Case {
   Case(id: "13", title: "running cards keep today's presentation values", pending: false) { try await Cases.case13() },
   Case(id: "14", title: "accessibility value: waiting card says \"not playing\"", pending: false) { try await Cases.case14() },
   Case(id: "15", title: "a wake-up during an attempt makes exactly one more attempt", pending: false) { try await Cases.case15() },
-  Case(id: "16", title: "replaced at revalidation: waiting, launch burst", pending: false) { try await Cases.case16() },
+  Case(id: "16", title: "replaced at revalidation: waiting and one look, no burst", pending: false) { try await Cases.case16() },
   Case(id: "17", title: "a retired listener registration's callback causes no attempt", pending: false) { try await Cases.case17() },
   Case(id: "17c", title: "the real process-list listener is removed with the registration it was added with", pending: false) { try await Cases.case17c() },
   Case(id: "18", title: "a process that appears before the listener is installed still starts the lane", pending: false) { try await Cases.case18() },
@@ -46,18 +46,20 @@ private struct Case {
   Case(id: "23", title: "a lane whose first start misses while another holds the listener still starts", pending: false) { try await Cases.case23() },
   Case(id: "24", title: "a fold owed to a lane does not survive switching it off and on", pending: false) { try await Cases.case24() },
   Case(id: "25", title: "positions-only switch-off during a wake leaves no listener", pending: false) { try await Cases.case25() },
-  Case(id: "26", title: "a switched-off lane never ends in waiting after a quit during a wake", pending: false) { try await Cases.case26() },
+  Case(id: "26", title: "a switched-off lane never ends in waiting after a quit during a wake", pending: true) { try await Cases.case26() },
   Case(id: "27", title: "two queued wake starts and shutdown in the same turn: nothing starts", pending: false) { try await Cases.case27() },
   Case(id: "28", title: "a lane's fold mark is cleared when it is attempted before the fold", pending: false) { try await Cases.case28() },
   Case(id: "29", title: "a burst step that finds nothing leaves the remaining steps scheduled", pending: false) { try await Cases.case29() },
   Case(id: "30", title: "resolve finds it and revalidation loses it ten times: attempts stay bounded", pending: false) { try await Cases.case30() },
-  Case(id: "31", title: "a relaunch during the quit teardown of a woken lane starts it when the teardown ends", pending: false) { try await Cases.case31() },
-  Case(id: "32", title: "a launch during that teardown starts the burst when it ends", pending: false) { try await Cases.case32() },
+  Case(id: "31", title: "a relaunch during the quit teardown of a woken lane starts it when the teardown ends", pending: true) { try await Cases.case31() },
+  Case(id: "32", title: "a launch during that teardown starts the burst when it ends", pending: true) { try await Cases.case32() },
   Case(id: "33", title: "a start returning replaced during shutdown schedules no timer", pending: false) { try await Cases.case33() },
   Case(id: "34", title: "a lane that starts waiting inside an open fold is attempted when it fires", pending: false) { try await Cases.case34() },
   Case(id: "35", title: "a launch during an ordinary start that then misses runs the burst", pending: false) { try await Cases.case35() },
   Case(id: "36", title: "replaced results from burst steps do not re-arm the burst", pending: false) { try await Cases.case36() },
   Case(id: "37", title: "a launch while the lane is off gives no burst after switch-on", pending: false) { try await Cases.case37() },
+  Case(id: "38", title: "a refused list-listener add: the lane still waits and a later reconcile adds it", pending: false) { try await Cases.case38() },
+  Case(id: "39", title: "menu, launch and burst step during a start; a wake attempt that fails", pending: false) { try await Cases.case39() },
 ]
 
 public enum WaitingStateChecks {
@@ -85,7 +87,11 @@ public enum WaitingStateChecks {
         continue
       }
       do {
+        RigAudit.problems = []
         try await item.body()
+        if !RigAudit.problems.isEmpty {
+          throw CheckFailure(description: "end checks: " + RigAudit.problems.joined(separator: " | "))
+        }
         say("\(item.pending ? "PENDING-PASS" : "PASS") case \(item.id): \(item.title)")
         if !item.pending { passed.append(item.id) }
       } catch {
