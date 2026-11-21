@@ -827,6 +827,90 @@ enum Cases {
     try demand(witnessed > 0, "B's start never ended during shutdown in 24 tries, so the case proved nothing: orders \(orders.joined())")
   }
 
+  // 34. A second list change inside an open fold, after another lane started waiting once the fold was
+  //     open: that lane is attempted when the fold fires.
+  static func case34() async throws {
+    let rig = Rig()
+    await rig.apply([(A, true)])  // A waiting
+    await rig.listChanged()  // the fold opens at t = 0, due at 0.25 s
+    await rig.apply([(A, true), (B, true)])  // B's first start misses: B waiting, with the fold open
+    try demand(rig.state(B) == Product.waitingState, "setup: B waiting: \(rig.describe(B))")
+    await rig.advance(to: 0.1)
+    rig.world.appear(B, pids: [201])  // B's audio appears ...
+    await rig.listChanged()  // ... and the list changes again inside the open fold
+    await rig.advance(to: 1)
+    try demand(rig.state(B) == "running" && rig.trace.resolvedPIDs[B]?.last == 201, "B is attempted when the fold fires and runs: \(rig.describe(B))")
+    try demand(rig.attemptTimes(A).filter { $0 > 0.0001 }.count == 1, "A gets the fold too: \(rig.describe(A))")
+    await rig.shutdown()
+  }
+
+  // 35. A launch notification during an ordinary (not a wake) start whose start then misses: the launch
+  //     burst runs.
+  static func case35() async throws {
+    let rig = Rig()
+    rig.installStartHold()
+    rig.startHold.arm()
+    rig.applyWithoutSettling([(A, true)])  // A's first start holds before the runtime
+    await rig.startHold.gate.entered()
+    rig.events.launched(A)  // the app launches while A's ordinary start is under way
+    rig.startHold.gate.release()
+    await rig.settle()  // the start misses: A waiting
+    try demand(rig.state(A) == Product.waitingState, "setup: A waiting: \(rig.describe(A))")
+    await rig.advance(to: 20)
+    let burst = rig.attemptTimes(A).filter { $0 > 0.0001 }
+    try demand(sameTimes(burst, [0.5, 1, 2, 4, 8]), "the launch's burst runs after the missed start: \(burst)")
+    await rig.shutdown()
+  }
+
+  // 36. Burst steps whose attempts keep returning `replaced` do not re-arm the burst: five attempts per
+  //     launch.
+  static func case36() async throws {
+    let rig = Rig()
+    await rig.apply([(A, true)])  // A waiting
+    let p = rig.world.candidate(A, pid: 101), q = rig.world.candidate(A, pid: 102)
+    rig.world.queue[A] = Array(repeating: [[p], [q]], count: 40).flatMap { $0 }  // every attempt: replaced
+    await rig.launched(A)  // at t = 0
+    await rig.advance(to: 30)
+    let after = rig.attemptTimes(A).filter { $0 > 0.0001 }
+    try demand(sameTimes(after, [0.5, 1, 2, 4, 8]), "five attempts for one launch, whatever they return: \(after.count) at \(after.prefix(12))")
+    try demand(rig.state(A) == Product.waitingState && rig.problem == nil && rig.clock.pending == 0, "then quiet: \(rig.describe(A))")
+    await rig.shutdown()
+  }
+
+  // 37. A launch while the lane is off, then switch-on: no burst from the old launch.
+  static func case37() async throws {
+    // 37a: A is off (idle) while B waits; A's app launches; A is switched on and its start misses.
+    do {
+      let rig = Rig()
+      await rig.apply([(A, false), (B, true)])
+      await rig.launched(A)
+      await rig.apply([(A, true), (B, true)])
+      try demand(rig.clock.pending == 0, "37a: switch-on schedules no burst from the earlier launch: \(rig.clock.pendingDue)")
+      await rig.advance(to: 20)
+      try demand(rig.attemptTimes(A).filter { $0 > 0.0001 }.isEmpty, "37a: no burst from a launch while off: \(rig.describe(A))")
+      try demand(rig.clock.pending == 0, "37a: nothing scheduled: \(rig.describe(A))")
+      await rig.shutdown()
+    }
+    // 37b: B is off during a quit teardown when its app launches, then switched on before the teardown ends.
+    do {
+      let rig = Rig()
+      await rig.advance(to: 10)
+      await quitDuringWake(rig)
+      rig.applyWithoutSettling(power: true, [(A, true), (B, false)])  // off during the teardown
+      rig.events.launched(B)  // launched while off
+      rig.applyWithoutSettling(power: true, [(A, true), (B, true)])  // on again before the teardown ends
+      rig.trace.sinkStopGate.release()
+      await rig.settle()
+      let scheduledAtEnd = rig.clock.pendingDue  // what the teardown's end scheduled, before anything fires
+      await rig.advance(to: 40)
+      let late = rig.attemptTimes(B).filter { $0 > 10.0001 }
+      try demand(scheduledAtEnd.isEmpty, "37b: the teardown's end schedules no burst from the launch made while off: \(scheduledAtEnd)")
+      try demand(late.isEmpty, "37b: no burst attempts: \(late)")
+      try demand(rig.clock.pending == 0, "37b: nothing scheduled: \(rig.clock.pendingDue)")
+      await rig.shutdown()
+    }
+  }
+
   // 16. A different process found at revalidation (`replaced`) counts as a relaunch: the
   //     lane waits, quietly, and the launch burst starts.
   static func case16() async throws {

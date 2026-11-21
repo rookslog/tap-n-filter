@@ -54,6 +54,10 @@ private struct Case {
   Case(id: "31", title: "a relaunch during the quit teardown of a woken lane starts it when the teardown ends", pending: false) { try await Cases.case31() },
   Case(id: "32", title: "a launch during that teardown starts the burst when it ends", pending: false) { try await Cases.case32() },
   Case(id: "33", title: "a start returning replaced during shutdown schedules no timer", pending: false) { try await Cases.case33() },
+  Case(id: "34", title: "a lane that starts waiting inside an open fold is attempted when it fires", pending: false) { try await Cases.case34() },
+  Case(id: "35", title: "a launch during an ordinary start that then misses runs the burst", pending: false) { try await Cases.case35() },
+  Case(id: "36", title: "replaced results from burst steps do not re-arm the burst", pending: false) { try await Cases.case36() },
+  Case(id: "37", title: "a launch while the lane is off gives no burst after switch-on", pending: false) { try await Cases.case37() },
 ]
 
 public enum WaitingStateChecks {
