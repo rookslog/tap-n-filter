@@ -224,12 +224,13 @@ final class LibraryAppSession {
         do {
             let task = try coordinator.submitSliderMove(address, expected: binding, to: position,
                 optionGesture: option, menuIdentity: identity, expectedEpoch: deliveryEpoch, gestureIdentity: gestureIdentity)
-            if task == coordinator.refusedSample { return }    // A-E2: a refused value write does nothing
+            if task == coordinator.refusedSample { refused(); return }    // A-E2: a refused value write does nothing
             let epoch = saveEpoch
             Task {
                 do {
                     switch try await task.value {
-                    case .coalesced, .dropped: break    // A-E2: a stale value write does nothing
+                    case .coalesced: break
+                    case .dropped: refused()    // A-E2: a stale value write does nothing
                     case .live: applyDidSucceed()
                     case .delivered(let result), .fenced(let result):
                         perfMutationCompleted?(result)
@@ -241,7 +242,7 @@ final class LibraryAppSession {
                         coordinator.requestRefresh(mode: .positions)
                         if !gesturing && epoch == saveEpoch { scheduleSave() }
                     }
-                } catch is LibraryFlushRefusal {}
+                } catch is LibraryFlushRefusal { refused() }
                 catch { perfMutationFailed?(); record(error, action: action) }
             }
         } catch { perfMutationFailed?(); record(error, action: action) }
@@ -251,7 +252,7 @@ final class LibraryAppSession {
         let received = armedAction
         do {
             let task = try action(coordinator)
-            if task == coordinator.refusedMove { return }    // A-E2: a refused value write does nothing
+            if task == coordinator.refusedMove { refused(); return }    // A-E2: a refused value write does nothing
             let epoch = saveEpoch
             Task {
                 do {
@@ -261,7 +262,7 @@ final class LibraryAppSession {
                     coordinator.requestRefresh(mode: positionOnly ? .positions : .activation)
                     if save && !gesturing && epoch == saveEpoch { scheduleSave() }
                 }
-                catch is LibraryFlushRefusal {}    // A-E2: a stale value write does nothing
+                catch is LibraryFlushRefusal { refused() }    // A-E2: a stale value write does nothing
                 catch { perfMutationFailed?(); record(error, action: received) }
             }
         } catch { perfMutationFailed?(); record(error, action: received) }
@@ -282,6 +283,9 @@ final class LibraryAppSession {
         if let problem { applyProblem = "The change could not be saved. \(problem)"; changed() }
         if gesturing { gesturing = false; gestureSave = flushSave() }
     }
+    /// A-E2: the one thing a refused value write does is tell the measurement seam it completed as superseded, as a refused
+    /// write always has. No apply problem is cleared, no read is requested and no save is armed.
+    private func refused() { perfMutationCompleted?(.superseded) }
     /// A live command succeeded: an earlier apply problem no longer describes the menu.
     func applyDidSucceed() {
         guard applyProblem != nil else { return }
