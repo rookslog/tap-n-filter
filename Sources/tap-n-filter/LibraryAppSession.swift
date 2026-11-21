@@ -15,9 +15,16 @@ final class LibraryAppSession {
     private(set) var presentationGeneration: UInt64?
     private(set) var roster = LibraryRosterRequests()
     private(set) var startup: LibraryConsumerStartup = .starting
-    var problem: String? { readProblem ?? operationProblem }
+    /// Read problem first, then the startup/editor problem, then the save problem, then the apply problem (A-E1 writers kept apart).
+    var problem: String? { readProblem ?? startupEditorProblem ?? saveProblem ?? applyProblem }
     private var readProblem: String?
-    private var operationProblem: String?
+    /// Startup and editor failures: never cleared (neither is reachable in a normal launch).
+    private var startupEditorProblem: String?
+    /// A command or checkpoint result that was not accepted. Cleared by the next accepted command result or accepted reconciliation.
+    private var saveProblem: String?
+    /// A slider, power or compare command that threw. Cleared by the next live command that succeeds and when the alert showing it is dismissed.
+    private var applyProblem: String?
+    private var shownApplyProblem: String?
     private(set) var acceptedCreation: (command: UUID, commit: UUID, reference: LibraryReference)?
     var editor: LibraryEditorAdapter { coordinator.editor }
     private let changed: () -> Void
@@ -81,7 +88,8 @@ final class LibraryAppSession {
         presentation = next; menuData = data
         return true
     }
-    private func receive(_ event: LibraryConsumerEvent) {
+    /// Internal so tests can deliver coordinator events directly.
+    func receive(_ event: LibraryConsumerEvent) {
         if let receipt = event.rosterReceipt { roster.receive(receipt) }
         switch event {
         case .positionContext(let context):
@@ -99,16 +107,18 @@ final class LibraryAppSession {
             startup = status
             switch status {
             case .starting, .existing, .fresh, .migrated: break
-            default: operationProblem = String(describing: status)
+            default: startupEditorProblem = String(describing: status)
             }
         case .command(let result):
             switch result.outcome {
-            case .accepted: break
-            default: operationProblem = "The change could not be saved. \(result.outcome)"
+            case .accepted: saveProblem = nil
+            default: saveProblem = "The change could not be saved. \(result.outcome)"
             }
+        case .reconciliation(let result):
+            if case .accepted = result { saveProblem = nil }
         case .editorMutation: scheduleSave()
         case .editor(let state):
-            if let failure = state.failure { operationProblem = failure }
+            if let failure = state.failure { startupEditorProblem = failure }
         case .creationAccepted(let command, let commit, let reference):
             acceptedCreation = (command, commit, reference)
         case .readFailure(let reason):
@@ -213,9 +223,11 @@ final class LibraryAppSession {
                     case .coalesced, .live: break
                     case .delivered(let result), .fenced(let result):
                         perfMutationCompleted?(result)
+                        applyDidSucceed()
                         if !gesturing && epoch == saveEpoch { scheduleSave() }
                     case .executed(let result):
                         perfMutationCompleted?(result)
+                        applyDidSucceed()
                         coordinator.requestRefresh(mode: .positions)
                         if !gesturing && epoch == saveEpoch { scheduleSave() }
                     }
@@ -233,6 +245,7 @@ final class LibraryAppSession {
                 do {
                     let result = try await task.value
                     perfMutationCompleted?(result)
+                    applyDidSucceed()
                     coordinator.requestRefresh(mode: positionOnly ? .positions : .activation)
                     if save && !gesturing && epoch == saveEpoch { scheduleSave() }
                 }
@@ -241,12 +254,28 @@ final class LibraryAppSession {
         } catch { perfMutationFailed?(); record(error, action: received) }
     }
     /// A-E1: a failed apply shows the problem once and ends the drag, saving the earlier values.
-    private func record(_ error: Error, action: EverydayMenuAction? = nil) {
+    func record(_ error: Error, action: EverydayMenuAction? = nil) {
         guard coordinator.lifecycle != .closed else { return }
-        operationProblem = "The change could not be saved. \(error)"; changed()
+        applyProblem = "The change could not be saved. \(error)"; changed()
         if let action { admissionDecided?(action, .failed) }
         coordinator.invalidate(.failedApply)
         if gesturing { gesturing = false; _ = flushSave() }
+    }
+    /// A live command succeeded: an earlier apply problem no longer describes the menu.
+    func applyDidSucceed() {
+        guard applyProblem != nil else { return }
+        applyProblem = nil; changed()
+    }
+    /// The text the problem alert is about to show. Remembers when that text is the apply problem, so dismissal can clear it.
+    func presentProblem() -> String? {
+        shownApplyProblem = readProblem == nil && startupEditorProblem == nil && saveProblem == nil ? applyProblem : nil
+        return problem
+    }
+    /// The alert from `presentProblem()` was dismissed: an apply problem the person has seen is cleared.
+    func problemDismissed() {
+        defer { shownApplyProblem = nil }
+        guard let shown = shownApplyProblem, applyProblem == shown else { return }
+        applyProblem = nil; changed()
     }
     private func observe(_ task: Task<LibraryConsumerCommandResult, Never>) {
         Task { _ = await task.value; coordinator.requestRefresh(); editor.requestDisplay() }
@@ -311,6 +340,13 @@ final class LibraryAppSession {
         saveEpoch &+= 1
         debounce?.cancel(); debounce = nil
         _ = coordinator.beginDrain()
+    }
+    /// A drain result that needs the person's decision. `startupUnavailable`: startup never opened a session, so there is nothing to save.
+    static func drainNeedsDecision(_ result: LibraryDrainResult) -> Bool {
+        switch result {
+        case .saved, .startupUnavailable: return false
+        default: return true
+        }
     }
     func finishDrain(_ mode: LibraryDrainMode) async -> LibraryDrainResult { await coordinator.finishDrain(mode) }
     @discardableResult func cancelDrain() -> Bool {

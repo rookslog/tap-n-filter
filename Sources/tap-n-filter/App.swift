@@ -238,9 +238,8 @@ final class TNFDelegate: NSObject, NSApplicationDelegate {
       Task { @MainActor in
         // Canonical startup and issued replacement are joined, never cancelled.
         let result = await library.finishDrain(.save)
-        switch result {
-        case .saved: break
-        default:
+        // A failed boot never opened a session (`startupUnavailable`): nothing to save, and the process always exits.
+        if LibraryAppSession.drainNeedsDecision(result) {
           let alert = NSAlert()
           alert.messageText = "The Session Could Not Be Saved"
           alert.informativeText = String(describing: result)
@@ -511,12 +510,14 @@ final class TNFDelegate: NSObject, NSApplicationDelegate {
   private func showProblem() {
     let alert = NSAlert()
     alert.messageText = "Audio Needs Attention"
-    alert.informativeText = library?.problem ?? problem ?? playback?.problem ?? "Playback is ready."
+    alert.informativeText = library?.presentProblem() ?? problem ?? playback?.problem ?? "Playback is ready."
     if playback?.problem != nil { alert.addButton(withTitle: "Try Again") }
     alert.addButton(withTitle: "OK")
     NSApplication.shared.activate()
     let retry = playback?.problem != nil
-    if alert.runModal() == .alertFirstButtonReturn && retry { playback?.retry() }
+    let response = alert.runModal()
+    library?.problemDismissed()
+    if response == .alertFirstButtonReturn && retry { playback?.retry() }
   }
 
   func applicationDockMenu(_ sender: NSApplication) -> NSMenu? { surface?.dockMenu }
