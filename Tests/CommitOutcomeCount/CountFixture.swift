@@ -54,6 +54,12 @@ struct Tally {
     var failed: [String: Int] = [:]
     /// Events that landed while a drag was held: admitted clicks, steps and samples, and issued selects and removes.
     var whileDragging: [String: Int] = [:]
+    /// Drag samples delivered live (the path that holds a value for a later drag commit).
+    var liveSamples = 0
+    /// Superseded ordered moves outside drag commits, by whose control they wrote.
+    var draggedAddress: LibraryControlAddress?
+    var choiceAddress: LibraryControlAddress?
+    var supersededDragged = 0, supersededChoice = 0, supersededOther = 0
     var unfinished: Int { dragStarted - drag.total }
 }
 
@@ -129,6 +135,11 @@ enum DragTarget: String, CaseIterable { case top, child }
                 do {
                     let result = try await session.moveForMenu(address, expected: expected, optionGesture: option, to: value)
                     counter.other.record(result.outcome)
+                    if result.outcome == .superseded {
+                        if address == counter.draggedAddress { counter.supersededDragged += 1 }
+                        else if address == counter.choiceAddress { counter.supersededChoice += 1 }
+                        else { counter.supersededOther += 1 }
+                    }
                     return result
                 } catch {
                     counter.other.threw += 1
@@ -162,18 +173,40 @@ enum DragTarget: String, CaseIterable { case top, child }
                 throw CountError(description: "the dragged app's card has no menu identity for the child setup")
             }
             app.send(.menuMove(identity, epoch, choice.address, choice.optionGesture, .scalar(owning.position)))
-            let settled = await watched("child setup") { await app.quiescent() }
-            for _ in 0..<16 { await Task.yield() }
-            _ = await app.coordinator.refresh()
-            guard settled, let shown = shownCard,
-                  let tab = shown.optionTabs.first(where: { $0.parent == choice.address && $0.option.id == owning.id }),
-                  let child = tab.controls.first, case .slider = child.face else {
-                throw CountError(description: "the parent choice did not show its child slider for the child drag")
+            // The pick is followed by a debounced save, which clears live-sample eligibility until the next read. Wait
+            // until the child is shown, eligible for live samples and has a live plan, on two checks in a row, so drag
+            // G's first sample goes live as it does on the top-level slider.
+            var found: MenuSoundControl?, why = "not checked", passes = 0
+            for _ in 0..<12 {
+                _ = await watched("child setup") { await app.quiescent() }
+                let coordinator = app.coordinator
+                _ = await watched("child setup saves") { await coordinator.waitForIssuedSaves() }
+                for _ in 0..<16 { await Task.yield() }
+                _ = await coordinator.refresh()
+                for _ in 0..<8 { await Task.yield() }
+                guard let shown = shownCard, let binding = shown.binding, let shownIdentity = shown.menuIdentity,
+                      let tab = shown.optionTabs.first(where: { $0.parent == choice.address && $0.option.id == owning.id }),
+                      let child = tab.controls.first, case .slider = child.face else {
+                    why = "the card does not show the child slider"; passes = 0; continue
+                }
+                guard coordinator.sliderCanCoalesce(child.address, expected: binding, optionGesture: child.optionGesture) else {
+                    why = "the child slider is not eligible for live samples"; passes = 0; continue
+                }
+                let planned = app.presentation?.parameterPlans.contains { plan in
+                    plan.identity == shownIdentity && plan.address == child.address && plan.option == child.optionGesture && plan.lease.isValid
+                } ?? false
+                guard planned else { why = "the child slider has no live plan"; passes = 0; continue }
+                passes += 1
+                if passes >= 2 { found = child; break }
             }
+            guard let child = found else { throw CountError(description: "child setup: \(why)") }
             childControl = child; childOption = owning.id
             counter.other = Tally()     // the setup pick is not part of the count
         }
 
+        counter.choiceAddress = choice.address
+        counter.draggedAddress = childControl?.address ?? CountFixture.slider(on: card)?.address
+        app.coordinator.perfParameterEvaluated = { _, _ in counter.liveSamples += 1 }
         app.coordinator.parameterCommitForTesting = { event in
             switch event {
             case .started: counter.dragStarted += 1; counter.dragCommitEntering = true

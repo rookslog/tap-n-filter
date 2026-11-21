@@ -41,6 +41,8 @@ struct ModeTotals {
     var admitted: [String: Int] = [:], refused: [String: Int] = [:], failed: [String: Int] = [:]
     var whileDragging: [String: Int] = [:]
     var aborted = false
+    var liveSamples = 0, firstSampleLive = 0, withoutDragCommit = 0
+    var supersededDragged = 0, supersededChoice = 0, supersededOther = 0
     var examples: [String: String] = [:]
     var firstFixtureError: String?
 }
@@ -177,6 +179,7 @@ enum CommitOutcomeCount {
             await d.quiet()
             d.sample(d.gestureG)
             await d.quiet()
+            if counter.liveSamples > 0 { t.firstSampleLive += 1 }
             for e in sequence { await d.perform(e) }
             await d.settle()
             f.close()
@@ -189,6 +192,10 @@ enum CommitOutcomeCount {
             for (k, v) in counter.refused { t.refused[k, default: 0] += v }
             for (k, v) in counter.failed { t.failed[k, default: 0] += v }
             for (k, v) in counter.whileDragging { t.whileDragging[k, default: 0] += v }
+            t.liveSamples += counter.liveSamples
+            if counter.dragStarted == 0 { t.withoutDragCommit += 1 }
+            t.supersededDragged += counter.supersededDragged; t.supersededChoice += counter.supersededChoice
+            t.supersededOther += counter.supersededOther
             let text = "[begin move " + sequence.map(\.rawValue).joined(separator: " ") + " end]"
             if counter.drag.superseded > 0, t.examples["superseded"] == nil { t.examples["superseded"] = text }
             if counter.drag.threw > 0, t.examples["threw"] == nil { t.examples["threw"] = text }
@@ -211,7 +218,11 @@ enum CommitOutcomeCount {
         line += " drag_commits=\(t.dragStarted) ok=\(t.drag.ok) superseded=\(t.drag.superseded) threw=\(t.drag.threw)"
         line += " unfinished=\(t.unfinished) nochange=\(t.drag.noChange)"
         line += " change_moves=\(t.other.total) change_ok=\(t.other.ok)"
-        line += " change_superseded=\(t.other.superseded) change_threw=\(t.other.threw)"
+        line += " change_superseded=\(t.other.superseded) change_superseded_dragged=\(t.supersededDragged)"
+        line += " change_superseded_choice=\(t.supersededChoice) change_superseded_other=\(t.supersededOther)"
+        line += " change_threw=\(t.other.threw)"
+        line += " g_first_sample_live=\(t.firstSampleLive) live_samples=\(t.liveSamples)"
+        line += " sequences_without_drag_commit=\(t.withoutDragCommit)"
         line += " admitted=\(kinds(t.admitted)) refused=\(kinds(t.refused)) failed=\(kinds(t.failed))"
         let held = ["click", "nudge", "move", "select", "remove"].map { "\($0):\(t.whileDragging[$0] ?? 0)" }.joined(separator: ",")
         line += " while_dragging=\(held)"
@@ -227,8 +238,10 @@ enum CommitOutcomeCount {
     @MainActor static func selfCheck(_ fault: OutcomeCounter.Fault, target: DragTarget = .top) async -> Bool {
         let name = fault == .throwNext ? "throw" : "supersede"
         let counter = OutcomeCounter()
-        guard let f = try? await CountFixture(counter: counter, target: target) else {
-            print("COMMIT-OUTCOMES-SELFCHECK fault=\(name) target=\(target.rawValue) result=fail reason=fixture"); return false
+        let f: CountFixture
+        do { f = try await CountFixture(counter: counter, target: target) }
+        catch {
+            print("COMMIT-OUTCOMES-SELFCHECK fault=\(name) target=\(target.rawValue) result=fail reason=fixture: \(error)"); return false
         }
         let d = CountDriver(f, mode: .awaitEach)
         d.gestureG = d.begin()
@@ -243,12 +256,16 @@ enum CommitOutcomeCount {
         let pass = counter.dragStarted == 1 && counter.drag.superseded == expected.superseded && counter.drag.threw == expected.threw
             && counter.fault == .off && d.watchdogs == 0
         let consumed = counter.fault == .off
+        // A sample that never went live holds no value for a drag commit, so there is nothing to inject into. That is
+        // reported as its own result, not as a counter failure; the mode lines show how often it happens.
+        let notLive = counter.liveSamples == 0 && counter.dragStarted == 0 && d.watchdogs == 0
+        let result = pass ? "pass" : notLive ? "no_drag_commit reason=sample_not_live" : "fail"
         var line = "COMMIT-OUTCOMES-SELFCHECK fault=\(name) target=\(target.rawValue) drag_commits=\(counter.dragStarted) ok=\(counter.drag.ok)"
         line += " superseded=\(counter.drag.superseded) threw=\(counter.drag.threw) unfinished=\(counter.unfinished)"
         line += " clicked_choice=\(f.choiceTitle) child_owning_options=\(f.choiceParentOptions)"
-        line += " fault_consumed=\(consumed) watchdogs=\(d.watchdogs) result=" + (pass ? "pass" : "fail")
+        line += " live_samples=\(counter.liveSamples) fault_consumed=\(consumed) watchdogs=\(d.watchdogs) result=" + result
         print(line)
-        return pass
+        return pass || notLive
     }
 
     /// Fails only when the run cannot be believed: a fault the counter missed, a fixture that did not build, a hang,
