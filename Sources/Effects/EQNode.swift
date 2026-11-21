@@ -1,4 +1,5 @@
 import AVFoundation
+import AudioToolbox
 import Foundation
 import os
 
@@ -165,16 +166,17 @@ public final class EQNode: EffectNode {
     /// change — a node that is misconfigured and never touched again would
     /// otherwise leave no trace at all.
     private func verifyFrequencyWrites(stage: String, expected: [(String, Float)]) {
-        let bands = [("hp", eq.bands[0]), ("lp", eq.bands[1])]
+        let bandIndices = [("hp", 0), ("lp", 1)]
         var fresh: [String] = []
         for (label, wrote) in expected {
-            guard let band = bands.first(where: { $0.0 == label })?.1 else { continue }
+            guard let bandIndex = bandIndices.first(where: { $0.0 == label })?.1 else { continue }
+            let held = readBand(.frequency, band: bandIndex)
             // Retire any prior warning for this band: it has just been
             // rewritten, so the earlier reading is stale either way.
             configurationWarnings.removeAll { $0.hasPrefix("\(label) at ") }
-            if abs(band.frequency - wrote) > 0.01 {
+            if abs(held - wrote) > 0.01 {
                 fresh.append(
-                    "\(label) at \(stage): wrote frequency \(wrote) read \(band.frequency)"
+                    "\(label) at \(stage): wrote frequency \(wrote) read \(held)"
                 )
             }
         }
@@ -185,6 +187,45 @@ public final class EQNode: EffectNode {
             Self.logger.error(
                 "EQ band configuration did not take: \(fresh.joined(separator: "; "), privacy: .public)"
             )
+        }
+    }
+
+    // MARK: Band read-back
+
+    /// Which band value `readBand(_:band:)` returns.
+    private enum BandValue {
+        case frequency
+        case bandwidth
+    }
+
+    /// Reads a band's frequency (Hz) or bandwidth (octaves) from the audio
+    /// unit's own parameter instead of the `AVAudioUnitEQFilterParameters`
+    /// object.
+    ///
+    /// The band object was seen returning the factory default (about one node
+    /// in 1,700 on macOS 26) while the unit held the written value; the unit's
+    /// parameter read was correct in every such case. The band object is used
+    /// only when the C call returns a non-zero status. Per-band parameter IDs
+    /// are the band-0 ID plus the band index, global scope, element 0
+    /// (AudioUnitParameters.h, "Parameters for the AUNBandEQ unit").
+    private func readBand(_ value: BandValue, band: Int) -> Float {
+        let base: Int
+        switch value {
+        case .frequency: base = Int(kAUNBandEQParam_Frequency)
+        case .bandwidth: base = Int(kAUNBandEQParam_Bandwidth)
+        }
+        var held: AudioUnitParameterValue = 0
+        let status = AudioUnitGetParameter(
+            eq.audioUnit,
+            AudioUnitParameterID(base + band),
+            kAudioUnitScope_Global,
+            0,
+            &held
+        )
+        if status == noErr { return held }
+        switch value {
+        case .frequency: return eq.bands[band].frequency
+        case .bandwidth: return eq.bands[band].bandwidth
         }
     }
 
@@ -262,13 +303,13 @@ public final class EQNode: EffectNode {
     public func parameterValue(_ identifier: String) -> Float? {
         switch identifier {
         case "hp.frequency":
-            return eq.bands[0].frequency
+            return readBand(.frequency, band: 0)
         case "hp.Q":
-            return bandwidthToQ(eq.bands[0].bandwidth)
+            return bandwidthToQ(readBand(.bandwidth, band: 0))
         case "lp.frequency":
-            return eq.bands[1].frequency
+            return readBand(.frequency, band: 1)
         case "lp.Q":
-            return bandwidthToQ(eq.bands[1].bandwidth)
+            return bandwidthToQ(readBand(.bandwidth, band: 1))
         default:
             return nil
         }
@@ -398,8 +439,8 @@ public final class EQNode: EffectNode {
             + "wetFmt=\(Self.fmt(wetMixer.outputFormat(forBus: 0))) "
             + "outFmt=\(Self.fmt(outputBus.outputFormat(forBus: 0))) "
             + "eqAUBypass=\(eq.bypass) "
-            + "hpFreq=\(eq.bands[0].frequency) hpBw=\(eq.bands[0].bandwidth) "
-            + "lpFreq=\(eq.bands[1].frequency) lpBw=\(eq.bands[1].bandwidth) "
+            + "hpFreq=\(readBand(.frequency, band: 0)) hpBw=\(readBand(.bandwidth, band: 0)) "
+            + "lpFreq=\(readBand(.frequency, band: 1)) lpBw=\(readBand(.bandwidth, band: 1)) "
             + "configWarnings=\(configurationWarnings.isEmpty ? "none" : configurationWarnings.joined(separator: "; "))"
     }
 
@@ -417,10 +458,10 @@ public final class EQNode: EffectNode {
             bypass: bypass,
             wetDryMix: wetDryMix,
             parameters: [
-                "hp.frequency": eq.bands[0].frequency,
-                "hp.Q": bandwidthToQ(eq.bands[0].bandwidth),
-                "lp.frequency": eq.bands[1].frequency,
-                "lp.Q": bandwidthToQ(eq.bands[1].bandwidth)
+                "hp.frequency": readBand(.frequency, band: 0),
+                "hp.Q": bandwidthToQ(readBand(.bandwidth, band: 0)),
+                "lp.frequency": readBand(.frequency, band: 1),
+                "lp.Q": bandwidthToQ(readBand(.bandwidth, band: 1))
             ],
             extras: [:]
         )
