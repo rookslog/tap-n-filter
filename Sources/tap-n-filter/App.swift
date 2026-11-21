@@ -190,8 +190,10 @@ final class TNFDelegate: NSObject, NSApplicationDelegate {
       if ProbeDiagnostics.teardownUnconfirmed(value) { self?.probeDrainUnconfirmed = true }
       if let line = ProbeDiagnostics.visible(value) { print(line) }
     }
+    // M5: only a source or output format change is a real barrier; a lane finishing or a problem is not (A-LC).
+    playback.sourceOrFormatChanged = { [weak self] in self?.library?.coordinator.playbackDidChange(.sourceOrFormat) }
     playback.changed = { [weak self] in
-      self?.library?.coordinator.playbackDidChange()
+      self?.library?.coordinator.playbackDidChange(.lane)
       self?.refreshMenu()
     }
     self.playback = playback

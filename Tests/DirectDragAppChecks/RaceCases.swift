@@ -346,10 +346,10 @@ extension PR39RaceCases {
             _ = try await f.app.coordinator.submitMove(f.slider.address, expected: f.card.binding!, to: .scalar(0.9)).value
             await f.app.coordinator.refresh(mode: .positions)
         } else {
+            // The OFF activation may be delivered after the positions OFF (RATIFICATION Addendum 3: only a
+            // repeat of the last activation is dropped). What matters is below: the lane never sounds.
             _ = try await f.app.coordinator.submitEnabled(false).value
-            let offDeliveries = deliveries
             await f.app.coordinator.refresh()
-            check(deliveries == offDeliveries, "5-\(variant)/\(phase) identical OFF activation deduplicated by real coordinator")
             if variant == "restart" { _ = try await f.app.coordinator.submitEnabled(true).value; await f.app.coordinator.refresh() }
         }
         await trace.gate.release()

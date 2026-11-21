@@ -51,6 +51,9 @@ private final class PlaybackSinkSlot {
 
 @MainActor
 private final class PlaybackLane {
+  /// The lane states of the event table (B): I idle, S starting, R running, T stopping, F failed.
+  /// State A, "stopping with restart authorized", is `.stopping` while `PlaybackStopResumePolicy`
+  /// still authorizes this assignment (`laneStateForTesting` names it).
   enum State { case idle, starting, running, stopping, failed }
   let factory: PlaybackCaptureFactory
   let runtime: PlaybackRuntime
@@ -97,6 +100,35 @@ public final class PlaybackController {
   var startedForTesting: ((UUID, String) -> Void)?
   var stoppedForTesting: ((UUID, String) -> Void)?
   public var changed: () -> Void = {}
+  /// A source quit or the output format changed under a running or starting lane: a real barrier for what
+  /// the menu shows. Lane starts, stops and problems publish through `changed` only (A-LC).
+  public var sourceOrFormatChanged: () -> Void = {}
+  /// Test seams (M4, M7, M8, M9). Inert unless used.
+  /// M7: awaited between a lane's runtime stop returning and its state change, so a stop can be held.
+  var beforeStopCompletesForTesting: ((UUID) async -> Void)?
+  private var operations = 0
+  private var quiescenceWaiters: [CheckedContinuation<Void, Never>] = []
+  /// M8: returns once no lane start, stop or invalidation is pending.
+  func quiescent() async {
+    if operations == 0 { return }
+    await withCheckedContinuation { quiescenceWaiters.append($0) }
+  }
+  private func operationBegan() { operations += 1 }
+  private func operationEnded() {
+    operations -= 1
+    if operations == 0 { let waiters = quiescenceWaiters; quiescenceWaiters = []; for w in waiters { w.resume() } }
+  }
+  /// M9: the lane's state, as the table names it.
+  func laneStateForTesting(_ id: UUID) -> String? {
+    guard let lane = lanes[id] else { return nil }
+    if lane.state == .stopping, let desired, let assignment = desired.assignments.first(where: { $0.id == id }),
+      stopResume.isAuthorized(assignment, desired: desired) { return "stopping+restart" }
+    return String(describing: lane.state)
+  }
+  /// M4: a source or route condition for one assignment's lane.
+  func injectConditionForTesting(_ id: UUID, _ condition: CaptureCondition) {
+    if let lane = lanes[id] { invalidate(id, lane: lane, condition: condition) }
+  }
   public var log: (String) -> Void = { _ in }
 
   public init(coreAudio: any CoreAudioInterface, guardPort: any InputGuardPort) {
@@ -192,6 +224,7 @@ public final class PlaybackController {
     guard !quitting else { return .closed }
     let previous = desired
     desired = snapshot
+    stopResume.withdraw(snapshot)
     let original = original && compareAvailable
     self.original = original
     let known = Dictionary(uniqueKeysWithValues: (previous?.assignments ?? []).map { ($0.id, $0.bundleIdentifier) })
@@ -213,7 +246,8 @@ public final class PlaybackController {
     applyDesired(snapshot, original: original)
   }
 
-  private func applyDesired(_ snapshot: ListeningRenderSnapshot, original: Bool) {
+  /// `authorizedOnly`: a retry may start only what the latest activation authorized (B-F10).
+  private func applyDesired(_ snapshot: ListeningRenderSnapshot, original: Bool, authorizedOnly: Bool = false) {
     guard !quitting else { return }
     desired = snapshot
     let original = original && compareAvailable
@@ -234,7 +268,7 @@ public final class PlaybackController {
           lane.state = .idle
         }
         stop(assignment.id, lane: lane, includesCurrentActivation: true)
-      } else if lane.state == .idle {
+      } else if lane.state == .idle, !authorizedOnly || stopResume.isAuthorized(assignment, desired: snapshot) {
         start(assignment, lane: lane)
       }
     }
@@ -247,7 +281,7 @@ public final class PlaybackController {
       lane.failure = nil
       lane.state = .idle
     }
-    apply(desired, original: original)
+    applyDesired(desired, original: original, authorizedOnly: true)
   }
 
   public func shutdown() async {
@@ -309,8 +343,11 @@ public final class PlaybackController {
     let request = StartRequest(
       assignment: AssignmentID(assignment.id),
       binding: try! AppBinding(bundleIdentifier: assignment.bundleIdentifier), token: token)
+    operationBegan()
     Task { @MainActor [weak self, weak lane] in
-      guard let self, let lane else { return }
+      guard let self else { return }
+      defer { self.operationEnded() }
+      guard let lane else { return }
       let result = await lane.runtime.start(request)
       guard lane.operation == operation else { return }
       switch result.event {
@@ -339,9 +376,13 @@ public final class PlaybackController {
     let operation = lane.operation
     let authorization = stopResume.stopping(assignment: id, includesCurrentActivation: includesCurrentActivation)
     lane.state = .stopping
+    operationBegan()
     Task { @MainActor [weak self, weak lane] in
-      guard let self, let lane else { return }
+      guard let self else { return }
+      defer { self.operationEnded() }
+      guard let lane else { return }
       _ = await lane.runtime.stop(AssignmentID(id))
+      await self.beforeStopCompletesForTesting?(id)
       guard lane.operation == operation else { return }
       lane.sink = nil
       lane.state = lane.failure == nil ? .idle : .failed
@@ -455,8 +496,12 @@ public final class PlaybackController {
     lane.operation += 1
     let operation = lane.operation
     lane.state = .stopping
+    sourceOrFormatChanged()
+    operationBegan()
     Task { @MainActor [weak self, weak lane] in
-      guard let self, let lane else { return }
+      guard let self else { return }
+      defer { self.operationEnded() }
+      guard let lane else { return }
       _ = await lane.runtime.report(condition: condition, for: AssignmentID(id), matching: token)
       guard operation == lane.operation else { return }
       lane.sink = nil

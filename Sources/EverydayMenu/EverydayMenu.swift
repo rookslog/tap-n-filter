@@ -401,12 +401,20 @@ public final class EverydayMenu: NSObject, NSMenuDelegate {
         item.target = self; return item
     }
 
-    public func perfBeginDrag() { state.beginGesture() }
-    public func perfEndDrag() { state.endGesture() }
+    /// The silent drag workload drives the same path a pointer drag does: the track gesture `beginMovement` returns
+    /// (mouse-down), one `change` per sample, `end` at release. Every sample carries the drag's identity (D-1).
+    private var perfTrack: (target: String, title: String, gesture: MenuTrackGesture)?
+    private var perfDragging = false
+    public func perfBeginDrag() { perfDragging = true; perfTrack = nil }
+    public func perfEndDrag() { perfTrack?.gesture.end(); perfTrack = nil; perfDragging = false; state.endGesture() }
     public func perfMove(target: String, title: String, value: Double) -> Bool {
         guard let card = state.snapshot.assignments.first(where: { $0.bundleIdentifier == target }),
               let control = card.controls.first(where: { $0.title == title }), case .slider = control.face else { return false }
-        state.move(control, on: card, to: value)
+        guard perfDragging else { state.move(control, on: card, to: value); return true }   // no drag begun: a plain step
+        if perfTrack?.target != target || perfTrack?.title != title {
+            perfTrack = (target, title, state.beginMovement(control, on: card))
+        }
+        perfTrack?.gesture.change(value)
         return true
     }
     public func perfSelect(target: String, title: String, index: Int) -> Double? {
