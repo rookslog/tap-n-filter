@@ -375,6 +375,11 @@ final class LibraryListeningCoordinator {
     }
     /// Wired by the session: show the problem once (nil for a superseded commit) and end an open gesture with one save.
     var dragCommitFailed: ((_ problem: Error?) -> Void)?
+    /// Test seams, read-only: the current discard epoch and whether an activation is still owed.
+    var discardEpochForTesting: LibraryDiscardEpoch { discardEpoch }
+    var activationPendingForTesting: Bool { activationPending }
+    /// Test seam: called once each time an epoch comparison drops a stale value write. Inert when nil.
+    var staleWriteDroppedForTesting: (() -> Void)?
     private var parameterCommit: Task<LibraryLiveMutation?, Error>?
     private var commitSerial: UInt64 = 0
     private func evaluateParameter(_ owner: SoundLibrarySession, address: LibraryControlAddress,
@@ -383,9 +388,9 @@ final class LibraryListeningCoordinator {
         if let current = parameterGesture,
            current.plan.identity != identity || current.plan.address != address || current.plan.option != option {
             try await commitParameter(owner, refuse: false)
-            guard admitted == discardEpoch else { return .dropped }      // A-E2: after each await on the sample path
+            guard admitted == discardEpoch else { staleWriteDroppedForTesting?(); return .dropped }  // A-E2: after each await
             _ = await refresh(mode: .positions)
-            guard admitted == discardEpoch else { return .dropped }
+            guard admitted == discardEpoch else { staleWriteDroppedForTesting?(); return .dropped }
         }
         if parameterGesture == nil {
             guard let plan = presentation?.parameterPlans.first(where: { $0.identity == identity && $0.address == address && $0.option == option }), plan.lease.isValid else {
@@ -404,7 +409,7 @@ final class LibraryListeningCoordinator {
     /// A sample's own ordered flush (its gesture's commit). It never refuses; a reset makes the sample stale instead.
     private func flushForSample(_ owner: SoundLibrarySession, _ admitted: LibraryDiscardEpoch) async throws -> LibrarySliderResult {
         let outcome = try await commitParameter(owner, refuse: false)
-        guard admitted == discardEpoch else { return .dropped }
+        guard admitted == discardEpoch else { staleWriteDroppedForTesting?(); return .dropped }
         return .executed(outcome ?? .superseded)
     }
     private func applyLive(_ owner: SoundLibrarySession, _ gesture: LibraryParameterGesture, _ value: LibraryPosition,
@@ -817,12 +822,15 @@ final class LibraryListeningCoordinator {
     /// it, commits run one at a time, and a new commit needs a gesture, which only the batch loop creates, on the live tail
     /// this write holds (every value write runs inside an `enqueueMutation` operation).
     private func admitsWrite(_ admission: LibraryWriteAdmission, _ session: SoundLibrarySession) async -> Bool {
+        let admitted: Bool
         switch admission {
-        case .commit(let admitted): return admitted == discardEpoch
-        case .value(let admitted):
+        case .commit(let epoch): admitted = epoch == discardEpoch
+        case .value(let epoch):
             _ = try? await commitParameter(session, refuse: false)
-            return admitted == discardEpoch
+            admitted = epoch == discardEpoch
         }
+        if !admitted { staleWriteDroppedForTesting?() }
+        return admitted
     }
     /// Returns nil, writing nothing, when `admission` finds the value stale (A-E2).
     private func executeMove(_ session: SoundLibrarySession, address: LibraryControlAddress, binding: LibraryBinding,
@@ -890,7 +898,9 @@ final class LibraryListeningCoordinator {
                 defer { if self.sliderBatch === batch { self.sliderBatch = nil } }
                 while let next = batch.take() {
                     // A-E2: a sample admitted before a reset is discarded, never applied or written.
-                    guard next.discardEpoch == self.discardEpoch else { next.finish(.success(.dropped)); continue }
+                    guard next.discardEpoch == self.discardEpoch else {
+                        self.staleWriteDroppedForTesting?(); next.finish(.success(.dropped)); continue
+                    }
                     batch.inFlight = true
                     self.perfSliderQueueChanged?(1, batch.pending == nil ? 0 : 1)
                     do {

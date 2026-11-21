@@ -50,6 +50,8 @@ let package = Package(
         .testTarget(name: "PerfHarnessTests", dependencies: ["tap-n-filter", "SoundModel", "SessionStore", "EverydayMenu"], path: "Tests/PerfHarnessChecks"),
         .testTarget(name: "DirectDragModelTests", dependencies: ["SoundModel", "PlaybackRenderBridge", "FixedRender"], path: "Tests/DirectDragModelChecks"),
         .testTarget(name: "DirectDragAppTests", dependencies: ["tap-n-filter", "SoundModel", "EverydayMenu", "PlaybackRenderBridge", "PlaybackOutput"], path: "Tests/DirectDragAppChecks"),
+        // What a failed drag commit discards and what it leaves alone, and a count showing none fails with no fault armed.
+        .testTarget(name: "CommitResetTests", dependencies: ["tap-n-filter", "SoundModel", "EverydayMenu", "PlaybackRenderBridge"], path: "Tests/CommitResetChecks"),
         .testTarget(name: "ParameterTests", dependencies: ["SoundModel", "PlaybackRenderBridge", "FixedRender"], path: "Tests/ParameterChecks"),
         .testTarget(name: "CompatibilityWitnessTests", dependencies: ["SoundModel"], path: "Tests/CompatibilityWitnessChecks", resources: [.copy("Fixtures")]),
         .target(name: "PlaybackRuntime", path: "Sources/PlaybackRuntime", swiftSettings: [.unsafeFlags(["-swift-version", "6"])]),
