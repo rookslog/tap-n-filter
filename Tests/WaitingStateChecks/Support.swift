@@ -24,6 +24,7 @@ func demand(_ condition: Bool, _ message: @autoclosure () -> String) throws {
   private struct Item {
     let id: Int
     let due: TimeInterval
+    let tag: String?
     let work: @MainActor () -> Void
   }
   private(set) var now: TimeInterval = 0
@@ -34,10 +35,15 @@ func demand(_ condition: Bool, _ message: @autoclosure () -> String) throws {
   var pending: Int { items.count }
   var pendingDue: [TimeInterval] { items.map(\.due).sorted() }
 
+  /// Work scheduled while this is set carries it as a tag (a launch's burst steps carry the launched bundle).
+  var tag: String?
+  /// How many tagged items actually ran, by tag. A cancelled item never runs, so it is not counted.
+  private(set) var ranByTag: [String: Int] = [:]
+
   func schedule(after delay: TimeInterval, _ work: @escaping @MainActor () -> Void) -> @MainActor () -> Void {
     nextID += 1
     let id = nextID
-    items.append(Item(id: id, due: now + max(0, delay), work: work))
+    items.append(Item(id: id, due: now + max(0, delay), tag: tag, work: work))
     return { [weak self] in self?.items.removeAll { $0.id == id } }
   }
 
@@ -46,6 +52,7 @@ func demand(_ condition: Bool, _ message: @autoclosure () -> String) throws {
     while let next = items.filter({ $0.due <= target + 1e-9 }).min(by: { ($0.due, $0.id) < ($1.due, $1.id) }) {
       items.removeAll { $0.id == next.id }
       now = max(now, next.due)
+      if let tag = next.tag { ranByTag[tag, default: 0] += 1 }
       next.work()
       await settle()
     }
@@ -79,8 +86,9 @@ func demand(_ condition: Bool, _ message: @autoclosure () -> String) throws {
   private(set) var listAddAttempts = 0
   /// Called once per list change actually delivered to a live registration (for the per-lane bound).
   var onListChangeDelivered: (@MainActor () -> Void)?
-  /// Called once per launch notification delivered (for the per-lane bound).
+  /// Called once per launch notification, before and after the controller handles it (for the per-lane bound).
   var onLaunchDelivered: (@MainActor (String) -> Void)?
+  var onLaunchHandled: (@MainActor (String) -> Void)?
 
   func installListListener(_ handler: @escaping @MainActor () -> Void) -> (@MainActor () -> Void)? {
     listAddAttempts += 1
@@ -117,6 +125,7 @@ func demand(_ condition: Bool, _ message: @autoclosure () -> String) throws {
   func launched(_ bundle: String) {
     onLaunchDelivered?(bundle)
     for handler in launchHandlers.values { handler(bundle) }
+    onLaunchHandled?(bundle)
   }
 }
 
@@ -209,10 +218,14 @@ func demand(_ condition: Bool, _ message: @autoclosure () -> String) throws {
   /// Bundles whose next output stop pauses at `sinkStopGate`.
   var holdSinkStop: Set<String> = []
   let sinkStopGate = Gate()
+  /// Told of each resolve attempt as it begins, so the rig can say whether it is a wake attempt.
+  var onResolving: (@MainActor (String) -> Void)?
 
   func observed(_ bundle: String, _ observation: LifecycleObservation) {
     switch observation.event {
-    case .resolving: attempts[bundle, default: []].append(clock.now)
+    case .resolving:
+      attempts[bundle, default: []].append(clock.now)
+      onResolving?(bundle)
     case .resolved(let process): resolvedPIDs[bundle, default: []].append(process.pid)
     case .failed(let failure, _, _): failures[bundle, default: []].append(failure)
     default: break
@@ -274,6 +287,7 @@ func demand(_ condition: Bool, _ message: @autoclosure () -> String) throws {
   private var ids: [String: UUID] = [:]
 
   init() {
+    RigAudit.made += 1
     let trace = Trace(clock: clock)
     self.trace = trace
     let world = self.world, leases = self.leases
@@ -290,13 +304,29 @@ func demand(_ condition: Bool, _ message: @autoclosure () -> String) throws {
       }, events: events, clock: clock)
     controller.changed = { [weak self] in self?.publications += 1 }
     events.onListChangeDelivered = { [weak self] in self?.countForSwitchedOn { $0.listChanges += 1 } }
-    events.onLaunchDelivered = { [weak self] bundle in
-      guard let self, self.switchedOn[bundle] == true else { return }
-      self.allowance[bundle, default: Allowance()].launches += 1
+    // A launch's burst steps are the clock items scheduled while the controller handles it; each one that
+    // actually runs allows one wake attempt, so a burst cancelled before its first step allows none.
+    let burstClock = self.clock
+    events.onLaunchDelivered = { bundle in burstClock.tag = bundle }
+    events.onLaunchHandled = { _ in burstClock.tag = nil }
+    // A resolve attempt begun while the card reads as waiting is a wake attempt (an attempt from waiting keeps
+    // reading as waiting while it is under way); any other is an ordinary start.
+    trace.onResolving = { [weak self] bundle in
+      guard let self else { return }
+      if self.activity(bundle) == .waiting {
+        self.wakeAttemptsByLane[bundle, default: 0] += 1
+        self.ordinaryInFlight.remove(bundle)
+      } else {
+        self.ordinaryInFlight.insert(bundle)
+      }
     }
     controller.startedForTesting = { [weak self] id, state in
       guard let self, let bundle = self.ids.first(where: { $0.value == id })?.key else { return }
       self.trace.startCompletions[bundle, default: []].append(state)
+      // Only an ordinary start that ends in waiting earns its one look.
+      if self.ordinaryInFlight.remove(bundle) != nil, state == Product.waitingState {
+        self.allowance[bundle, default: Allowance()].ordinaryMisses += 1
+      }
     }
   }
 
@@ -307,22 +337,33 @@ func demand(_ condition: Bool, _ message: @autoclosure () -> String) throws {
     return id
   }
 
-  /// What the events delivered to a lane while it was switched on allow it, at most.
+  /// What a lane's events allow it in wake attempts, at most. Each wake attempt spends one of: a list change
+  /// or menu open delivered while the lane was switched on, a burst step that actually ran, or the one look
+  /// earned by an ordinary start that ended in waiting. Ordinary starts are not wake attempts and are not
+  /// counted; a delivery that starts nothing allows nothing.
   struct Allowance {
-    var listChanges = 0, menuOpens = 0, launches = 0, deliveriesOn = 0
-    /// Attempts counts every source resolution, so a start that was not a wake attempt counts itself and the
-    /// one look it may earn. Bound: list changes + menu opens + burst steps (at most five per launch) + two per
-    /// such start (at most one start per delivery that has the lane switched on).
-    var bound: Int { listChanges + menuOpens + 5 * launches + 2 * deliveriesOn }
+    var listChanges = 0, menuOpens = 0, burstSteps = 0, ordinaryMisses = 0
+    var bound: Int { listChanges + menuOpens + burstSteps + ordinaryMisses }
   }
   private(set) var allowance: [String: Allowance] = [:]
   private var switchedOn: [String: Bool] = [:]
+  private var wakeAttemptsByLane: [String: Int] = [:]
+  private var ordinaryInFlight: Set<String> = []
   private func countForSwitchedOn(_ add: (inout Allowance) -> Void) {
     for (bundle, on) in switchedOn where on { add(&allowance[bundle, default: Allowance()]) }
   }
 
+  /// Wake attempts (resolve attempts begun from waiting) made for a lane.
+  func wakeAttempts(_ bundle: String) -> Int { wakeAttemptsByLane[bundle] ?? 0 }
+
+  private func allowanceNow(_ bundle: String) -> Allowance {
+    var value = allowance[bundle] ?? Allowance()
+    value.burstSteps = clock.ranByTag[bundle] ?? 0
+    return value
+  }
+
   /// The checks every case ends with, run by `shutdown()` and reported through `RigAudit`:
-  /// at rest no waiting lane is owed, and per lane the attempts never exceed what its events allow.
+  /// at rest no waiting lane is owed, and the attempt bound holds.
   func endChecks() async {
     await settle()
     await advance(by: 60)  // at rest: every fold and burst step has run
@@ -330,18 +371,34 @@ func demand(_ condition: Bool, _ message: @autoclosure () -> String) throws {
       if state(bundle) == Product.waitingState, Product.owed(controller, id(bundle)) {
         RigAudit.problems.append("at rest, waiting lane \(bundle) is still owed: \(describe(bundle))")
       }
-      let bound = allowance[bundle]?.bound ?? 0
-      if attempts(bundle) > bound {
-        RigAudit.problems.append("lane \(bundle) made \(attempts(bundle)) attempts, more than its events allow (\(bound)): \(String(describing: allowance[bundle]))")
+    }
+    boundChecks()
+  }
+
+  /// Per lane, wake attempts never exceed what its events allow. Across the controller, its own count of
+  /// wake attempts (which also counts any stopped before they reached the runtime) stays within the lanes'
+  /// allowances together, and is never below what this rig counted.
+  private func boundChecks() {
+    var total = 0, counted = 0
+    for bundle in ids.keys {
+      let allowed = allowanceNow(bundle)
+      total += allowed.bound
+      counted += wakeAttempts(bundle)
+      if wakeAttempts(bundle) > allowed.bound {
+        RigAudit.problems.append("lane \(bundle) made \(wakeAttempts(bundle)) wake attempts, more than its events allow (\(allowed.bound)): \(allowed): \(describe(bundle))")
       }
+    }
+    let product = Product.wakeAttempts(controller)
+    if product > total {
+      RigAudit.problems.append("the controller made \(product) wake attempts, more than all lanes' events allow (\(total))")
+    }
+    if counted > product {
+      RigAudit.problems.append("\(counted) wake attempts were seen but the controller counted \(product): the check's own count is wrong")
     }
   }
 
   func snapshot(power: Bool, _ cards: [(String, Bool)]) -> ListeningRenderSnapshot {
-    for (bundle, on) in cards {
-      switchedOn[bundle] = power && on
-      if power && on { allowance[bundle, default: Allowance()].deliveriesOn += 1 }
-    }
+    for (bundle, on) in cards { switchedOn[bundle] = power && on }
     return ListeningRenderSnapshot(isEnabled: power, assignments: cards.map {
       ListeningRenderAssignment(id: id($0.0), bundleIdentifier: $0.0, isEnabled: $0.1, parts: [])
     })
@@ -434,22 +491,31 @@ func demand(_ condition: Bool, _ message: @autoclosure () -> String) throws {
 
   /// Runs the end checks once, then shuts the controller down.
   func shutdown() async {
-    if !checked { checked = true; await endChecks() }
+    if !checked { checked = true; RigAudit.fullyChecked += 1; await endChecks() }
     await controller.shutdown()
   }
   private var checked = false
 
-  /// Shuts down in this turn, with no end checks first: for a case where shutdown must begin before queued
-  /// work runs.
+  /// Shuts down in this turn: for a case where shutdown must begin before queued work runs. The at-rest
+  /// check needs time to pass first, so it is skipped; the attempt bound is checked once shutdown is done.
   func shutdownNow() async {
+    let first = !checked
     checked = true
     await controller.shutdown()
+    if first {
+      RigAudit.boundOnly += 1
+      boundChecks()
+    }
   }
 }
 
-/// End-check findings from every rig in the running case; the runner fails the case when any are left.
+/// End-check findings from every rig in the running case; the runner fails the case when any are left, and
+/// says which rigs did not get every end check.
 @MainActor enum RigAudit {
   static var problems: [String] = []
+  /// Rigs made, rigs given every end check, and rigs given the attempt bound only (`shutdownNow`).
+  static var made = 0, fullyChecked = 0, boundOnly = 0
+  static func reset() { problems = []; made = 0; fullyChecked = 0; boundOnly = 0 }
 }
 
 /// Times are compared to a millisecond.

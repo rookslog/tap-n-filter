@@ -131,17 +131,26 @@ enum Cases {
     await rig.shutdown()
   }
 
-  // 5. Menu open: one attempt per waiting lane, none for running or off lanes.
+  // 5. Menu open: one attempt per waiting lane, at once (no time passes), none for running or off lanes,
+  //    and nothing later.
   static func case5() async throws {
     let rig = Rig()
     rig.world.appear(C, pids: [303])
+    await rig.advance(to: 2)
     await rig.apply([(A, true), (B, true), (C, true), (D, false)])
     try demand(rig.state(A) == Product.waitingState && rig.state(B) == Product.waitingState && rig.state(C) == "running", "setup: A, B waiting, C running: \(rig.describe(A)) \(rig.describe(C))")
+    try demand(rig.clock.pending == 0, "setup: nothing scheduled before the menu opens: \(rig.clock.pendingDue)")
+    await rig.advance(to: 3)
     let before = [A, B, C, D].map { rig.attempts($0) }
-    await rig.menuOpened()
-    await rig.advance(by: 0.3)  // in case menu-open attempts share the list fold
+    await rig.menuOpened()  // at t = 3; the clock does not move
     let after = [A, B, C, D].map { rig.attempts($0) }
-    try demand(zip(after, before).map { $0 - $1 } == [1, 1, 0, 0], "menu open: one attempt per waiting lane, none for running or off: before \(before) after \(after)")
+    try demand(zip(after, before).map { $0 - $1 } == [1, 1, 0, 0], "menu open: one attempt per waiting lane at once, none for running or off: before \(before) after \(after)")
+    try demand(sameTimes(rig.attemptTimes(A).filter { $0 > 2.0001 }, [3]) && sameTimes(rig.attemptTimes(B).filter { $0 > 2.0001 }, [3]),
+      "the attempts happen when the menu opens: \(rig.describe(A)) | \(rig.describe(B))")
+    try demand(rig.clock.pending == 0, "a menu open schedules nothing: \(rig.clock.pendingDue)")
+    await rig.advance(by: 30)
+    let later = [A, B, C, D].map { rig.attempts($0) }
+    try demand(later == after, "no attempt follows later: \(after) -> \(later)")
     try demand(rig.problem == nil, "menu-open attempts that find nothing stay quiet: \(rig.describe(A))")
     await rig.shutdown()
   }
@@ -614,8 +623,10 @@ enum Cases {
       try demand(rig.attempts(A) == a0, "23a: A is not attempted because B started waiting: \(rig.describe(A))")
       await rig.shutdown()
     }
-    // 23b: the list changes while B's first start is under way (so the fold is owed to A only), and B's
-    //      first read finds nothing. B must still start.
+    // 23b: the list changes while B's first start is under way, and B's first read finds nothing. The
+    //      change marks B while it is starting, and B must still start. A start that misses makes the lane
+    //      owed by itself, so B starting in the end cannot show that the change reached it; the mark is read
+    //      while the start is held, before it misses.
     do {
       let rig = Rig()
       rig.installStartHold()
@@ -625,7 +636,9 @@ enum Cases {
       rig.startHold.arm()
       rig.applyWithoutSettling([(A, true), (B, true)])  // B's first start holds before the runtime
       await rig.startHold.gate.entered()
+      try demand(rig.state(B) == "starting" && !rig.owed(B), "23b: setup: B starting and not owed before the change: \(rig.describe(B))")
       rig.events.processListChanged()  // B's process appeared; A is waiting, B is starting
+      try demand(rig.owed(B), "23b: a list change during an ordinary start marks that lane: \(rig.describe(B))")
       rig.startHold.gate.release()
       await rig.settle()
       await rig.advance(by: 1)
@@ -664,21 +677,26 @@ enum Cases {
     await rig.shutdown()
   }
 
-  // 25. A positions-only switch-off of the only waiting lane while it is being woken leaves no listener and
-  //     no fold timer once the stop has finished.
+  // 25. A positions-only switch-off of the only waiting lane while it is being woken, with a fold open,
+  //     leaves no listener and no fold timer: the fold is cancelled, not left to run out.
   static func case25() async throws {
     let rig = Rig()
     rig.installStartHold()
     await rig.apply([(A, true)])  // waiting, listener installed
+    rig.events.processListChanged()  // a fold opens at t = 0, due at 0.25 s
+    try demand(sameTimes(rig.clock.pendingDue, [0.25]), "setup: a fold is open: \(rig.clock.pendingDue)")
+    let a0 = rig.attempts(A)
     rig.startHold.arm()
     rig.menuOpenedWithoutSettling()  // the wake start holds before the runtime
     await rig.startHold.gate.entered()
+    try demand(sameTimes(rig.clock.pendingDue, [0.25]), "setup: the fold is still open during the wake: \(rig.clock.pendingDue)")
     rig.positionsWithoutSettling([(A, false)])  // switched off by a positions-only delivery
     rig.startHold.gate.release()
-    await rig.settle()
-    await rig.advance(by: 1)
+    await rig.settle()  // no time has passed: the fold could not have run out
     try demand(rig.state(A) == "idle", "setup: the lane is idle: \(rig.describe(A))")
-    try demand(!rig.events.listListenerInstalled && rig.clock.pending == 0, "no listener or timer left once nothing waits: active \(rig.events.activeListListeners): \(rig.describe(A))")
+    try demand(!rig.events.listListenerInstalled && rig.clock.pending == 0, "no listener, and the fold cancelled, once nothing waits: active \(rig.events.activeListListeners): \(rig.describe(A))")
+    await rig.advance(by: 1)
+    try demand(rig.attempts(A) == a0, "nothing is attempted after the switch-off: \(rig.describe(A))")
     await rig.shutdown()
   }
 
@@ -829,20 +847,30 @@ enum Cases {
     try demand(witnessed > 0, "B's start never ended during shutdown in 24 tries, so the case proved nothing: orders \(orders.joined())")
   }
 
-  // 34. A second list change inside an open fold, after another lane started waiting once the fold was
-  //     open: that lane is attempted when the fold fires.
+  // 34. A second list change inside an open fold marks a lane that owed nothing until then: that lane is
+  //     attempted when the fold fires. B starts waiting while the fold is open, and a menu open answers B's
+  //     own debt (and A's), so only the second change can make the fold attempt B.
   static func case34() async throws {
     let rig = Rig()
     await rig.apply([(A, true)])  // A waiting
     await rig.listChanged()  // the fold opens at t = 0, due at 0.25 s
     await rig.apply([(A, true), (B, true)])  // B's first start misses: B waiting, with the fold open
     try demand(rig.state(B) == Product.waitingState, "setup: B waiting: \(rig.describe(B))")
+    await rig.advance(to: 0.05)
+    await rig.menuOpened()  // at 0.05 s, B's audio still absent: A and B are attempted and miss
+    try demand(rig.state(B) == Product.waitingState && !rig.owed(B) && !rig.owed(A),
+      "setup: the menu open answered every debt: A owed \(rig.owed(A)), B owed \(rig.owed(B)): \(rig.describe(B))")
+    try demand(sameTimes(rig.attemptTimes(B).filter { $0 > 0.0001 }, [0.05]), "setup: B's menu attempt at 0.05 s: \(rig.describe(B))")
+    try demand(sameTimes(rig.clock.pendingDue, [0.25]), "setup: the fold is still open: \(rig.clock.pendingDue)")
     await rig.advance(to: 0.1)
     rig.world.appear(B, pids: [201])  // B's audio appears ...
     await rig.listChanged()  // ... and the list changes again inside the open fold
+    try demand(rig.owed(B), "the second change marks B: \(rig.describe(B))")
+    try demand(sameTimes(rig.clock.pendingDue, [0.25]), "the second change opens no second fold: \(rig.clock.pendingDue)")
     await rig.advance(to: 1)
-    try demand(rig.state(B) == "running" && rig.trace.resolvedPIDs[B]?.last == 201, "B is attempted when the fold fires and runs: \(rig.describe(B))")
-    try demand(rig.attemptTimes(A).filter { $0 > 0.0001 }.count == 1, "A gets the fold too: \(rig.describe(A))")
+    try demand(sameTimes(rig.attemptTimes(B).filter { $0 > 0.0001 }, [0.05, 0.25]), "B is attempted when the fold fires: \(rig.describe(B))")
+    try demand(rig.state(B) == "running" && rig.trace.resolvedPIDs[B]?.last == 201, "and runs: \(rig.describe(B))")
+    try demand(sameTimes(rig.attemptTimes(A).filter { $0 > 0.0001 }, [0.05, 0.25]), "A: the menu, then the fold: \(rig.describe(A))")
     await rig.shutdown()
   }
 
@@ -948,14 +976,18 @@ enum Cases {
 
   // 39. Cells of the lane-state table not pinned elsewhere.
   static func case39() async throws {
-    // 39a: a menu open during an ordinary start that then misses: owed is a flag, so one look, not two.
+    // 39a: a menu open during an ordinary start marks the lane; the start then misses: owed is a flag, so
+    //      one look, not two. A start that misses makes the lane owed by itself, so the mark is read while
+    //      the start is held.
     do {
       let rig = Rig()
       rig.installStartHold()
       rig.startHold.arm()
       rig.applyWithoutSettling([(A, true)])
       await rig.startHold.gate.entered()
+      try demand(rig.state(A) == "starting" && !rig.owed(A), "39a: setup: starting and not owed before the menu opens: \(rig.describe(A))")
       rig.menuOpenedWithoutSettling()
+      try demand(rig.owed(A) && rig.attempts(A) == 0, "39a: a menu open during an ordinary start marks it and starts nothing: \(rig.describe(A))")
       rig.startHold.gate.release()
       await rig.settle()
       await rig.advance(to: 10)
@@ -998,14 +1030,103 @@ enum Cases {
       try demand(sameTimes(steps, [0.5, 1, 2, 4, 8]), "39c: the step that came during the attempt is answered when it misses: \(steps)")
       await rig.shutdown()
     }
-    // 39d: a wake attempt that fails for another reason: a problem, nothing owed, nothing scheduled.
+    // 39d: a wake attempt that fails for another reason while a launch burst is live: a problem, nothing
+    //      owed, and the burst's remaining steps cancelled at once.
     do {
       let rig = Rig()
       await rig.apply([(A, true)])  // waiting
+      await rig.launched(A)  // at t = 0
+      await rig.advance(to: 0.6)  // the 0.5 s step found nothing
+      try demand(sameTimes(rig.clock.pendingDue, [1, 2, 4, 8]), "39d: setup: the burst is live: \(rig.clock.pendingDue)")
       rig.world.appear(A, pids: [101, 102])
-      await rig.menuOpened()
+      await rig.menuOpened()  // the wake attempt finds two processes
       try demand(rig.state(A) == "failed" && rig.problem != nil, "39d: two processes is a problem: \(rig.describe(A))")
-      try demand(!rig.owed(A) && rig.clock.pending == 0, "39d: nothing owed or scheduled: \(rig.describe(A))")
+      try demand(!rig.owed(A) && rig.clock.pending == 0, "39d: nothing owed, the burst cancelled: \(rig.describe(A))")
+      let a0 = rig.attempts(A)
+      await rig.advance(to: 20)
+      try demand(rig.attempts(A) == a0, "39d: no burst step runs after the failure: \(rig.describe(A))")
+      await rig.shutdown()
+    }
+    // 39e: a second launch while a burst is live replaces it: the old remaining steps never run, and the
+    //      new five run from the second launch.
+    do {
+      let rig = Rig()
+      await rig.apply([(A, true)])  // waiting
+      await rig.launched(A)  // at t = 0: steps at 0.5, 1, 2, 4, 8
+      await rig.advance(to: 1.2)  // the 0.5 and 1 s steps have run
+      await rig.launched(A)  // at 1.2 s: steps at 1.7, 2.2, 3.2, 5.2, 9.2
+      try demand(sameTimes(rig.clock.pendingDue, [1.7, 2.2, 3.2, 5.2, 9.2]), "39e: only the new burst is scheduled: \(rig.clock.pendingDue)")
+      await rig.advance(to: 30)
+      let steps = rig.attemptTimes(A).filter { $0 > 0.0001 }
+      try demand(sameTimes(steps, [0.5, 1, 1.7, 2.2, 3.2, 5.2, 9.2]), "39e: two steps of the first burst, then the second burst's five: \(steps)")
+      try demand(rig.state(A) == Product.waitingState && rig.problem == nil && rig.clock.pending == 0, "39e: then quiet: \(rig.describe(A))")
+      await rig.shutdown()
+    }
+    // 39f: a burst step fires during an ordinary start: it marks the lane and starts nothing, the start
+    //      then misses and gets its one look, and the burst goes on.
+    do {
+      let rig = Rig()
+      rig.installStartHold()
+      rig.startHold.arm()
+      rig.applyWithoutSettling([(A, true)])  // A's first start holds before the runtime
+      await rig.startHold.gate.entered()
+      rig.events.launched(A)  // at t = 0, during the ordinary start
+      await rig.advanceWithoutSettling(to: 0.5)  // the 0.5 s step fires while A is still starting
+      try demand(rig.owed(A) && rig.attempts(A) == 0 && rig.state(A) == "starting", "39f: the step marks the starting lane and starts nothing: \(rig.describe(A))")
+      try demand(sameTimes(rig.clock.pendingDue, [1, 2, 4, 8]), "39f: the rest of the burst is still scheduled: \(rig.clock.pendingDue)")
+      rig.startHold.gate.release()
+      await rig.settle()  // the start misses at 0.5 s; its one look follows at once
+      await rig.advance(to: 20)
+      let times = rig.attemptTimes(A)
+      try demand(sameTimes(times, [0.5, 0.5, 1, 2, 4, 8]), "39f: the start, its one look, then the burst's remaining steps: \(times)")
+      try demand(rig.state(A) == Product.waitingState && rig.problem == nil && rig.clock.pending == 0, "39f: then quiet: \(rig.describe(A))")
+      await rig.shutdown()
+    }
+    // 39g: an ordinary start that fails for another reason while a launch burst is live: a problem, nothing
+    //      owed, and the burst cancelled at once.
+    do {
+      let rig = Rig()
+      rig.installStartHold()
+      rig.startHold.arm()
+      rig.applyWithoutSettling([(A, true)])  // A's first start holds before the runtime
+      await rig.startHold.gate.entered()
+      rig.events.launched(A)  // at t = 0, during the ordinary start
+      await rig.advanceWithoutSettling(to: 0.5)  // the 0.5 s step fires while A is still starting
+      try demand(sameTimes(rig.clock.pendingDue, [1, 2, 4, 8]), "39g: setup: the burst is live: \(rig.clock.pendingDue)")
+      rig.world.appear(A, pids: [101, 102])
+      rig.startHold.gate.release()
+      await rig.settle()  // the start finds two processes
+      try demand(rig.state(A) == "failed" && rig.problem != nil, "39g: two processes is a problem: \(rig.describe(A))")
+      try demand(!rig.owed(A) && rig.clock.pending == 0, "39g: nothing owed, the burst cancelled: \(rig.describe(A))")
+      await rig.advance(to: 20)
+      try demand(sameTimes(rig.attemptTimes(A), [0.5]), "39g: no attempt after the failure: \(rig.describe(A))")
+      await rig.shutdown()
+    }
+  }
+
+  // 40. Switching off a failed lane: nothing is owed and nothing is scheduled, and later events attempt
+  //     nothing. The lane's state is what each kind of switch-off already does: a full delivery makes it idle
+  //     and clears its problem; a positions-only delivery leaves it as it was.
+  static func case40() async throws {
+    for full in [true, false] {
+      let label = full ? "40a full delivery" : "40b positions-only delivery"
+      let rig = Rig()
+      rig.world.appear(A, pids: [101, 102])
+      await rig.apply([(A, true), (B, true)])  // A failed; B waiting holds the listener
+      try demand(rig.state(A) == "failed" && rig.problem != nil, "\(label): setup: A failed: \(rig.describe(A))")
+      try demand(rig.events.listListenerInstalled, "\(label): setup: the listener is installed: \(rig.describe(B))")
+      if full { await rig.apply([(A, false), (B, true)]) } else { await rig.positions([(A, false), (B, true)]) }
+      if full {
+        try demand(rig.state(A) == "idle" && rig.problem == nil, "\(label): a failed lane switched off is idle with no problem: \(rig.describe(A))")
+      } else {
+        try demand(rig.state(A) == "failed", "\(label): the lane's state is unchanged: \(rig.describe(A))")
+      }
+      try demand(!rig.owed(A) && rig.clock.pending == 0, "\(label): nothing owed or scheduled: \(rig.describe(A))")
+      let a0 = rig.attempts(A)
+      await rig.listChanged(); await rig.launched(A); await rig.menuOpened()
+      try demand(rig.clock.pending <= 1 && !rig.owed(A), "\(label): later events give A no burst and no debt: \(rig.clock.pendingDue): \(rig.describe(A))")
+      await rig.advance(by: 30)
+      try demand(rig.attempts(A) == a0 && rig.clock.pending == 0, "\(label): no attempt after the switch-off: \(rig.describe(A))")
       await rig.shutdown()
     }
   }

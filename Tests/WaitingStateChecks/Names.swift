@@ -44,6 +44,9 @@ enum Product {
   /// Whether a wake-up is owed to the lane (false when there is no such lane).
   static func owed(_ controller: PlaybackController, _ id: UUID) -> Bool { controller.owedForTesting(id) }
 
+  /// The controller's own count of attempts to start a waiting lane, all lanes together (existing seam).
+  static func wakeAttempts(_ controller: PlaybackController) -> Int { controller.wakeAttemptsForTesting }
+
   static func activity(_ controller: PlaybackController, _ id: UUID) -> Activity {
     switch controller.laneActivities[id] {
     case .running?: .running
