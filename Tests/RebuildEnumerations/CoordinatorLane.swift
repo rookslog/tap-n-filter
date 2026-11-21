@@ -78,6 +78,10 @@ struct S5Result {
     var deliveryLog: [String] = []
     /// Steps that found nothing to act on, or an expected delivery missing by the step's end (observation only).
     var slow: [String] = []
+    /// Stop completions the sequence asked for with no stop held (counted only).
+    var noStopHeld = 0
+    /// The coordinator's diagnostic trace lines, stamped in milliseconds since the sequence began.
+    var traceLog: [String] = []
 }
 
 /// `saveDuringPowerOn` holds the activation refresh that follows the first power ON, lets the debounced
@@ -114,6 +118,8 @@ struct S5Result {
     let began = Date()
     var phase = "setup"
     func stamp() -> Int { Int(Date().timeIntervalSince(began) * 1000) }
+    // The coordinator's diagnostic trace, kept per sequence and printed only for red or late sequences.
+    coordinator.traceForTesting = { line in result.traceLog.append("\(stamp())ms \(line)") }
     _ = await coordinator.attachPlayback { snapshot, original, mode in       // as the App attaches playback
         defer { if let e = pending.last { result.deliveryLog.append("\(e)@\(stamp())ms(\(phase))") } }
         lastDelivered = (snapshot, original, mode)
@@ -128,14 +134,28 @@ struct S5Result {
         }
         lastPower = on
     }
+    /// Settles on the coordinator's own quiescence (refreshes, mutations, commits, editor reads), then the
+    /// controller's, unless a start or stop is or becomes held (controller quiescence waits for those). Done when
+    /// two passes in a row change nothing observable. The debounce gate is not part of either quiescence.
     func settle() async {
+        func signature() -> [Int] {
+            [trace.prepares, trace.outputStarts, trace.captureStops, trace.completions.count, trace.heldStarts, trace.heldStops, pending.count]
+        }
         var stable = 0
         for _ in 0..<60 {
-            let before = [trace.prepares, trace.outputStarts, trace.captureStops, trace.completions.count, trace.heldStarts, trace.heldStops, pending.count]
-            await f.quiet(rounds: 20)
-            if before == [trace.prepares, trace.outputStarts, trace.captureStops, trace.completions.count, trace.heldStarts, trace.heldStops, pending.count] {
-                stable += 1; if stable >= 2 { return }
-            } else { stable = 0 }
+            let before = signature()
+            let coordinatorQuiet = await watched("coordinator quiescent") { await coordinator.quiescent() } != nil
+            if trace.heldStarts == 0 && trace.heldStops == 0 {
+                let box = WatchBox<Bool>()
+                _ = await withCheckedContinuation { (c: CheckedContinuation<Bool?, Never>) in
+                    box.continuation = c
+                    trace.onHold = { _ = box.finish(false) }
+                    Task { @MainActor in await Seams.controllerQuiescent(controller); _ = box.finish(true) }
+                }
+                trace.onHold = nil
+            }
+            for _ in 0..<8 { await Task.yield() }
+            if coordinatorQuiet && before == signature() { stable += 1; if stable >= 2 { return } } else { stable = 0 }
         }
         result.notes.append("did not settle")
     }
@@ -209,7 +229,7 @@ struct S5Result {
             else { result.notes.append("step \(k): no start held"); result.slow.append("step=\(k) what=no-start-held@\(stamp())ms") }
         case .stopDone:
             if trace.releaseStop() { own = [.stopCompletes] } else {
-                result.notes.append("step \(k): no stop held"); result.slow.append("step=\(k) what=no-stop-held@\(stamp())ms")
+                result.notes.append("step \(k): no stop held"); result.noStopHeld += 1
             }
         case .returnEarlier:
             if let s = f.slider(on: startCard), let binding = startCard.binding, let startValue {
@@ -275,7 +295,7 @@ func s5Verdict(_ actions: [S5Action], _ r: S5Result) -> [String] {
     let slice = all.dropFirst(from).prefix(count)
     var result = SliceResult(suite: "S5", length: length, hold: hold, from: from, count: slice.count, total: all.count)
     let start = Date()
-    var reached = 0
+    var reached = 0, noStopHeld = 0
     var keys: [String: (Int, [S5Action])] = [:]
     for (offset, actions) in slice.enumerated() {
         let r = await runS5(actions, hold: hold)
@@ -301,8 +321,10 @@ func s5Verdict(_ actions: [S5Action], _ r: S5Result) -> [String] {
         if ProcessInfo.processInfo.environment["S5_VERBOSE"] != nil {
             print("RUN #\(from + offset) [\(text)] delivered [\(r.translated.map(\.description).joined(separator: " "))] sounds \(r.observation.outputStarts) final \(r.observation.finalState) notes \(r.notes + r.observation.notes)")
         }
+        noStopHeld += r.noStopHeld
         if !v.isEmpty || !r.lateTaken.isEmpty {
             print("ENUM-TIMES suite=S5 hold=\(hold) index=\(from + offset) deliveries=[\(r.deliveryLog.joined(separator: " "))]")
+            for line in r.traceLog { print("ENUM-TRACE suite=S5 hold=\(hold) index=\(from + offset) \(line)") }
         }
         if v.isEmpty { result.green += 1; continue }
         result.red += 1
@@ -318,6 +340,6 @@ func s5Verdict(_ actions: [S5Action], _ r: S5Result) -> [String] {
     for (k, value) in keys.sorted(by: { $0.value.0 > $1.value.0 }) {
         print("CAUSE S5 hold \(hold) \"\(k)\" \(value.0) first [\(value.1.map(\.description).joined(separator: " "))]")
     }
-    print("S5 L\(length) hold \(hold) slice \(from)+\(slice.count): order reached \(reached)")
+    print("S5 L\(length) hold \(hold) slice \(from)+\(slice.count): order reached \(reached), stop completions with no stop held \(noStopHeld)")
     return result
 }

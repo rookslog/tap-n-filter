@@ -107,16 +107,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-26]
+        os: [macos-15, macos-26]
         shard:
-          - { name: "g S5 hold 2 repeat 1", specs: "S5 5 2 0 2218" }
-          - { name: "g S5 hold 2 repeat 2", specs: "S5 5 2 0 2218" }
-          - { name: "g S5 hold 2 repeat 3", specs: "S5 5 2 0 2218" }
-          - { name: "g S5 hold 2 repeat 4", specs: "S5 5 2 0 2218" }
-          - { name: "g S5 hold 2 repeat 5", specs: "S5 5 2 0 2218" }
-          - { name: "g S5 hold 2 repeat 6", specs: "S5 5 2 0 2218" }
-          - { name: "g S5 hold 2 repeat 7", specs: "S5 5 2 0 2218" }
-          - { name: "g S5 hold 2 repeat 8", specs: "S5 5 2 0 2218" }
+          - { name: "S5 hold 0 run 1", specs: "S5 5 0 0 2218" }
+          - { name: "S5 hold 0 run 2", specs: "S5 5 0 0 2218" }
+          - { name: "S5 hold 0 run 3", specs: "S5 5 0 0 2218" }
+          - { name: "S5 hold 1 run 1", specs: "S5 5 1 0 2218" }
+          - { name: "S5 hold 1 run 2", specs: "S5 5 1 0 2218" }
+          - { name: "S5 hold 1 run 3", specs: "S5 5 1 0 2218" }
+          - { name: "S5 hold 2 run 1", specs: "S5 5 2 0 2218" }
+          - { name: "S5 hold 2 run 2", specs: "S5 5 2 0 2218" }
+          - { name: "S5 hold 2 run 3", specs: "S5 5 2 0 2218" }
 
     steps:
       - name: Check out
