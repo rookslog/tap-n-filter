@@ -1,0 +1,1053 @@
+{
+  "schema": 1,
+  "revision": 1,
+  "maxParameters": 7,
+  "maxBindings": 7,
+  "reservedKinds": [
+    7
+  ],
+  "parameters": [
+    {
+      "symbol": "FR_HP_HZ",
+      "id": 1,
+      "key": "highPassHz",
+      "range": [
+        20,
+        20000
+      ],
+      "unit": "Hz",
+      "conversion": "sampleRateCutoff",
+      "smoothing": "configurationFrames"
+    },
+    {
+      "symbol": "FR_LP_HZ",
+      "id": 2,
+      "key": "lowPassHz",
+      "range": [
+        20,
+        20000
+      ],
+      "unit": "Hz",
+      "conversion": "sampleRateCutoff",
+      "smoothing": "configurationFrames"
+    },
+    {
+      "symbol": "FR_WET_PERCENT",
+      "id": 3,
+      "key": "wetPercent",
+      "range": [
+        0,
+        100
+      ],
+      "unit": "%",
+      "conversion": "identity",
+      "smoothing": "configurationFrames"
+    },
+    {
+      "symbol": "FR_PREGAIN_DB",
+      "id": 4,
+      "key": "preGainDb",
+      "range": [
+        -80,
+        20
+      ],
+      "unit": "dB",
+      "conversion": "identity",
+      "smoothing": "configurationFrames"
+    },
+    {
+      "symbol": "FR_THRESHOLD_DB",
+      "id": 5,
+      "key": "thresholdDb",
+      "range": [
+        -40,
+        20
+      ],
+      "unit": "dB",
+      "conversion": "identity",
+      "smoothing": "configurationFrames"
+    },
+    {
+      "symbol": "FR_HEADROOM_DB",
+      "id": 6,
+      "key": "headroomDb",
+      "range": [
+        0.1,
+        40
+      ],
+      "unit": "dB",
+      "conversion": "identity",
+      "smoothing": "configurationFrames"
+    },
+    {
+      "symbol": "FR_EXPANSION_RATIO",
+      "id": 7,
+      "key": "expansionRatio",
+      "range": [
+        1,
+        50
+      ],
+      "unit": "",
+      "conversion": "identity",
+      "smoothing": "configurationFrames"
+    },
+    {
+      "symbol": "FR_EXPANSION_THRESHOLD_DB",
+      "id": 8,
+      "key": "expansionThresholdDb",
+      "range": [
+        -120,
+        0
+      ],
+      "unit": "dB",
+      "conversion": "identity",
+      "smoothing": "configurationFrames"
+    },
+    {
+      "symbol": "FR_ATTACK_SECONDS",
+      "id": 9,
+      "key": "attackSeconds",
+      "range": [
+        0.001,
+        0.2
+      ],
+      "unit": "s",
+      "conversion": "identity",
+      "smoothing": "configurationFrames"
+    },
+    {
+      "symbol": "FR_RELEASE_SECONDS",
+      "id": 10,
+      "key": "releaseSeconds",
+      "range": [
+        0.01,
+        3
+      ],
+      "unit": "s",
+      "conversion": "identity",
+      "smoothing": "configurationFrames"
+    },
+    {
+      "symbol": "FR_MAKEUP_DB",
+      "id": 11,
+      "key": "makeupDb",
+      "range": [
+        -40,
+        40
+      ],
+      "unit": "dB",
+      "conversion": "identity",
+      "smoothing": "configurationFrames"
+    },
+    {
+      "symbol": "FR_GAIN_DB",
+      "id": 12,
+      "key": "gainDb",
+      "range": [
+        -96,
+        6
+      ],
+      "unit": "dB",
+      "conversion": "identity",
+      "smoothing": "configurationFrames"
+    },
+    {
+      "symbol": "FR_ROOM_SIZE",
+      "id": 13,
+      "key": "roomSize",
+      "range": [
+        0,
+        1
+      ],
+      "unit": "",
+      "conversion": "presetRelativeSize",
+      "smoothing": "configurationFrames"
+    }
+  ],
+  "effects": [
+    {
+      "id": 1,
+      "type": "deviceEQ",
+      "symbol": "FR_DEVICE_EQ",
+      "strategy": "equalizer",
+      "component": {
+        "type": "aufx",
+        "subtype": "nbeq",
+        "manufacturer": "appl"
+      },
+      "presetKey": null,
+      "presets": [],
+      "bands": [
+        "highPass",
+        "lowPass"
+      ],
+      "knobs": [
+        {
+          "parameter": "highPassHz",
+          "optional": false,
+          "targets": [
+            {
+              "id": 3000,
+              "scope": 0,
+              "element": 0,
+              "units": [
+                8
+              ],
+              "range": [
+                20,
+                20000
+              ],
+              "readable": false,
+              "writable": true,
+              "band": 0
+            }
+          ]
+        },
+        {
+          "parameter": "lowPassHz",
+          "optional": false,
+          "targets": [
+            {
+              "id": 3001,
+              "scope": 0,
+              "element": 0,
+              "units": [
+                8
+              ],
+              "range": [
+                20,
+                20000
+              ],
+              "readable": false,
+              "writable": true,
+              "band": 1
+            }
+          ]
+        }
+      ],
+      "profiles": {
+        "everyday.v1": [
+          {
+            "key": "highPassHz",
+            "range": [
+              20,
+              20000
+            ],
+            "seed": 20,
+            "scale": "logarithmic",
+            "discrete": false
+          },
+          {
+            "key": "lowPassHz",
+            "range": [
+              20,
+              20000
+            ],
+            "seed": 20000,
+            "scale": "logarithmic",
+            "discrete": false
+          }
+        ],
+        "filters.v1": [
+          {
+            "key": "highPassHz",
+            "range": [
+              20,
+              20000
+            ],
+            "seed": 20,
+            "scale": "logarithmic",
+            "discrete": false
+          },
+          {
+            "key": "lowPassHz",
+            "range": [
+              20,
+              20000
+            ],
+            "seed": 20000,
+            "scale": "logarithmic",
+            "discrete": false
+          }
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "type": "deviceColour",
+      "symbol": "FR_DEVICE_COLOUR",
+      "strategy": "distortion",
+      "component": {
+        "type": "aufx",
+        "subtype": "dist",
+        "manufacturer": "appl"
+      },
+      "presetKey": "factoryPreset",
+      "presets": [
+        {
+          "id": 1,
+          "native": "AVAudioUnitDistortionPresetSpeechRadioTower"
+        },
+        {
+          "id": 2,
+          "native": "AVAudioUnitDistortionPresetSpeechGoldenPi"
+        }
+      ],
+      "bands": [],
+      "knobs": [
+        {
+          "parameter": "wetPercent",
+          "optional": false,
+          "targets": [
+            {
+              "id": 15,
+              "scope": 0,
+              "element": 0,
+              "units": [
+                3
+              ],
+              "range": [
+                0,
+                100
+              ],
+              "readable": false,
+              "writable": true,
+              "band": null
+            }
+          ]
+        },
+        {
+          "parameter": "preGainDb",
+          "optional": false,
+          "targets": [
+            {
+              "id": 14,
+              "scope": 0,
+              "element": 0,
+              "units": [
+                13
+              ],
+              "range": [
+                -80,
+                20
+              ],
+              "readable": false,
+              "writable": true,
+              "band": null
+            }
+          ]
+        }
+      ],
+      "profiles": {
+        "everyday.v1": [
+          {
+            "key": "wetPercent",
+            "range": [
+              0,
+              100
+            ],
+            "seed": 0,
+            "scale": "linear",
+            "discrete": false
+          },
+          {
+            "key": "preGainDb",
+            "range": [
+              -80,
+              20
+            ],
+            "seed": 0,
+            "scale": "linear",
+            "discrete": false
+          },
+          {
+            "key": "factoryPreset",
+            "range": [
+              1,
+              2
+            ],
+            "seed": 1,
+            "scale": "linear",
+            "discrete": true
+          }
+        ],
+        "filters.v1": [
+          {
+            "key": "wetPercent",
+            "range": [
+              0,
+              100
+            ],
+            "seed": 0,
+            "scale": "linear",
+            "discrete": false
+          },
+          {
+            "key": "preGainDb",
+            "range": [
+              -80,
+              20
+            ],
+            "seed": 0,
+            "scale": "linear",
+            "discrete": false
+          },
+          {
+            "key": "factoryPreset",
+            "range": [
+              1,
+              2
+            ],
+            "seed": 1,
+            "scale": "linear",
+            "discrete": true
+          }
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "type": "placeEQ",
+      "symbol": "FR_PLACE_EQ",
+      "strategy": "equalizer",
+      "component": {
+        "type": "aufx",
+        "subtype": "nbeq",
+        "manufacturer": "appl"
+      },
+      "presetKey": null,
+      "presets": [],
+      "bands": [
+        "lowPass"
+      ],
+      "knobs": [
+        {
+          "parameter": "lowPassHz",
+          "optional": false,
+          "targets": [
+            {
+              "id": 3000,
+              "scope": 0,
+              "element": 0,
+              "units": [
+                8
+              ],
+              "range": [
+                20,
+                20000
+              ],
+              "readable": false,
+              "writable": true,
+              "band": 0
+            }
+          ]
+        }
+      ],
+      "profiles": {
+        "everyday.v1": [
+          {
+            "key": "lowPassHz",
+            "range": [
+              20,
+              20000
+            ],
+            "seed": 20000,
+            "scale": "logarithmic",
+            "discrete": false
+          }
+        ],
+        "filters.v1": [
+          {
+            "key": "lowPassHz",
+            "range": [
+              20,
+              20000
+            ],
+            "seed": 20000,
+            "scale": "logarithmic",
+            "discrete": false
+          }
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "type": "reverb",
+      "symbol": "FR_REVERB",
+      "strategy": "reverb",
+      "component": {
+        "type": "aufx",
+        "subtype": "mrev",
+        "manufacturer": "appl"
+      },
+      "presetKey": "roomPreset",
+      "presets": [
+        {
+          "id": 1,
+          "native": "AVAudioUnitReverbPresetSmallRoom"
+        },
+        {
+          "id": 2,
+          "native": "AVAudioUnitReverbPresetMediumRoom"
+        },
+        {
+          "id": 3,
+          "native": "AVAudioUnitReverbPresetLargeRoom"
+        },
+        {
+          "id": 4,
+          "native": "AVAudioUnitReverbPresetLargeHall"
+        },
+        {
+          "id": 5,
+          "native": "AVAudioUnitReverbPresetCathedral"
+        }
+      ],
+      "bands": [],
+      "knobs": [
+        {
+          "parameter": "wetPercent",
+          "optional": false,
+          "targets": [
+            {
+              "id": 0,
+              "scope": 0,
+              "element": 0,
+              "units": [
+                3,
+                16
+              ],
+              "range": [
+                0,
+                100
+              ],
+              "readable": false,
+              "writable": true,
+              "band": null
+            }
+          ]
+        },
+        {
+          "parameter": "roomSize",
+          "optional": true,
+          "targets": [
+            {
+              "id": 2,
+              "scope": 0,
+              "element": 0,
+              "units": [
+                4
+              ],
+              "range": [
+                0.0001,
+                0.05
+              ],
+              "readable": true,
+              "writable": true,
+              "band": null
+            },
+            {
+              "id": 3,
+              "scope": 0,
+              "element": 0,
+              "units": [
+                4
+              ],
+              "range": [
+                0.005,
+                0.15
+              ],
+              "readable": true,
+              "writable": true,
+              "band": null
+            }
+          ]
+        }
+      ],
+      "profiles": {
+        "everyday.v1": [
+          {
+            "key": "wetPercent",
+            "range": [
+              0,
+              100
+            ],
+            "seed": 0,
+            "scale": "linear",
+            "discrete": false
+          },
+          {
+            "key": "roomPreset",
+            "range": [
+              1,
+              3
+            ],
+            "seed": 1,
+            "scale": "linear",
+            "discrete": true
+          }
+        ],
+        "filters.v1": [
+          {
+            "key": "wetPercent",
+            "range": [
+              0,
+              100
+            ],
+            "seed": 0,
+            "scale": "linear",
+            "discrete": false
+          },
+          {
+            "key": "roomPreset",
+            "range": [
+              1,
+              3
+            ],
+            "seed": 2,
+            "scale": "linear",
+            "discrete": true
+          }
+        ],
+        "quickMenu.v1": [
+          {
+            "key": "wetPercent",
+            "range": [
+              0,
+              100
+            ],
+            "seed": 0,
+            "scale": "linear",
+            "discrete": false
+          },
+          {
+            "key": "roomPreset",
+            "range": [
+              1,
+              3
+            ],
+            "seed": 1,
+            "scale": "linear",
+            "discrete": true
+          },
+          {
+            "key": "roomSize",
+            "range": [
+              0,
+              1
+            ],
+            "seed": 0.5,
+            "scale": "linear",
+            "discrete": false
+          }
+        ],
+        "unified.v1": [
+          {
+            "key": "wetPercent",
+            "range": [
+              0,
+              100
+            ],
+            "seed": 0,
+            "scale": "linear",
+            "discrete": false
+          },
+          {
+            "key": "roomPreset",
+            "range": [
+              1,
+              5
+            ],
+            "seed": 1,
+            "scale": "linear",
+            "discrete": true
+          },
+          {
+            "key": "roomSize",
+            "range": [
+              0,
+              1
+            ],
+            "seed": 0.5,
+            "scale": "linear",
+            "discrete": false
+          }
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "type": "dynamics",
+      "symbol": "FR_DYNAMICS",
+      "strategy": "effect",
+      "component": {
+        "type": "aufx",
+        "subtype": "dcmp",
+        "manufacturer": "appl"
+      },
+      "presetKey": null,
+      "presets": [],
+      "bands": [],
+      "knobs": [
+        {
+          "parameter": "thresholdDb",
+          "optional": false,
+          "targets": [
+            {
+              "id": 0,
+              "scope": 0,
+              "element": 0,
+              "units": [
+                13
+              ],
+              "range": [
+                -40,
+                20
+              ],
+              "readable": false,
+              "writable": true,
+              "band": null
+            }
+          ]
+        },
+        {
+          "parameter": "headroomDb",
+          "optional": false,
+          "targets": [
+            {
+              "id": 1,
+              "scope": 0,
+              "element": 0,
+              "units": [
+                13
+              ],
+              "range": [
+                0.1,
+                40
+              ],
+              "readable": false,
+              "writable": true,
+              "band": null
+            }
+          ]
+        },
+        {
+          "parameter": "expansionRatio",
+          "optional": false,
+          "targets": [
+            {
+              "id": 2,
+              "scope": 0,
+              "element": 0,
+              "units": [
+                7
+              ],
+              "range": [
+                1,
+                50
+              ],
+              "readable": false,
+              "writable": true,
+              "band": null
+            }
+          ]
+        },
+        {
+          "parameter": "expansionThresholdDb",
+          "optional": false,
+          "targets": [
+            {
+              "id": 3,
+              "scope": 0,
+              "element": 0,
+              "units": [
+                13
+              ],
+              "range": [
+                -120,
+                0
+              ],
+              "readable": false,
+              "writable": true,
+              "band": null
+            }
+          ]
+        },
+        {
+          "parameter": "attackSeconds",
+          "optional": false,
+          "targets": [
+            {
+              "id": 4,
+              "scope": 0,
+              "element": 0,
+              "units": [
+                4
+              ],
+              "range": [
+                0.001,
+                0.2
+              ],
+              "readable": false,
+              "writable": true,
+              "band": null
+            }
+          ]
+        },
+        {
+          "parameter": "releaseSeconds",
+          "optional": false,
+          "targets": [
+            {
+              "id": 5,
+              "scope": 0,
+              "element": 0,
+              "units": [
+                4
+              ],
+              "range": [
+                0.01,
+                3
+              ],
+              "readable": false,
+              "writable": true,
+              "band": null
+            }
+          ]
+        },
+        {
+          "parameter": "makeupDb",
+          "optional": false,
+          "targets": [
+            {
+              "id": 6,
+              "scope": 0,
+              "element": 0,
+              "units": [
+                13
+              ],
+              "range": [
+                -40,
+                40
+              ],
+              "readable": false,
+              "writable": true,
+              "band": null
+            }
+          ]
+        }
+      ],
+      "profiles": {
+        "everyday.v1": [
+          {
+            "key": "thresholdDb",
+            "range": [
+              -40,
+              20
+            ],
+            "seed": 20,
+            "scale": "linear",
+            "discrete": false
+          },
+          {
+            "key": "headroomDb",
+            "range": [
+              0.1,
+              40
+            ],
+            "seed": 40,
+            "scale": "linear",
+            "discrete": false
+          },
+          {
+            "key": "expansionRatio",
+            "range": [
+              1,
+              50
+            ],
+            "seed": 1,
+            "scale": "linear",
+            "discrete": false
+          },
+          {
+            "key": "expansionThresholdDb",
+            "range": [
+              -120,
+              0
+            ],
+            "seed": -120,
+            "scale": "linear",
+            "discrete": false
+          },
+          {
+            "key": "attackSeconds",
+            "range": [
+              0.0001,
+              0.2
+            ],
+            "seed": 0.001,
+            "scale": "linear",
+            "discrete": false
+          },
+          {
+            "key": "releaseSeconds",
+            "range": [
+              0.01,
+              3
+            ],
+            "seed": 0.18,
+            "scale": "linear",
+            "discrete": false
+          },
+          {
+            "key": "makeupDb",
+            "range": [
+              -40,
+              40
+            ],
+            "seed": 0,
+            "scale": "linear",
+            "discrete": false
+          }
+        ],
+        "filters.v1": [
+          {
+            "key": "thresholdDb",
+            "range": [
+              -40,
+              20
+            ],
+            "seed": 20,
+            "scale": "linear",
+            "discrete": false
+          },
+          {
+            "key": "headroomDb",
+            "range": [
+              0.1,
+              40
+            ],
+            "seed": 40,
+            "scale": "linear",
+            "discrete": false
+          },
+          {
+            "key": "expansionRatio",
+            "range": [
+              1,
+              50
+            ],
+            "seed": 1,
+            "scale": "linear",
+            "discrete": false
+          },
+          {
+            "key": "expansionThresholdDb",
+            "range": [
+              -120,
+              0
+            ],
+            "seed": -120,
+            "scale": "linear",
+            "discrete": false
+          },
+          {
+            "key": "attackSeconds",
+            "range": [
+              0.001,
+              0.2
+            ],
+            "seed": 0.08,
+            "scale": "linear",
+            "discrete": false
+          },
+          {
+            "key": "releaseSeconds",
+            "range": [
+              0.01,
+              3
+            ],
+            "seed": 0.65,
+            "scale": "linear",
+            "discrete": false
+          },
+          {
+            "key": "makeupDb",
+            "range": [
+              -40,
+              40
+            ],
+            "seed": 0,
+            "scale": "linear",
+            "discrete": false
+          }
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "type": "gain",
+      "symbol": "FR_GAIN",
+      "strategy": "gain",
+      "component": {
+        "type": "aufx",
+        "subtype": "nbeq",
+        "manufacturer": "appl"
+      },
+      "presetKey": null,
+      "presets": [],
+      "bands": [
+        "bypass"
+      ],
+      "knobs": [
+        {
+          "parameter": "gainDb",
+          "optional": false,
+          "targets": [
+            {
+              "id": 0,
+              "scope": 0,
+              "element": 0,
+              "units": [
+                13
+              ],
+              "range": [
+                -96,
+                6
+              ],
+              "readable": false,
+              "writable": true,
+              "band": null
+            }
+          ]
+        }
+      ],
+      "profiles": {
+        "everyday.v1": [
+          {
+            "key": "gainDb",
+            "range": [
+              -96,
+              6
+            ],
+            "seed": 0,
+            "scale": "linear",
+            "discrete": false
+          }
+        ],
+        "filters.v1": [
+          {
+            "key": "gainDb",
+            "range": [
+              -24,
+              6
+            ],
+            "seed": 0,
+            "scale": "linear",
+            "discrete": false
+          }
+        ]
+      }
+    }
+  ]
+}

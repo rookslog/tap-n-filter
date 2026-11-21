@@ -1,6 +1,7 @@
 #pragma once
 
 #include "include/FixedRender.h"
+#include "EffectCatalog.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -8,8 +9,6 @@
 #include <type_traits>
 
 namespace fixedrender {
-
-constexpr uint32_t MaxParameters = 7;
 
 struct PartState {
     FRPart spec{};
@@ -38,7 +37,8 @@ inline bool sameTopology(const FRToken &a, const FRToken &b) {
 }
 
 inline bool samePart(const FRPart &a, const FRPart &b) {
-    return a.key == b.key && a.kind == b.kind && a.preset == b.preset;
+    return a.key == b.key && a.kind == b.kind && a.preset == b.preset &&
+           a.parameter_mask == b.parameter_mask;
 }
 
 inline bool sameSchedule(const Snapshot &a, const Snapshot &b) {
@@ -77,46 +77,20 @@ inline bool sameConfig(const FRConfig &a, const FRConfig &b) {
            a.limiter_release_seconds == b.limiter_release_seconds;
 }
 
-inline uint32_t parameters(uint32_t kind, uint32_t *ids) {
-    switch (kind) {
-        case FR_DEVICE_EQ: ids[0] = FR_HP_HZ; ids[1] = FR_LP_HZ; return 2;
-        case FR_DEVICE_COLOUR: ids[0] = FR_WET_PERCENT; ids[1] = FR_PREGAIN_DB; return 2;
-        case FR_PLACE_EQ: ids[0] = FR_LP_HZ; return 1;
-        case FR_REVERB: ids[0] = FR_WET_PERCENT; return 1;
-        case FR_SIZED_REVERB: ids[0] = FR_WET_PERCENT; ids[1] = FR_ROOM_SIZE; return 2;
-        case FR_DYNAMICS:
-            ids[0] = FR_THRESHOLD_DB; ids[1] = FR_HEADROOM_DB;
-            ids[2] = FR_EXPANSION_RATIO; ids[3] = FR_EXPANSION_THRESHOLD_DB;
-            ids[4] = FR_ATTACK_SECONDS; ids[5] = FR_RELEASE_SECONDS;
-            ids[6] = FR_MAKEUP_DB; return 7;
-        case FR_GAIN: ids[0] = FR_GAIN_DB; return 1;
-        default: return 0;
-    }
+inline uint32_t parameters(const FRPart &part, uint32_t *ids) {
+    const auto *effect = effectContract(part.kind);
+    if (!effect || part.reserved || (part.parameter_mask & effect->requiredMask) != effect->requiredMask ||
+        (part.parameter_mask & ~effect->allowedMask)) return 0;
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < effect->knobCount; ++i)
+        if (part.parameter_mask & FR_PARAMETER_BIT(effect->knobs[i].id)) ids[count++] = effect->knobs[i].id;
+    return count;
 }
 
-inline bool valueBounds(uint32_t id, double sampleRate, float &low, float &high) {
-    switch (id) {
-        case FR_HP_HZ: case FR_LP_HZ:
-            low = 20; high = float(std::min(20000.0, sampleRate * 0.49)); break;
-        case FR_WET_PERCENT: low = 0; high = 100; break;
-        case FR_PREGAIN_DB: low = -80; high = 20; break;
-        case FR_THRESHOLD_DB: low = -40; high = 20; break;
-        case FR_HEADROOM_DB: low = 0.1f; high = 40; break;
-        case FR_EXPANSION_RATIO: low = 1; high = 50; break;
-        case FR_EXPANSION_THRESHOLD_DB: low = -120; high = 0; break;
-        case FR_ATTACK_SECONDS: low = 0.001f; high = 0.2f; break;
-        case FR_RELEASE_SECONDS: low = 0.01f; high = 3; break;
-        case FR_MAKEUP_DB: low = -40; high = 40; break;
-        case FR_GAIN_DB: low = -96; high = 6; break;
-        case FR_ROOM_SIZE: low = 0; high = 1; break;
-        default: return false;
-    }
+inline bool valueBounds(const KnobContract &knob, double sampleRate, float &low, float &high) {
+    low = knob.lower;
+    high = knob.conversion == Conversion::SampleRateCutoff ? float(std::min(double(knob.upper), sampleRate * 0.49)) : knob.upper;
     return true;
-}
-
-inline bool validValue(uint32_t id, float v, double sampleRate) {
-    float low = 0, high = 0;
-    return valueBounds(id, sampleRate, low, high) && range(v, low, high);
 }
 
 inline FRResult decode(const FRConfig &c, const FRProgram &p, const FRFrame &f,
@@ -140,11 +114,11 @@ inline FRResult decode(const FRConfig &c, const FRProgram &p, const FRFrame &f,
             if (p.parts[j].key == part.key) return FR_INVALID_PROGRAM;
         auto &state = out.parts[i];
         state.spec = part;
-        state.count = parameters(part.kind, state.ids);
+        state.count = parameters(part, state.ids);
         if (!state.count) return FR_INVALID_PROGRAM;
-        bool presetOK = (part.kind == FR_REVERB || part.kind == FR_SIZED_REVERB) ? part.preset >= 1 && part.preset <= 3 :
-                        part.kind == FR_DEVICE_COLOUR ? part.preset >= 1 && part.preset <= 2 :
-                        part.preset == 0;
+        const auto &effect = *effectContract(part.kind);
+        bool presetOK = !effect.presetCount && !part.preset;
+        for (uint32_t j = 0; j < effect.presetCount; ++j) presetOK |= effect.presets[j] == part.preset;
         if (!presetOK) return FR_INVALID_PROGRAM;
         expected += state.count;
         for (uint32_t j = 0; j < state.count; ++j) {
@@ -152,7 +126,9 @@ inline FRResult decode(const FRConfig &c, const FRProgram &p, const FRFrame &f,
             for (uint32_t k = 0; k < f.count; ++k) {
                 const auto &v = f.values[k];
                 if (v.key != part.key || v.parameter != state.ids[j]) continue;
-                if (!validValue(v.parameter, v.value, c.sample_rate)) return FR_INVALID_FRAME;
+                float low = 0, high = 0;
+                const auto *knob = knobContract(effect, v.parameter);
+                if (!knob || !valueBounds(*knob, c.sample_rate, low, high) || !range(v.value, low, high)) return FR_INVALID_FRAME;
                 state.values[j] = v.value;
                 used[k] = true;
                 ++matches;

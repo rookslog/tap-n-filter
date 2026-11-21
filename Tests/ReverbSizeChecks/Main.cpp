@@ -77,14 +77,14 @@ int main() {
     config.abi_version = FR_ABI_VERSION; config.channels = 2; config.maximum_frames = 512;
     config.sample_rate = 48000; config.transition_frames = 960; config.smoothing_frames = 480;
     config.parameter_quantum = 16; config.peak_ceiling = 0.95f; config.limiter_release_seconds = 0.08f;
-    FRProgram program{}; program.count = 1; program.parts[0] = {1, FR_SIZED_REVERB, 2};
+    FRProgram program{}; program.count = 1; program.parts[0] = {1, FR_REVERB, 2, FR_PARAMETER_BIT(FR_WET_PERCENT) | FR_PARAMETER_BIT(FR_ROOM_SIZE), 0};
     FRFrame frame{}; frame.token = {1, 1, 1, 1, 1}; frame.count = 2;
     frame.values[0] = {1, FR_WET_PERCENT, 8}; frame.values[1] = {1, FR_ROOM_SIZE, 0.5f};
     Snapshot initial, moved;
     assert(decode(config, program, frame, initial) == FR_OK);
     frame.values[1].value = 1;
     assert(decode(config, program, frame, moved) == FR_OK && sameSchedule(initial, moved));
-    for (uint32_t preset : {0u, 4u, 5u, 9u}) {
+    for (uint32_t preset : {0u, 6u, 7u, 9u}) {
         program.parts[0].preset = preset;
         assert(decode(config, program, frame, moved) == FR_INVALID_PROGRAM);
     }
@@ -94,7 +94,7 @@ int main() {
     frame.values[1].value = 0.5f;
     frame.count = 1;
     assert(decode(config, program, frame, moved) == FR_INVALID_FRAME);
-    program.parts[0].kind = FR_REVERB;
+    program.parts[0].parameter_mask = FR_PARAMETER_BIT(FR_WET_PERCENT);
     assert(decode(config, program, frame, moved) == FR_OK);
     frame.count = 2;
     assert(decode(config, program, frame, moved) == FR_INVALID_FRAME);

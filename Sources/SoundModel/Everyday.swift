@@ -1,9 +1,7 @@
 import Foundation
+import EffectCatalog
 
-enum BuiltinDistortionPreset: Double {
-    case speechRadioTower = 1
-    case speechGoldenPi = 2
-}
+typealias BuiltinDistortionPreset = SavedDistortionPreset
 
 enum ParameterDomain: Sendable {
     case linear(Double, Double)
@@ -48,42 +46,14 @@ struct Everyday: BuiltinSound {
         let device: ControlID = id(17)
         let softer: ControlID = id(18)
         let volume: ControlID = id(19)
-        let frequency = ParameterDomain.logarithmic(20, 20_000)
-        let gain = ParameterDomain.linear(-96, 6)
-        let wet = ParameterDomain.linear(0, 100)
-        let room = ParameterDomain.linear(1, 3)
-        let headroom = ParameterDomain.linear(0.1, 40)
-        let threshold = ParameterDomain.linear(-40, 20)
-        let recipes: [PartRecipe] = [
-            PartRecipe(
-                id: id(32), type: "deviceEQ",
-                parameters: [
-                ("highPassHz", frequency, 20), ("lowPassHz", frequency, 20_000),
-                ]),
-            PartRecipe(
-                id: id(33), type: "deviceColour",
-                parameters: [
-                    ("wetPercent", wet, 0), ("preGainDb", .linear(-80, 20), 0),
-                    ("factoryPreset", .linear(1, 2), BuiltinDistortionPreset.speechRadioTower.rawValue),
-                ]),
-            PartRecipe(id: id(34), type: "placeEQ", parameters: [("lowPassHz", frequency, 20_000)]),
-            PartRecipe(
-                id: id(35), type: "reverb",
-                parameters: [
-                    ("wetPercent", wet, 0), ("roomPreset", room, 1),
-                ]),
-            PartRecipe(
-                id: id(36), type: "dynamics",
-                parameters: [
-                ("thresholdDb", threshold, 20), ("headroomDb", headroom, 40),
-                    ("expansionRatio", .linear(1, 50), 1),
-                    ("expansionThresholdDb", .linear(-120, 0), -120),
-                    ("attackSeconds", .linear(0.0001, 0.2), 0.001),
-                    ("releaseSeconds", .linear(0.01, 3), 0.180),
-                    ("makeupDb", .linear(-40, 40), 0),
-                ]),
-            PartRecipe(id: id(37), type: "gain", parameters: [("gainDb", gain, 0)]),
-        ]
+        let recipeTypes = ["deviceEQ", "deviceColour", "placeEQ", "reverb", "dynamics", "gain"]
+        let recipes: [PartRecipe] = try recipeTypes.enumerated().map { index, type in
+            guard let effect = EffectCatalog.effect(type), let parameters = effect.profiles["everyday.v1"] else {
+                throw SoundModelError.invalidReference
+            }
+            return PartRecipe(id: id(UInt8(32 + index)), type: type,
+                parameters: parameters.map { ($0.key, $0.domain, $0.seed) })
+        }
         let placeOptions: [OptionID] = [id(64), id(65), id(66), id(67)]
         let deviceOptions: [OptionID] = [id(68), id(69), id(70), id(71)]
         let placeChoice = try Choice(options: placeOptions)

@@ -220,7 +220,7 @@ struct LibraryPayload: Equatable, Sendable, Codable {
             canonicalVersion = try c.decode(Int.self, forKey: .canonicalVersion)
             descendantDefaults = try c.decode([LibrarySavedPosition].self, forKey: .descendantDefaults)
         }
-        authored = (3...5).contains(canonicalVersion) ? try c.decode(LibraryAuthoredFields.self, forKey: .authored)
+        authored = (3...6).contains(canonicalVersion) ? try c.decode(LibraryAuthoredFields.self, forKey: .authored)
             : try c.decodeIfPresent(LibraryAuthoredFields.self, forKey: .authored) ?? .empty
     }
     func encode(to encoder: Encoder) throws {
@@ -262,7 +262,7 @@ struct LibraryRevision: Equatable, Sendable, Codable {
             canonicalVersion = try c.decode(Int.self, forKey: .canonicalVersion)
             descendantDefaults = try c.decode([LibrarySavedPosition].self, forKey: .descendantDefaults)
         }
-        authored = (3...5).contains(canonicalVersion) ? try c.decode(LibraryAuthoredFields.self, forKey: .authored)
+        authored = (3...6).contains(canonicalVersion) ? try c.decode(LibraryAuthoredFields.self, forKey: .authored)
             : try c.decodeIfPresent(LibraryAuthoredFields.self, forKey: .authored) ?? .empty
     }
     func encode(to encoder: Encoder) throws {

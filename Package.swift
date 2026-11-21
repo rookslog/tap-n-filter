@@ -23,13 +23,15 @@ let package = Package(
         .library(name: "UI", targets: ["UI"])
     ],
     targets: [
+        .target(name: "EngineCatalogCore", path: "Tests/EngineCatalogCore", publicHeadersPath: "include", cxxSettings: [.unsafeFlags(["-std=c++20"])]),
+        .testTarget(name: "EngineCatalogTests", dependencies: ["EngineCatalogCore", "EffectCatalog", "SoundModel", "SessionStore", "PlaybackRenderBridge", "PlaybackDSP"], path: "Tests/EngineCatalogChecks", exclude: ["Main.swift"], resources: [.copy("Fixtures")]),
         .target(name: "NativeTestSupport", path: "Tests/NativeTestSupport"),
         .executableTarget(name: "tnf-output-check", dependencies: ["PlaybackOutput", "Capture", "OutputGate", "PlaybackRenderBridge", "SoundModel"], path: "Tests/PlaybackOutputChecks"),
         // Diagnostic only, run by .github/workflows/eq-stress.yml: separates the
         // explanations for a one-off EQNode read-back failure on a hosted runner.
         .executableTarget(name: "tnf-eq-stress-probe", dependencies: ["Effects"], path: "Tests/EQStressProbe"),
         .target(name: "PlaybackDSP", dependencies: ["FixedRender"], publicHeadersPath: "include", cxxSettings: [.unsafeFlags(["-std=c++20"])]),
-        .target(name: "PlaybackRenderBridge", dependencies: ["SoundModel", "PlaybackDSP"], swiftSettings: [.unsafeFlags(["-swift-version", "6"])]),
+        .target(name: "PlaybackRenderBridge", dependencies: ["SoundModel", "PlaybackDSP", "EffectCatalog"], swiftSettings: [.unsafeFlags(["-swift-version", "6"])]),
         .target(name: "PlaybackOutput", dependencies: ["Capture", "OutputGate", "PlaybackDSP", "PlaybackRenderBridge", "PlaybackLifecycle", "PlaybackRuntime", "PlaybackRuntimeCaptureAdapters", "SoundModel", "FixedRender"], linkerSettings: [.linkedFramework("Accelerate")]),
         .target(name: "PlaybackLifecycle", dependencies: ["PlaybackRuntime", "SoundModel"]),
         .executableTarget(name: "tnf-playback-lifecycle-check", dependencies: ["PlaybackLifecycle", "PlaybackRuntime", "SoundModel"], path: "Tests/PlaybackLifecycleChecks"),
@@ -55,7 +57,8 @@ let package = Package(
         .target(name: "PlaybackRuntime", path: "Sources/PlaybackRuntime", swiftSettings: [.unsafeFlags(["-swift-version", "6"])]),
         .target(name: "PlaybackRuntimeCaptureAdapters", dependencies: ["PlaybackRuntime", "Capture"],
                 path: "Sources/PlaybackRuntimeCaptureAdapters", swiftSettings: [.unsafeFlags(["-swift-version", "6"])]),
-        .target(name: "SoundModel", path: "Sources/SoundModel"),
+        .target(name: "EffectCatalog", path: "Sources/EffectCatalog"),
+        .target(name: "SoundModel", dependencies: ["EffectCatalog"], path: "Sources/SoundModel"),
         .testTarget(name: "OptionControlTests", dependencies: ["SoundModel", "SessionStore", "EverydayMenu", "PlaybackRenderBridge"], path: "Tests/OptionControlChecks"),
         .testTarget(
             name: "SoundModelTests",

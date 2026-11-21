@@ -40,6 +40,20 @@ jobs:
           xcodebuild -version
           swift --version
 
+      # These checks have no SwiftPM target, so `swift test` does not run
+      # them. They run before the build so a stale generated catalog table
+      # fails fast.
+      - name: Check effect catalog is current
+        run: python3 tools/generate-effect-catalog.py --check
+
+      - name: Effect catalog generator tests
+        run: python3 Tests/EffectCatalogChecks/test_generator.py
+
+      - name: Reverb size checks
+        run: |
+          clang++ -std=c++20 Tests/ReverbSizeChecks/Main.cpp -o "$RUNNER_TEMP/reverb-size-check"
+          "$RUNNER_TEMP/reverb-size-check"
+
       - name: Build (Swift Package Manager)
         run: swift build -c debug
 

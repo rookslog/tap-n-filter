@@ -1,4 +1,5 @@
 import Foundation
+import EffectCatalog
 
 struct LibraryParameterDescriptor: Sendable {
     let key: ParameterKey
@@ -6,6 +7,7 @@ struct LibraryParameterDescriptor: Sendable {
     let seed: Double
     let unit: String
     let discrete: Bool
+    let nativeLower: Double
     var specification: LibraryValueSpecification {
         let lower: Double, upper: Double, scale: LibraryValueScale
         switch domain {
@@ -13,7 +15,7 @@ struct LibraryParameterDescriptor: Sendable {
         case .logarithmic(let a, let b): lower = a; upper = b; scale = .logarithmic
         }
         return LibraryValueSpecification(lower: lower, upper: upper,
-            minimumInput: key.rawValue == "attackSeconds" ? max(lower, 0.001) : lower,
+            minimumInput: max(lower, nativeLower),
             scale: scale, discrete: discrete)
     }
     func position(_ value: Double) throws -> Position {
@@ -29,34 +31,43 @@ struct LibraryPartDescriptor: Sendable {
         })
     }
 }
+extension EffectProfileParameter {
+    var domain: ParameterDomain { logarithmic ? .logarithmic(lower, upper) : .linear(lower, upper) }
+}
+
 extension LibraryProfiles {
-    static let authoringKinds = ["deviceEQ", "deviceColour", "placeEQ", "reverb", "dynamics", "gain"]
-    func descriptor(_ profile: String, type: String) throws -> LibraryPartDescriptor {
+    static let authoringKinds = EffectCatalog.effects.map(\.type)
+    func descriptor(_ profile: String, type: String, includingOptional: Bool = false) throws -> LibraryPartDescriptor {
         _ = try recipe(profile)
-        guard Self.authoringKinds.contains(type) || (profile == Self.quickMenu && type == "sizedReverb") else { throw LibraryError.unsupportedEdit }
-        let parameters: [(String, ParameterDomain, Double)]
-        if type == "sizedReverb" {
-            parameters = [("wetPercent", .linear(0, 100), 0), ("roomPreset", .linear(1, 3), 1), ("roomSize", .linear(0, 1), 0.5)]
-        } else if profile == Self.filters, ["deviceEQ", "reverb", "dynamics", "gain"].contains(type) {
-            parameters = try recipes.filters.authoringParameters(type: type)
-        } else {
-            parameters = try recipes.everyday.authoringParameters(type: type)
+        let legacySize = type == "sizedReverb" && profile == Self.quickMenu
+        guard let effect = EffectCatalog.effect(legacySize ? "reverb" : type) else { throw LibraryError.unsupportedEdit }
+        let domainName = legacySize ? "quickMenu.v1" : profile == Self.expandedReverb ? "unified.v1" :
+            profile == Self.filters ? "filters.v1" : "everyday.v1"
+        guard var parameters = effect.profiles[domainName] ?? effect.profiles["everyday.v1"] else { throw LibraryError.unsupportedEdit }
+        if includingOptional && !legacySize, let extra = effect.profiles["quickMenu.v1"] {
+            parameters += extra.filter { item in !parameters.contains { $0.key == item.key } }
         }
-        return LibraryPartDescriptor(type: type, parameters: try parameters.map { key, domain, seed in
-            let unit: String
-            if key.hasSuffix("Hz") { unit = "Hz" }
-            else if key.hasSuffix("Db") { unit = "dB" }
-            else if key.hasSuffix("Seconds") { unit = "s" }
-            else if key.hasSuffix("Percent") { unit = "%" }
-            else { unit = "" }
-            return LibraryParameterDescriptor(key: try ParameterKey(key), domain: domain, seed: seed, unit: unit,
-                discrete: key == "factoryPreset" || key == "roomPreset")
+        if !includingOptional && !legacySize {
+            let optional = Set(effect.parameters.filter(\.optional).map(\.key))
+            parameters.removeAll { optional.contains($0.key) }
+        }
+        return LibraryPartDescriptor(type: type, parameters: try parameters.map { parameter in
+            LibraryParameterDescriptor(key: try ParameterKey(parameter.key), domain: parameter.domain,
+                seed: parameter.seed, unit: effect.parameters.first { $0.key == parameter.key }?.unit ?? "",
+                discrete: parameter.discrete, nativeLower: effect.parameters.first { $0.key == parameter.key }?.lower ?? parameter.lower)
         })
     }
     func authoredCatalog(_ profile: String) throws -> [PartDescriptor] {
-        try (Self.authoringKinds + (profile == Self.quickMenu ? ["sizedReverb"] : [])).map {
-            let descriptor = try descriptor(profile, type: $0)
-            return PartDescriptor(type: $0, parameters: descriptor.parameters.map(\.key))
+        var result = try Self.authoringKinds.map { type in
+            let descriptor = try descriptor(profile, type: type)
+            let effect = EffectCatalog.effect(type)!
+            return PartDescriptor(type: type, parameters: descriptor.parameters.map(\.key),
+                optionalParameters: try effect.parameters.filter(\.optional).map { try ParameterKey($0.key) })
         }
+        if profile == Self.quickMenu {
+            let alias = try descriptor(profile, type: "sizedReverb")
+            result.append(PartDescriptor(type: alias.type, parameters: alias.parameters.map(\.key)))
+        }
+        return result
     }
 }

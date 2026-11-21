@@ -74,7 +74,7 @@ struct QuickMenuEveryday: BuiltinSound {
     }
 
     func nativeValue(type: String, parameter: ParameterKey, position: Position) throws -> Double {
-        if type == "sizedReverb" {
+        if type == "sizedReverb" || type == "reverb" {
             if parameter.rawValue == "roomSize" { return position.value }
             return try legacy.nativeValue(type: "reverb", parameter: parameter, position: position)
         }

@@ -1,4 +1,5 @@
 import Foundation
+import EffectCatalog
 
 struct Filters: BuiltinSound {
     let kind = BuiltinBlock.filters
@@ -12,32 +13,14 @@ struct Filters: BuiltinSound {
             EntityID(UUID(uuid: (0x54, 0x4E, 0x46, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, byte)))
         }
         root = id(3)
-        let frequency = ParameterDomain.logarithmic(20, 20_000)
-        let domains: [String: [String: ParameterDomain]] = [
-            "deviceEQ": ["highPassHz": frequency, "lowPassHz": frequency],
-            "reverb": ["wetPercent": .linear(0, 100), "roomPreset": .linear(1, 3)],
-            "dynamics": [
-                "thresholdDb": .linear(-40, 20), "headroomDb": .linear(0.1, 40),
-                "expansionRatio": .linear(1, 50), "expansionThresholdDb": .linear(-120, 0),
-                "attackSeconds": .linear(0.001, 0.2), "releaseSeconds": .linear(0.01, 3),
-                "makeupDb": .linear(-40, 40),
-            ],
-            "gain": ["gainDb": .linear(-24, 6)],
-        ]
+        let selected = ["deviceEQ", "reverb", "dynamics", "gain"]
+        let domains = Dictionary(uniqueKeysWithValues: EffectCatalog.effects.map { effect in
+            (effect.type, Dictionary(uniqueKeysWithValues: (effect.profiles["filters.v1"] ?? []).map { ($0.key, $0.domain) }))
+        })
         self.domains = domains
-        let seeds: [(String, [(String, Double)])] = [
-            ("deviceEQ", [("highPassHz", 20), ("lowPassHz", 20_000)]),
-            ("reverb", [("wetPercent", 0), ("roomPreset", 2)]),
-            (
-                "dynamics",
-                [
-                    ("thresholdDb", 20), ("headroomDb", 40), ("expansionRatio", 1),
-                    ("expansionThresholdDb", -120), ("attackSeconds", 0.080),
-                    ("releaseSeconds", 0.650), ("makeupDb", 0),
-                ]
-            ),
-            ("gain", [("gainDb", 0)]),
-        ]
+        let seeds = selected.map { type in
+            (type, (EffectCatalog.effect(type)?.profiles["filters.v1"] ?? []).map { ($0.key, $0.seed) })
+        }
         let defaults: [Double] = [0, 0, 0, 0.8, 0.4, 0]
         let controls: [SoundControl] = try (0..<6).map { i in
             let points: [Position]

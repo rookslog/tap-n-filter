@@ -422,13 +422,14 @@ extension SoundDocument {
         for (key, value) in content.listening[binding.root]?.values ?? [:] where !key.path.isEmpty { defaults[key] = value }
         let captured = defaults.sorted { $0.key.orderBytes.lexicographicallyPrecedes($1.key.orderBytes) }
             .map { LibrarySavedPosition(id: $0.key.control, value: $0.value, path: $0.key.path) }
-        let payload = LibraryPayload(profile: source.profile, block: block, presentation: source.presentation,
+        let capturedPayload = LibraryPayload(profile: source.profile, block: block, presentation: source.presentation,
             canonicalVersion: captured.isEmpty ? source.canonicalVersion : max(2, source.canonicalVersion), descendantDefaults: captured, authored: source.authored)
+        let payload = try capturedPayload.authoredReverb()
         try await settleWriter()
         guard matches(expected) else { throw LibraryError.staleBinding }
         var state = try owner(), candidate = content
         let target = try ApplicationKey(expected.target)
-        let definition = BlockDefinition(id: DefinitionID(), version: DefinitionVersionID(), name: name, content: block)
+        let definition = BlockDefinition(id: DefinitionID(), version: DefinitionVersionID(), name: name, content: payload.block)
         _ = try CompiledSound(payload: payload, root: RootUseID(), reference: definition.reference,
             context: state.metadata.context(profiles: state.profiles, limits: state.limits), listening: UseListeningState(positions: [:]))
         let record = try LibraryRevision(definition: definition, origin: "custom", payload: payload,
@@ -472,7 +473,8 @@ extension SoundDocument {
         state.metadata.heads[index].inTheMenu = visible
         return try await persist(content, metadata: state.metadata)
     }
-    private func createUnassigned(_ payload: LibraryPayload, name: String) async throws -> LibraryCreationResult {
+    private func createUnassigned(_ source: LibraryPayload, name: String) async throws -> LibraryCreationResult {
+        let payload = try source.authoredReverb()
         var state = try owner(), candidate = content
         let definition = BlockDefinition(id: DefinitionID(), version: DefinitionVersionID(), name: name, content: payload.block)
         let record = try LibraryRevision(definition: definition, origin: "custom", payload: payload, contentHash: payload.contentHash)

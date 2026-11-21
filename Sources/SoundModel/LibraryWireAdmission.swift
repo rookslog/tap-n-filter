@@ -40,7 +40,7 @@ enum LibraryWireAdmission {
         init?(stringValue: String) { self.stringValue = stringValue }
         init?(intValue: Int) { return nil }
     }
-    private indirect enum Shape {
+    private indirect enum Shape: Sendable {
         case value
         case record([String: Shape])
         case list(Shape)
@@ -224,6 +224,6 @@ enum LibraryWireAdmission {
         let values = try decoder.container(keyedBy: Key.self)
         let schema = try values.decode(Int.self, forKey: Key(stringValue: "schema")!)
         let mapping = schema >= 6
-        try archive(legacy: legacy, metadata: metadata, authoring: authoring).check(decoder, limits: decoder.userInfo[.libraryExpansion] as? LibraryExpansionLimits, mappings: mapping, optionIntent: schema >= 7, schema8: schema == 8)
+        try archive(legacy: legacy, metadata: metadata, authoring: authoring).check(decoder, limits: decoder.userInfo[.libraryExpansion] as? LibraryExpansionLimits, mappings: mapping, optionIntent: schema >= 7, schema8: schema >= 8)
     }
 }

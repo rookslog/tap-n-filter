@@ -118,7 +118,9 @@ extension SoundDocument {
         return libraryDigest(data + Data(String(state.liveGeneration).utf8))
     }
     func libraryPreviewUpdate(_ handle: LibraryEditHandle, generation: UInt64, places: [LibraryUpdatePlace], replacements: [LibraryOptionReplacement] = []) throws -> LibraryUpdatePreview {
-        let (edit, draft) = try editContext(handle, generation: generation)
+        let (edit, originalDraft) = try editContext(handle, generation: generation)
+        var draft = originalDraft
+        draft.payload = try draft.payload.authoredReverb()
         guard edit.gesture == nil else { throw LibraryError.unsupportedEdit }
         let state = try owner(), old = draft.base
         let roots = Set(places.map { RootUseID($0.use) })

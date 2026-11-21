@@ -18,6 +18,10 @@ struct TargetAddress: Hashable, Sendable {
 struct PartDescriptor: Sendable {
     let type: String
     let parameters: [ParameterKey]
+    var optionalParameters: [ParameterKey] = []
+    func admits(_ keys: Set<ParameterKey>) -> Bool {
+        Set(parameters).isSubset(of: keys) && keys.isSubset(of: Set(parameters + optionalParameters))
+    }
 }
 
 struct CompiledPart: Equatable, Sendable {
@@ -66,12 +70,12 @@ struct CompiledSound: Equatable, Sendable {
             }
         }
         let evaluatedListening = graph?.effective ?? listening
-        var descriptors: [String: Set<ParameterKey>] = [:]
+        var descriptors: [String: PartDescriptor] = [:]
         for descriptor in catalog {
             guard !descriptor.type.isEmpty, descriptors[descriptor.type] == nil,
                 Set(descriptor.parameters).count == descriptor.parameters.count
             else { throw SoundModelError.duplicateIdentity }
-            descriptors[descriptor.type] = Set(descriptor.parameters)
+            descriptors[descriptor.type] = descriptor
         }
         var parts: [CompiledPart] = []
         var targets: [TargetAddress: Position] = [:]
@@ -100,9 +104,9 @@ struct CompiledSound: Equatable, Sendable {
                     if defaults[key] == nil { defaults[key] = item.value }
                 }
             }
-            let localDescriptors: [String: Set<ParameterKey>]
+            let localDescriptors: [String: PartDescriptor]
             if let context, let profile {
-                localDescriptors = Dictionary(uniqueKeysWithValues: try ((payload?.canonicalVersion ?? 0) >= 3 ? context.profiles.authoredCatalog(profile) : context.profiles.catalog(profile)).map { ($0.type, Set($0.parameters)) })
+                localDescriptors = Dictionary(uniqueKeysWithValues: try ((payload?.canonicalVersion ?? 0) >= 3 ? context.profiles.authoredCatalog(profile) : context.profiles.catalog(profile)).map { ($0.type, $0) })
             } else { localDescriptors = descriptors }
             var controls: [ControlID: SoundControl] = [:]
             for original in block.controls {
@@ -178,10 +182,10 @@ struct CompiledSound: Equatable, Sendable {
                         retainedLegacyColour = try context.profiles.catalog(LibraryProfiles.legacyEveryday)
                             .contains { $0.type == part.type && Set($0.parameters) == Set(keys) }
                     } else { retainedLegacyColour = false }
-                    guard Set(keys) == required || retainedLegacyColour else { throw SoundModelError.incompleteParameters }
+                    guard required.admits(Set(keys)) || retainedLegacyColour else { throw SoundModelError.incompleteParameters }
                     let address = PartAddress(occurrence: Occurrence(root: root, path: path), part: part.id)
                     if let limits = context?.limits, parts.count >= limits.maximumParts { throw LibraryError.expansionExceeded }
-                    parts.append(CompiledPart(address: address, type: part.type))
+                    parts.append(CompiledPart(address: address, type: part.type == "sizedReverb" ? "reverb" : part.type))
                     if (payload?.canonicalVersion ?? 0) >= 3 && !retainedLegacyColour { authoredParts.insert(address) }
                     if payload?.authored.bypassed.contains(part.id) == true { bypassed.insert(address) }
                     if let profile { partProfiles[address] = profile }

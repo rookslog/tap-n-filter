@@ -170,7 +170,7 @@ extension SoundDocument {
         }
         let parts = try draft.payload.block.pieces.compactMap { piece -> LibraryEditPart? in
             guard case .part(let part) = piece else { return nil }
-            let spec = try state.profiles.descriptor(draft.payload.profile, type: part.type)
+            let spec = try state.profiles.descriptor(draft.payload.profile, type: part.type, includingOptional: true)
             let address = PartAddress(occurrence: Occurrence(root: root, path: []), part: part.id)
             let settings = try part.settings.map { setting -> LibraryEditSetting in
                 let target = TargetAddress(part: address, parameter: setting.key)
@@ -263,15 +263,16 @@ extension SoundDocument {
         var draft = try next(before), block = draft.payload.block, fields = draft.payload.authored
         var pieces = block.pieces, controls = block.controls, mappings = block.mappings, presentation = draft.payload.presentation
         var structural = draft.info.structural, payloadChanged = true
+        let initialPieces = pieces
         func direct(_ uuid: UUID) throws -> SoundPart {
-            guard let part = pieces.compactMap({ if case .part(let part) = $0, part.id.rawValue == uuid { return part }; return nil }).first else { throw LibraryError.unsupportedEdit }
+            guard let part = initialPieces.compactMap({ if case .part(let part) = $0, part.id.rawValue == uuid { return part }; return nil }).first else { throw LibraryError.unsupportedEdit }
             return part
         }
         switch command {
         case .mapping: throw LibraryError.unsupportedEdit
         case .setPhysical(let uuid, let name, let value):
             let part = try direct(uuid), key = try ParameterKey(name)
-            guard let descriptor = try owner().profiles.descriptor(draft.payload.profile, type: part.type).parameters.first(where: { $0.key == key }) else { throw LibraryError.unsupportedEdit }
+            guard let descriptor = try owner().profiles.descriptor(draft.payload.profile, type: part.type, includingOptional: true).parameters.first(where: { $0.key == key }) else { throw LibraryError.unsupportedEdit }
             let q = try descriptor.position(value)
             let sound = try compileDraft(before, listening: before.positions)
             guard let target = sound.unadjusted.first(where: { $0.key.part.occurrence.path.isEmpty && $0.key.part.part == part.id && $0.key.parameter == key }) else { throw LibraryError.unsupportedEdit }
@@ -280,7 +281,7 @@ extension SoundDocument {
             fields.adjustments.removeAll { $0.address.part == part.id && $0.address.parameter == key }
             fields.adjustments.append(LibraryAdjustment(address: LibrarySettingAddress(part: part.id, parameter: key), value: adjustment))
         case .addPart(let type, let index):
-            guard (0...pieces.count).contains(index) else { throw LibraryError.unsupportedEdit }
+            guard LibraryProfiles.authoringKinds.contains(type), (0...pieces.count).contains(index) else { throw LibraryError.unsupportedEdit }
             let part = try owner().profiles.descriptor(draft.payload.profile, type: type).seed()
             pieces.insert(.part(part), at: index); structural = true
         case .removePart(let uuid):
@@ -306,7 +307,7 @@ extension SoundDocument {
         case .showAtTop(let uuid, let name, let title):
             try libraryName(title)
             let part = try direct(uuid), key = try ParameterKey(name)
-            guard let descriptor = try owner().profiles.descriptor(draft.payload.profile, type: part.type).parameters.first(where: { $0.key == key }),
+            guard let descriptor = try owner().profiles.descriptor(draft.payload.profile, type: part.type, includingOptional: true).parameters.first(where: { $0.key == key }),
                   !descriptor.discrete, let setting = part.settings.first(where: { $0.key == key }) else { throw LibraryError.unsupportedEdit }
             if let control = controls.first(where: { control in
                 guard case .slider = control.face else { return false }
@@ -341,7 +342,7 @@ extension SoundDocument {
             } else { block = SoundBlock(pieces: pieces, controls: controls, mappings: mappings) }
             draft.payload = try draft.payload.replacing(block: block, presentation: presentation, fields: fields)
         }
-        draft.info = LibraryDraftInfo(id: draft.info.id, generation: draft.info.generation, structural: structural)
+        draft.info = LibraryDraftInfo(id: draft.info.id, generation: draft.info.generation, structural: structural || draft.payload.structurallyDiffers(from: before.payload))
         try validateDraft(draft, admit: context.admit)
         let inverse = patch(before, draft)
         if context.gesture != nil {
