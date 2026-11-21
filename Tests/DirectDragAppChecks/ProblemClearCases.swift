@@ -202,19 +202,36 @@ private final class UnitACounter: @unchecked Sendable {
         }
         return .gestureMove(gesture, identity, epoch, control.address, control.optionGesture, .scalar(value))
     }
-    /// Drag fixture: one drag whose first sample fails, leaving an apply problem; the failure ends the drag.
-    func failDrag(_ mark: String) async throws {
-        let gesture = UUID()
-        app.send(.beginMenuGesture(gesture))
-        flip.mark = mark; flip.failures = 1
-        let sample = try dragSample(gesture, 0.3)
-        let outcome = await live(sample)
-        flip.failures = 0
-        app.send(.endGesture)
-        await app.quiescent()
-        guard outcome == "failed", has(app.problem, mark) else {
-            throw UnitAMark(description: "setup: the drag sample did not fail (\(outcome), \(String(describing: app.problem)))")
+    /// Drag fixture: one failed choice click leaves an apply problem. It is not a drag, so no save is issued behind
+    /// the failure (a failed drag sample issues one that `quiescent()` does not wait for, and its barrier would land
+    /// in the next drag). The click's mutation barrier cleared the position context and slider eligibility, and a
+    /// failed mutation does not refresh, so one direct positions refresh reinstalls them before the next drag.
+    func failClickThenRefresh(_ mark: String) async throws {
+        let card = try card()
+        guard let identity = card.menuIdentity, let epoch = card.menuEpoch,
+              let control = card.controls.first(where: { if case .choice = $0.face { return true }; return false }),
+              case .choice(let options) = control.face, let option = options.last else {
+            throw UnitAMark(description: "setup: no choice control with a menu identity on the Everyday card")
         }
+        flip.mark = mark; flip.failures = 1
+        let outcome = await live(.menuMove(identity, epoch, control.address, control.optionGesture, .scalar(option.position)))
+        flip.failures = 0
+        guard outcome == "failed", has(app.problem, mark) else {
+            throw UnitAMark(description: "setup: the choice click did not fail (\(outcome), \(String(describing: app.problem)))")
+        }
+        _ = await app.coordinator.refresh(mode: .positions)
+        await app.quiescent()
+    }
+    /// The coordinator state the optimised live path needs for the slider, for setup diagnostics.
+    func liveReadiness() throws -> (ready: Bool, detail: String) {
+        let card = try card(), control = try sliderControl(), binding = try binding()
+        let eligible = app.coordinator.sliderCanCoalesce(control.address, expected: binding, optionGesture: control.optionGesture)
+        let plan = app.presentation?.parameterPlans.first {
+            $0.identity == card.menuIdentity && $0.address == control.address && $0.option == control.optionGesture
+        }
+        let context = app.coordinator.positionContext != nil, lease = plan?.lease.isValid == true, dragging = app.coordinator.isDragging
+        return (context && eligible && lease && dragging,
+                "context=\(context) eligible=\(eligible) plan=\(plan != nil) lease=\(lease) dragging=\(dragging)")
     }
 
     /// Sends one live action, waits for its completion or failure callback, then for quiescence.
@@ -510,25 +527,33 @@ enum ProblemClearCases {
     /// for no save and no refresh (the drag's end does both).
     @MainActor static func p7LiveDragSampleClearsApply() async throws {
         let f = try await UnitAFixture.make(drag: true)
-        try await f.failDrag("UNIT-A-P7")
+        try await f.failClickThenRefresh("UNIT-A-P7")
         let gesture = UUID()
         f.app.send(.beginMenuGesture(gesture))
+        let readiness = try f.liveReadiness()
         let sample = try f.dragSample(gesture, 0.42)
-        let evaluated = UnitAReply()
-        f.app.coordinator.perfParameterEvaluated = { _, _ in evaluated.finish("live") }
+        // `perfParameterEvaluated` fires only just before `applyLive` returns `.live`; every other slider arm calls
+        // `perfMutationCompleted` or `perfMutationFailed`, so a wrong path is reported at once, not after the deadline.
+        let path = UnitAReply()
+        f.app.coordinator.perfParameterEvaluated = { _, _ in path.finish("live") }
+        f.app.perfMutationCompleted = { mutation in path.finish("ordinary path, \(mutation)") }
+        f.app.perfMutationFailed = { path.finish("failed") }
         let before = f.notifications, reads = f.reads.value, delays = f.delays.value, writes = await f.port.writes
         f.app.send(sample)
-        let path = await evaluated.value()
-        f.app.coordinator.perfParameterEvaluated = nil
-        let cleared = await f.observer.waitForClear(since: before)
+        let taken = await path.value()
+        let live = taken == "live"
+        var cleared = false
+        if live { cleared = await f.observer.waitForClear(since: before) }
         // A refresh or save request would start within a few main-actor turns; quiescence is not awaited mid-drag.
         for _ in 0..<50 { await Task.yield() }
         let readsAfter = f.reads.value, delaysAfter = f.delays.value, writesAfter = await f.port.writes
-        check(path == "live", "P7a", "setup: the sample took the optimised live path: \(path)")
-        check(cleared && f.problem == nil, "P7b",
-            "a .live drag sample clears the apply problem and the menu is told: cleared=\(cleared) problem=\(String(describing: f.problem))")
-        check(readsAfter == reads && delaysAfter == delays && writesAfter == writes, "P7c",
-            "the .live arm requests no refresh and no save: reads \(reads)->\(readsAfter) checkpoint delays \(delays)->\(delaysAfter) writes \(writes)->\(writesAfter)")
+        f.app.coordinator.perfParameterEvaluated = nil; f.app.perfMutationCompleted = nil; f.app.perfMutationFailed = nil
+        // P7b and P7c count only on the live path: on any other path they would pass or fail for the wrong reason.
+        check(readiness.ready && live, "P7a", "setup: ready for the live path and the sample took it: \(readiness.detail) path=\(taken)")
+        check(live && cleared && f.problem == nil, "P7b",
+            "a .live drag sample clears the apply problem and the menu is told: path=\(taken) cleared=\(cleared) problem=\(String(describing: f.problem))")
+        check(live && readsAfter == reads && delaysAfter == delays && writesAfter == writes, "P7c",
+            "the .live arm requests no refresh and no save: path=\(taken) reads \(reads)->\(readsAfter) checkpoint delays \(delays)->\(delaysAfter) writes \(writes)->\(writesAfter)")
         f.app.send(.endGesture)
         await f.app.quiescent()
     }
@@ -537,9 +562,10 @@ enum ProblemClearCases {
     /// so nothing else in the sequence may clear it; a clear by the coalesced arm shows as a notification seeing nil.
     @MainActor static func p8CoalescedSampleKeepsApply() async throws {
         let f = try await UnitAFixture.make(drag: true)
-        try await f.failDrag("UNIT-A-P8-FIRST")
+        try await f.failClickThenRefresh("UNIT-A-P8-FIRST")
         let gesture = UUID()
         f.app.send(.beginMenuGesture(gesture))
+        let readiness = try f.liveReadiness()
         let first = try f.dragSample(gesture, 0.2), replaced = try f.dragSample(gesture, 0.25), last = try f.dragSample(gesture, 0.3)
         var coalesced = 0, failed = 0
         let done = UnitAReply()
@@ -558,8 +584,8 @@ enum ProblemClearCases {
         await f.app.quiescent()
         let sawClear = f.observer.seen.dropFirst(before).contains { $0 == nil }
         check(coalesced == 1 && outcome == "two failures", "P8a",
-            "setup: one sample coalesced and the two around it failed: coalesced=\(coalesced) outcome=\(outcome) failed=\(failed)")
-        check(!sawClear && f.problem != nil, "P8b",
+            "setup: one sample coalesced and the two around it failed: coalesced=\(coalesced) outcome=\(outcome) failed=\(failed) \(readiness.detail)")
+        check(coalesced == 1 && !sawClear && f.problem != nil, "P8b",
             "a .coalesced drag sample does not clear the apply problem: sawClear=\(sawClear) problem=\(String(describing: f.problem))")
     }
 
