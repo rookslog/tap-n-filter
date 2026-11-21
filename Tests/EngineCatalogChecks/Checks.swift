@@ -150,7 +150,11 @@ enum EngineCatalogChecks {
 
     static func persistence(_ directory: URL) async throws {
         let profiles = try LibraryProfiles(), quick = try QuickMenuEveryday()
-        var source = try LibraryArchive.initial(profiles: profiles, builtins: .quickMenu)
+        // An old Quick Menu library holds only the two sounds it shipped with, at schema 8.
+        let fresh = try LibraryArchive.initial(profiles: profiles, builtins: .quickMenu)
+        let shipped = try fresh.revisions.filter { [quick.definition.id, try Filters().definition.id].contains($0.definition.id) }
+        var source = LibraryArchive(format: fresh.format, schema: 8, commit: fresh.commit, provenance: fresh.provenance,
+            revisions: shipped, heads: shipped.map { LibraryDefinitionRecord($0) }, uses: [], assignments: [], enabled: false)
         let old = source.revisions[0]
         let custom = BlockDefinition(id: DefinitionID(), version: DefinitionVersionID(), name: "Old custom", content: old.payload.block)
         let customRecord = LibraryRevision(definition: custom, origin: "custom", payload: old.payload, contentHash: old.contentHash)

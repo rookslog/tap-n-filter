@@ -371,11 +371,14 @@ struct TNFEditorQuickBar: View {
         switch definition.builtin {
         case .everyday: return Color(tnfPortHex: 0x30B0C7)
         case .filters: return Color(tnfPortHex: 0x0A84FF)
+        case .bigSpace: return Color(nsColor: .systemIndigo)
+        case .oldRecording: return Color(nsColor: .systemBrown)
+        case .underwater: return Color(nsColor: .systemMint)
         case nil: return Color(nsColor: .systemPurple)
         }
     }
     func symbol(_ definition: LibraryDefinitionSummary) -> String {
-        switch definition.builtin { case .everyday: return "cup.and.saucer.fill"; case .filters: return "slider.horizontal.3"; case nil: return "" }
+        switch definition.builtin { case .everyday: return "cup.and.saucer.fill"; case .filters: return "slider.horizontal.3"; case .bigSpace: return "building.columns"; case .oldRecording: return "hourglass"; case .underwater: return "water.waves"; case nil: return "" }
     }
     func targetBound(_ mapping: LibraryMappingSummary, upper: Bool) -> String {
         switch mapping.target {

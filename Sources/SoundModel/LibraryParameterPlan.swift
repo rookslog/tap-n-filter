@@ -157,7 +157,7 @@ extension SoundDocument {
                   let owned = metadata.owned.first(where: { $0.use.id.rawValue == assignment.use }),
                   owned.draft == nil, state.drafts[.use(owned.use.id)] == nil,
                   let record = metadata.revisions.first(where: { $0.definition.reference == owned.use.definition }), record.origin == "builtin",
-                  record.definition.reference == state.profiles.quickMenuRecipe.definition.reference || record.definition.reference == state.profiles.recipes.filters.definition.reference else { continue }
+                  state.profiles.isCurrentMenuBuiltin(record) else { continue }
             let listening = content.listening[owned.use.id] ?? UseListeningState(positions: [:])
             let sound = try metadata.compile(root: owned.use.id, listening: listening, profiles: state.profiles, limits: state.limits)
             let graph = try MappingEvaluation(payload: record.payload, root: owned.use.id,

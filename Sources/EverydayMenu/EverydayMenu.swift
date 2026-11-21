@@ -383,6 +383,7 @@ public final class EverydayMenu: NSObject, NSMenuDelegate {
             extra: block.controls.filter { $0.placement == .more }.count,
             expanded: state.more.contains(assignment.id)) + (assignment.heldHelp.isEmpty ? 0 : 22)
             + state.folds.visibleTabHeight(on: assignment, expanded: state.more.contains(assignment.id))
+            + state.folds.visibleTabStackedHeight(on: assignment, expanded: state.more.contains(assignment.id))
     }
 
     private func resize() {

@@ -6,6 +6,10 @@ struct LibraryProfiles: Sendable {
     static let expandedReverb = "tnf.native.expanded-reverb.v1"
     static let quickMenu = "tnf.native.quick-menu.v1"
     static let filters = "tnf.native.filters.v1"
+    static let bigSpace = "tnf.native.big-space.v1"
+    static let oldRecording = "tnf.native.old-recording.v1"
+    static let underwater = "tnf.native.underwater.v1"
+    static let newSoundProfiles: Set<String> = [bigSpace, oldRecording, underwater]
     static let legacyEveryday = "tnf.native.everyday-legacy.v1"
     let recipes: BuiltinSounds
     let quickMenuRecipe: QuickMenuEveryday
@@ -17,12 +21,24 @@ struct LibraryProfiles: Sendable {
         case Self.everyday, Self.legacyEveryday, Self.expandedReverb: return recipes.all[0]
         case Self.filters: return recipes.all[1]
         case Self.quickMenu: return quickMenuRecipe
+        case Self.bigSpace: return recipes.bigSpace
+        case Self.oldRecording: return recipes.oldRecording
+        case Self.underwater: return recipes.underwater
         default: throw LibraryError.unknownProfile(profile)
         }
     }
     func profile(for definition: BlockDefinition) throws -> String {
         let recipe = try recipes.recipe(id: definition.id)
         if definition.id == recipes.all[0].definition.id, definition.version == quickMenuRecipe.definition.version { return Self.quickMenu }
+        if definition.reference == recipe.definition.reference {
+            switch recipe.kind {
+            case .bigSpace: return Self.bigSpace
+            case .oldRecording: return Self.oldRecording
+            case .underwater: return Self.underwater
+            case .everyday, .filters: break
+            }
+        }
+        guard recipe.kind == .everyday || recipe.kind == .filters else { throw LibraryError.unsupportedLegacy }
         // Only the explicitly archived shipped revisions are accepted, not a generic custom v1.
         let allowed: Set<UInt8> = recipe.kind == .everyday ? [2, 4, 5, 6] : [4, 5, 6]
         let prefix: UInt8 = recipe.kind == .everyday ? 1 : 2
@@ -37,6 +53,15 @@ struct LibraryProfiles: Sendable {
     }
     func catalog(_ profile: String) throws -> [PartDescriptor] {
         let recipe = try recipe(profile)
+        if Self.newSoundProfiles.contains(profile) {
+            return try recipe.definition.content.pieces.compactMap { piece -> PartDescriptor? in
+                guard case .part(let part) = piece else { return nil }
+                return PartDescriptor(type: part.type, parameters: try part.settings.map { try ParameterKey($0.key.rawValue) },
+                    optionalParameters: try part.settings.filter { setting in
+                        EffectCatalog.effect(part.type)?.parameters.first { $0.key == setting.key.rawValue }?.optional == true
+                    }.map { try ParameterKey($0.key.rawValue) })
+            }
+        }
         var types = Set(recipe.definition.content.pieces.compactMap { piece -> String? in
             if case .part(let part) = piece { return part.type }; return nil
         })
@@ -85,6 +110,11 @@ struct LibraryProfiles: Sendable {
             return LibraryControl(id: old.id, title: old.title, face: authoredFace,
                                   placement: old.placement, readout: readout)
         }
+    }
+    func isCurrentMenuBuiltin(_ record: LibraryRevision) -> Bool {
+        guard record.origin == "builtin", (try? profile(for: record.definition)) == record.payload.profile else { return false }
+        return record.definition.reference == quickMenuRecipe.definition.reference
+            || recipes.withMenuSounds.dropFirst().contains { $0.definition.reference == record.definition.reference }
     }
     func validate(_ payload: LibraryPayload, root: RootUseID) throws {
         try payload.validateCanonical()

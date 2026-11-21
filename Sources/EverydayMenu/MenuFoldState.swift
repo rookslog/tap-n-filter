@@ -51,6 +51,14 @@ struct MenuFoldState {
                         carriesChildren: control.optionChildren[option.id]?.isEmpty == false)
     }
 
+    /// Height the open trays add because a row's label sits above its slider (see `MenuSoundOptionTab.stacksLabel`).
+    func visibleTabStackedHeight(on card: MenuSoundCard, expanded: Bool) -> Double {
+        card.optionTabs.filter { tab in
+            guard let key = card.foldKey(tab.parent), isOpen(key, option: tab.option.id) else { return false }
+            return card.controls.contains { $0.address == tab.parent && ($0.placement == .primary || expanded) }
+        }.reduce(0) { $0 + $1.stackedHeight }
+    }
+
     func visibleTabHeight(on card: MenuSoundCard, expanded: Bool) -> Double {
         card.optionTabs.filter { tab in
             guard let key = card.foldKey(tab.parent), isOpen(key, option: tab.option.id) else { return false }
