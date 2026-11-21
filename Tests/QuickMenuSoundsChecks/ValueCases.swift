@@ -111,7 +111,10 @@ extension QuickMenuSoundsChecks {
             let name = table.presetName(preset.type, n.value(preset.type, key))
             if name != preset.native { problems.append("\(preset.type) preset \(name ?? QMS.describe(n.value(preset.type, key))), spec \(preset.native)") }
         }
-        if spec.sizeHalf, let size = n.value("reverb", "roomSize"), !QMS.near(size, 0.5) { problems.append("reverb roomSize=\(size), spec 0.5") }
+        if spec.sizeHalf {
+            let size = n.value("reverb", "roomSize")
+            if !QMS.near(size, 0.5) { problems.append("reverb roomSize=\(QMS.describe(size)), spec 0.5 (required)") }
+        }
         for type in spec.neutral { problems += n.neutralProblems(type) }
         if spec.dynamicsOff { for part in n.all("dynamics") { problems += n.dynamicsOffProblems(part) } }
         else if let ratio = n.value("dynamics", "expansionRatio"), !QMS.near(ratio, 1) { problems.append("dynamics expansion ratio \(ratio)") }
@@ -236,6 +239,20 @@ extension QuickMenuSoundsChecks {
         for name in QMS.newNames { try await s.select(name, on: "engine." + name.replacingOccurrences(of: " ", with: "-").lowercased()) }
         for (type, native) in [("reverb", reverb + "LargeHall"), ("reverb", reverb + "Cathedral"), ("reverb", reverb + "LargeRoom"), ("deviceColour", radio)] {
             r.check(c.table.effects[type]?.presets.values.contains(native) == true, "engine table lists \(native)")
+        }
+        // The values each sound asks for, before any clamping, lie inside the table's range. The range
+        // check further down reads delivered values, which the model has already clamped, so on its own it
+        // cannot see an over-range request; group 4 holds delivered equal to these requested values, and
+        // group 10 holds the gain Volume adds. A value sitting exactly on a range end (Surface's 20 kHz)
+        // cannot be told apart from a clamped over-range request without the model's pre-clamp value.
+        for spec in values {
+            for row in spec.rows {
+                guard let entry = EffectCatalog.effect(row.type)?.parameters.first(where: { $0.key == row.key }) else {
+                    r.fail("\(spec.label): \(row.type).\(row.key) is a table knob"); continue
+                }
+                let outside = row.at.filter { !($0 >= entry.lower - 1e-9 && $0 <= entry.upper + 1e-9) }
+                r.check(outside.isEmpty, "\(spec.label): requested \(row.type).\(row.key) \(row.at) inside the table's \(entry.lower)…\(entry.upper)")
+            }
         }
         let format = try RenderProcessingFormat(sampleRate: 48_000, channels: 2, maximumFrames: 512)
         for spec in values {

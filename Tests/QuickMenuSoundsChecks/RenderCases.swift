@@ -157,8 +157,14 @@ extension QuickMenuSoundsChecks {
         let surface = try QMSRender.measure(try await parts(nil, 0), steady)
         let original = QMSRender.bands(steady, from: Int(0.5 * QMSRender.rate), to: steady.count,
                                        [QMSRender.low, QMSRender.mid, QMSRender.high, QMSRender.upperMid])
-        let differences = [0, 1, 3].map { 10 * log10(surface.bands[$0] / original[$0]) }
-        r.note("rendered Underwater Surface minus input, dB (low, mid, upper mid): \(differences)")
-        r.check(differences.allSatisfy { abs($0) <= 0.5 }, "rendered Underwater Surface is the original sound within 0.5 dB \(differences)")
+        // All four bands, the high band (5-16 kHz) included. This is what Surface does today, and it is
+        // not exact passthrough: the place low-pass stays in the chain at its 20 kHz end, a second-order
+        // filter whose loss inside 5-16 kHz stays well under 0.5 dB and grows above 16 kHz, which no band
+        // here measures. Whether Surface should bypass that filter is a listening question.
+        let differences = [0, 1, 3, 2].map { 10 * log10(surface.bands[$0] / original[$0]) }
+        r.note("rendered Underwater Surface minus input, dB (low, mid, upper mid, high): \(differences)")
+        r.check(differences.allSatisfy { abs($0) <= 0.5 },
+                "rendered Underwater Surface is the original sound within 0.5 dB in every band to 16 kHz \(differences)")
+        r.check(differences[3] <= 0.05, "rendered Underwater Surface is never brighter than the input in the high band (\(differences[3]) dB)")
     }
 }

@@ -22,8 +22,9 @@ C2  baseline  Everyday's and Filters' frames are the same set as the baseline, w
     frames    (extra) every Everyday and Filters index record equals the baseline's.
     pngs      (extra, --pngs) every Everyday and Filters PNG is byte-identical to the baseline's.
 
-Coverage guard: the new index must hold the open cards the two faults appeared on, and at least
-one tray track and one option control, so a renderer that drops them cannot pass.
+Coverage guard: the new index must hold the open cards the two faults appeared on and at least one
+option control, and every open card must carry its own tray track (every folded card none), so a
+renderer that drops them cannot pass.
 
 Prints one PASS/FAIL line per check, with each offending frame, and exits 1 on any FAIL.
 """
@@ -80,8 +81,14 @@ def main():
     report.check("coverage: the new index holds the open cards, tray tracks and option controls",
                  f"{len(new)} new-sound frames",
                  [f"missing {name}" for name in REQUIRED_NEW_FRAMES if name not in names]
-                 + ([] if any(trays(f) for f in new) else ["no tray slider track"])
                  + ([] if any(f.get("segmentedControls") for f in new) else ["no option control"]))
+
+    # Per card: an open card's tray holds its slider track, and a folded card shows none. One card
+    # with a track cannot cover another whose open tray lost it.
+    report.check("trays: every open card has a tray track and every folded card has none",
+                 f"{len(every)} frames",
+                 [f"{f['file']}: open, but no tray slider track" for f in every if "-open-" in f["file"] and not trays(f)]
+                 + [f"{f['file']}: folded, but shows tray tracks {trays(f)}" for f in every if "-folded-" in f["file"] and trays(f)])
 
     report.check("C1 literal: content no wider than the fixed card width",
                  f"{len(every)} frames",
