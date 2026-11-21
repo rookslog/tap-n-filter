@@ -1,0 +1,123 @@
+name: EQ stress probe
+
+# Manual diagnostic. A hosted macOS 26 run once read EQNode's `lp.frequency`
+# back as 57.79931 instead of 800 in the first test case that read a fresh
+# node's values, and a re-run passed. This workflow runs `tnf-eq-stress-probe` (Tests/EQStressProbe)
+# on hosted runners to tell the candidate explanations apart. It never runs on
+# push or pull_request, and it is not a required check.
+#
+# Each probe line is key=value. FIRST is always printed for iteration 0 (the
+# cold sample), FAIL once per mismatch, SUMMARY once per arm. The job fails
+# only when an arm reproduced a mismatch or the probe itself broke, so a red
+# run means "reproduced", not "CI is broken".
+on:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: "Fresh processes per arm for A, C and E"
+        required: true
+        default: "2000"
+      b_iterations:
+        description: "Nodes created in one process for arm B"
+        required: true
+        default: "200000"
+      arms:
+        description: "Arms to run, in order (A first keeps its first child the job's first audio use)"
+        required: true
+        default: "A C E D B"
+      seconds_per_arm:
+        description: "Time budget per arm; the probe stops and summarises when it runs out"
+        required: true
+        default: "480"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: EQ stress probe on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+
+    strategy:
+      # A mismatch on one runner is the result, not a reason to cancel the
+      # control leg.
+      fail-fast: false
+      matrix:
+        # Labels are pinned explicitly, as in ci.yml (ADR-022 item 5).
+        # macos-26 is where the failure was seen; macos-15 is the control.
+        os: [macos-26, macos-15]
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Show toolchain and runner versions
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+          echo "runner image: ${ImageOS:-unknown} ${ImageVersion:-unknown}"
+
+      - name: Build the probe only
+        run: swift build -c debug --product tnf-eq-stress-probe
+
+      - name: Run arms
+        # Inputs go through env, never inline into the script.
+        env:
+          ITERATIONS: ${{ inputs.iterations }}
+          B_ITERATIONS: ${{ inputs.b_iterations }}
+          ARMS: ${{ inputs.arms }}
+          SECONDS_PER_ARM: ${{ inputs.seconds_per_arm }}
+        run: |
+          set +e
+          for value in "$ITERATIONS" "$B_ITERATIONS" "$SECONDS_PER_ARM"; do
+            if ! [[ "$value" =~ ^[1-9][0-9]{0,6}$ ]]; then
+              echo "::error::Numeric input expected, got '$value'."
+              exit 2
+            fi
+          done
+          if ! [[ "$ARMS" =~ ^[ABCDE\ ]+$ ]]; then
+            echo "::error::Arms must be letters A-E separated by spaces, got '$ARMS'."
+            exit 2
+          fi
+
+          probe="$(swift build -c debug --show-bin-path)/tnf-eq-stress-probe"
+          reproduced=0
+          broken=0
+          {
+            echo "### EQ stress probe on ${{ matrix.os }}"
+            echo
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for arm in $ARMS; do
+            count="$ITERATIONS"
+            if [ "$arm" = "B" ]; then count="$B_ITERATIONS"; fi
+            echo "::group::Arm $arm"
+            "$probe" "$arm" "$count" --seconds "$SECONDS_PER_ARM" | tee "probe-$arm.log"
+            rc=${PIPESTATUS[0]}
+            echo "::endgroup::"
+            grep '^SUMMARY ' "probe-$arm.log" >> "$GITHUB_STEP_SUMMARY"
+            case "$rc" in
+              0) ;;
+              1) reproduced=1
+                 echo "::warning::Arm $arm reproduced a mismatch; see its FAIL lines." ;;
+              *) broken=1
+                 echo "::error::Arm $arm exited $rc (2 usage, 4 child errors, other: crash)." ;;
+            esac
+          done
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          # The logs stay in the job log only; nothing is uploaded.
+          rm -f probe-*.log
+
+          if [ "$broken" = 1 ]; then exit 1; fi
+          if [ "$reproduced" = 1 ]; then
+            echo "::error::Mismatch reproduced on ${{ matrix.os }}."
+            exit 1
+          fi
