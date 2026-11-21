@@ -69,8 +69,15 @@ struct S5Result {
     var notes: [String] = []
     /// Once settled, what playback last received differs from the document (parts of the first app, or compare).
     var playbackStale: String?
-    /// Deliveries first taken after the held starts and stops were released at the end (observation only).
-    var lateTaken: [BEvent] = []
+    /// Deliveries first taken after the loop (observation only): after the held starts and stops were released
+    /// and a settle, before the debounce gate opens; then after it opens and a settle.
+    var lateRelease: [BEvent] = []
+    var lateDebounce: [BEvent] = []
+    var lateTaken: [BEvent] { lateRelease + lateDebounce }
+    /// Every delivery as it arrived: event, milliseconds since the sequence began, and the phase it arrived in.
+    var deliveryLog: [String] = []
+    /// Steps that found nothing to act on, or an expected delivery missing by the step's end (observation only).
+    var slow: [String] = []
 }
 
 /// `saveDuringPowerOn` holds the activation refresh that follows the first power ON, lets the debounced
@@ -104,7 +111,11 @@ struct S5Result {
     var lastPower: Bool?
     let verbose = ProcessInfo.processInfo.environment["S5_VERBOSE"] != nil
     var lastDelivered: (snapshot: ListeningRenderSnapshot, original: Bool, mode: LibraryDeliveryMode)?
+    let began = Date()
+    var phase = "setup"
+    func stamp() -> Int { Int(Date().timeIntervalSince(began) * 1000) }
     _ = await coordinator.attachPlayback { snapshot, original, mode in       // as the App attaches playback
+        defer { if let e = pending.last { result.deliveryLog.append("\(e)@\(stamp())ms(\(phase))") } }
         lastDelivered = (snapshot, original, mode)
         let on = snapshot.isEnabled
         if verbose { print("  DELIVER \(mode) power \(on) assignments \(snapshot.assignments.map { "\($0.bundleIdentifier)=\($0.isEnabled)" }) prepares \(trace.prepares)") }
@@ -152,7 +163,9 @@ struct S5Result {
     var k = 0
     for a in actions {
         k += 1
+        phase = "step \(k)"
         let stepStart = result.observation.outputStarts.count
+        let powerBefore = lastPower, deliveriesBefore = result.deliveryLog.count
         var own: [BEvent] = []
         switch a {
         case .powerOn:
@@ -193,9 +206,11 @@ struct S5Result {
             } else { result.notes.append("slider step \(k): card has no identity") }
         case .startOk, .startFail:
             if trace.releaseStart(ok: a == .startOk) { own = [.startCompletes(ok: a == .startOk)] }
-            else { result.notes.append("step \(k): no start held") }
+            else { result.notes.append("step \(k): no start held"); result.slow.append("step=\(k) what=no-start-held@\(stamp())ms") }
         case .stopDone:
-            if trace.releaseStop() { own = [.stopCompletes] } else { result.notes.append("step \(k): no stop held") }
+            if trace.releaseStop() { own = [.stopCompletes] } else {
+                result.notes.append("step \(k): no stop held"); result.slow.append("step=\(k) what=no-stop-held@\(stamp())ms")
+            }
         case .returnEarlier:
             if let s = f.slider(on: startCard), let binding = startCard.binding, let startValue {
                 _ = try? await f.owner.move(s.address, expected: binding, to: .scalar(startValue))
@@ -208,13 +223,22 @@ struct S5Result {
         take(own)
         await settle()
         take(pending); pending = []
+        // A power change or slider step whose delivery has not arrived by the step's end (it may arrive later).
+        let arrived = result.deliveryLog.count - deliveriesBefore
+        let expectsDelivery = (a == .powerOn && powerBefore != true) || (a == .powerOff && powerBefore != false) || a == .slider
+        if expectsDelivery && arrived == 0 { result.slow.append("step=\(k) what=no-delivery-by-step-end action=\(a)@\(stamp())ms") }
         // A sound that started during this step belongs to its first event (the start completion, when there is one).
         for i in stepStart..<result.observation.outputStarts.count { result.observation.outputStarts[i] = trace.sounds }
     }
+    phase = "after-release"
     trace.releaseAll()
+    await settle()
+    result.lateRelease = pending
+    take(pending); pending = []
+    phase = "after-debounce"
     await f.debounce.setOpen(true)
     await settle()
-    result.lateTaken = pending
+    result.lateDebounce = pending
     take(pending); pending = []
     if let doc = try? await f.owner.snapshot(), let live = try? await f.owner.liveState() {
         let want = ListeningRenderSnapshot(library: doc)
@@ -266,15 +290,19 @@ func s5Verdict(_ actions: [S5Action], _ r: S5Result) -> [String] {
             print("ORDER S5 L\(length) hold \(hold) #\(from + offset) positions ON after OFF without activation ON: [\(text)] -> [\(r.translated.map(\.description).joined(separator: " "))]")
         }
         // Observation only: neither line changes the verdict.
-        if !r.lateTaken.isEmpty {
-            result.late += 1
-            print("ENUM-LATE suite=S5 hold=\(hold) index=\(from + offset) taken=[\(r.lateTaken.map(\.description).joined(separator: " "))]")
+        if !r.lateTaken.isEmpty { result.late += 1 }
+        for (stage, taken) in [("after-release", r.lateRelease), ("after-debounce", r.lateDebounce)] where !taken.isEmpty {
+            print("ENUM-LATE suite=S5 hold=\(hold) index=\(from + offset) stage=\(stage) taken=[\(taken.map(\.description).joined(separator: " "))]")
         }
+        for s in r.slow { print("ENUM-SLOW suite=S5 hold=\(hold) index=\(from + offset) \(s)") }
         let unsettled = r.notes.filter { $0 == "did not settle" }.count
         if unsettled > 0 { print("ENUM-NOTE suite=S5 hold=\(hold) index=\(from + offset) did not settle (\(unsettled) time(s))") }
         let v = s5Verdict(actions, r)
         if ProcessInfo.processInfo.environment["S5_VERBOSE"] != nil {
             print("RUN #\(from + offset) [\(text)] delivered [\(r.translated.map(\.description).joined(separator: " "))] sounds \(r.observation.outputStarts) final \(r.observation.finalState) notes \(r.notes + r.observation.notes)")
+        }
+        if !v.isEmpty || !r.lateTaken.isEmpty {
+            print("ENUM-TIMES suite=S5 hold=\(hold) index=\(from + offset) deliveries=[\(r.deliveryLog.joined(separator: " "))]")
         }
         if v.isEmpty { result.green += 1; continue }
         result.red += 1
