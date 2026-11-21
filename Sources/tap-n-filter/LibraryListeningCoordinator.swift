@@ -25,6 +25,8 @@ struct LibraryConsumerCommandResult: Equatable, Sendable {
     let outcome: LibraryConsumerCommandOutcome
     var creation: LibraryCreationResult? = nil
     var publication: LibraryUpdateResult? = nil
+    /// A-E2: refused because the flush it waited for threw. The problem was already shown once; the session shows no other.
+    var flushRefused = false
 }
 enum LibraryConsumerReconciliation: Equatable {
     case idle
@@ -100,6 +102,8 @@ enum AdmissionCause: Equatable {
     case endDrag
     /// A-E1: applying an admitted move failed; the drag stops counting.
     case failedApply
+    /// A-E2: a drag's ordered commit threw or came back superseded. Every open drag ends; cards stay current.
+    case failedCommit
     /// A-M1: the menu opened; a drag the old menu never ended is over.
     case menuOpened
     /// A-SEM: source or output format change, structural command, edit begin. Every shown card becomes stale.
@@ -111,6 +115,10 @@ enum AdmissionCause: Equatable {
     /// Drain or close: nothing is admitted afterwards.
     case retireAll
 }
+
+/// A-E2: an action refused because a failed drag commit refused the flush it waited for, or a value write found stale at
+/// its sink. The failure was shown once where the commit failed; a caller reports nothing and does nothing more.
+struct LibraryFlushRefusal: Error {}
 
 struct AdmissionDecision {
     let request: MenuAdmission.Request
@@ -142,7 +150,7 @@ struct MenuAdmission {
     mutating func apply(_ cause: AdmissionCause) {
         switch cause {
         case .beginDrag(let identity): pointer = .dragging(identity)      // A-G1: retires any earlier drag
-        case .endDrag, .failedApply, .menuOpened: pointer = .free         // A-G4, A-E1, A-M1
+        case .endDrag, .failedApply, .failedCommit, .menuOpened: pointer = .free    // A-G4, A-E1, A-E2, A-M1
         case .realBarrier:                                                 // A-SEM
             if case .dragging(.some) = pointer { pointer = .retired }       // still held: stays held, identity retired
             else if pointer != .retired { pointer = .free }                  // the legacy anonymous begin has no identity to hold
@@ -236,6 +244,11 @@ final class LibraryListeningCoordinator {
     private let menuMoveOverride: MenuMove?
     typealias MenuMove = @MainActor @Sendable (SoundLibrarySession, LibraryControlAddress, LibraryMenuIdentity, LibraryOptionGesture?, LibraryPosition) async throws -> LibraryMenuMoveResult
     private var sliderBatch: LibrarySliderBatch?
+    /// A-E2: the one finished task handed back for every value write refused when it is submitted. Its value is the usual
+    /// refusal (callers that sort refusals by value are unchanged); the session recognises the task itself and does
+    /// nothing more: no refresh, no debounce, no save.
+    let refusedSample: Task<LibrarySliderResult, Error>
+    let refusedMove: Task<LibraryLiveMutation, Error>
     private var checkpointAdmissions = 0
     private var editorReaders = 0
     /// Editor completion reads begun and not yet published or failed. M3 waits for these too (R1-5).
@@ -280,17 +293,22 @@ final class LibraryListeningCoordinator {
         sealSliderMoves()
         switch cause {
         case .beginDrag, .endDrag, .failedApply, .laneChange: break
-        case .mutation, .menuOpened, .realBarrier, .retireAll:
+        case .mutation, .menuOpened, .realBarrier, .retireAll, .failedCommit:
             positionContext = nil; sliderEligibility = []
             fenceReads()
         }
     }
     /// R2-1: the one ordering rule for a drag's final value. The commit is registered as `parameterCommit` in the same
     /// synchronous step that retires `parameterGesture`, so any later caller (a save, a structural command, an editor read)
-    /// waits for the write instead of finding neither the gesture nor the write. The caller that starts the commit
-    /// gets its error; a caller that joins one only waits.
+    /// waits for the write instead of finding neither the gesture nor the write.
+    ///
+    /// A-E2: only the commit task handles its own failure (`discardUncommitted`). Every caller, the one that started the
+    /// commit or one that joined it, then gets the same answer from the task's result. With `refuse` (a structural command,
+    /// an edit begin, an editor mutation) a thrown failure refuses it with `LibraryFlushRefusal`. Without (a save, drag
+    /// end, read, lane or format change, menu open, power, compare, drain, and every value write, which then finds its
+    /// epoch stale at the sink) it proceeds. A superseded commit refuses no one.
     @discardableResult
-    private func commitParameter(_ owner: SoundLibrarySession) async throws -> LibraryLiveMutation? {
+    private func commitParameter(_ owner: SoundLibrarySession, refuse: Bool) async throws -> LibraryLiveMutation? {
         if let gesture = parameterGesture {
             parameterGesture = nil
             if let latest = gesture.latest {
@@ -299,55 +317,110 @@ final class LibraryListeningCoordinator {
                 let task = Task { @MainActor [self] () async throws -> LibraryLiveMutation? in
                     defer { if commitSerial == serial { parameterCommit = nil } }
                     _ = await previous?.result
-                    let result = try await executeMenuOrdered(owner, address: gesture.plan.address,
-                        expected: gesture.plan.identity, option: gesture.plan.option, value: latest)
+                    let result: LibraryMenuMoveResult
+                    do {
+                        // A-E2: a gesture captured before a reset is stale here, after its last await: nothing is written,
+                        // and its callers are answered as the reset's own commit answered them (`discardThrew`).
+                        guard let moved = try await executeMenuOrdered(owner, address: gesture.plan.address,
+                            expected: gesture.plan.identity, option: gesture.plan.option, value: latest,
+                            admission: .commit(gesture.discardEpoch)) else {
+                            if discardThrew { throw LibraryFlushRefusal() }
+                            return .superseded
+                        }
+                        result = moved
+                    } catch let refusal as LibraryFlushRefusal { throw refusal }
+                    catch {
+                        discardUncommitted(problem: error)
+                        throw LibraryFlushRefusal()
+                    }
                     perfParameterDocumentCommit?(result.outcome)
                     editor.invalidateCoverage()
+                    if case .superseded = result.outcome { discardUncommitted(problem: nil) }    // A-E2: nothing shown
                     return result.outcome
                 }
                 parameterCommit = task
-                return try await task.value
+                return try await answer(task, refuse: refuse)
             }
         }
         guard let pending = parameterCommit else { return nil }
-        _ = await pending.result
+        _ = try await answer(pending, refuse: refuse)
         return nil
     }
+    private func answer(_ task: Task<LibraryLiveMutation?, Error>, refuse: Bool) async throws -> LibraryLiveMutation? {
+        switch await task.result {
+        case .success(let value): return value
+        case .failure(let error): if refuse { throw error }; return nil
+        }
+    }
+    /// A-E2: the discard epoch, moved only by `discardUncommitted`. Every value write carries the epoch it was admitted in
+    /// and is compared where it acts: the batch loop, after each await on the sample path, the commit task, and every sink
+    /// (`LibraryWriteAdmission`).
+    private var discardEpoch = LibraryDiscardEpoch.first
+    /// Whether the latest reset came from a thrown commit (the commit's callers are refused) or a superseded one (they
+    /// proceed). A commit discarded behind it answers its own callers the same way.
+    private var discardThrew = false
+    /// A-E2's one handler, run by the commit task when a drag's ordered commit throws (`problem`) or comes back superseded
+    /// (nil). Every value write not yet committed is discarded: the epoch moves, so queued samples, batches, captured
+    /// commits, picks and pending ordered writes find it stale where they act; the pending gesture is dropped; every open
+    /// drag ends; playback and the menu are corrected to the document by one activation, which a fenced read asks for
+    /// again (`activationPending`); the session shows the problem once (only when it threw) and issues the end save of an
+    /// open gesture.
+    private func discardUncommitted(problem: Error?) {
+        discardEpoch = discardEpoch.next
+        discardThrew = problem != nil
+        parameterGesture = nil
+        invalidate(.failedCommit)
+        requestRefresh(mode: .activation)
+        dragCommitFailed?(problem)
+    }
+    /// Wired by the session: show the problem once (nil for a superseded commit) and end an open gesture with one save.
+    var dragCommitFailed: ((_ problem: Error?) -> Void)?
     private var parameterCommit: Task<LibraryLiveMutation?, Error>?
     private var commitSerial: UInt64 = 0
     private func evaluateParameter(_ owner: SoundLibrarySession, address: LibraryControlAddress,
-        identity: LibraryMenuIdentity, option: LibraryOptionGesture?, value: LibraryPosition, epoch: UInt64) async throws -> LibrarySliderResult {
+        identity: LibraryMenuIdentity, option: LibraryOptionGesture?, value: LibraryPosition, epoch: UInt64,
+        discardEpoch admitted: LibraryDiscardEpoch) async throws -> LibrarySliderResult {
         if let current = parameterGesture,
            current.plan.identity != identity || current.plan.address != address || current.plan.option != option {
-            try await commitParameter(owner)
+            try await commitParameter(owner, refuse: false)
+            guard admitted == discardEpoch else { return .dropped }      // A-E2: after each await on the sample path
             _ = await refresh(mode: .positions)
+            guard admitted == discardEpoch else { return .dropped }
         }
         if parameterGesture == nil {
             guard let plan = presentation?.parameterPlans.first(where: { $0.identity == identity && $0.address == address && $0.option == option }), plan.lease.isValid else {
-                return .executed(try await executeMenuOrdered(owner, address: address, expected: identity, option: option, value: value).outcome)
+                guard let moved = try await executeMenuOrdered(owner, address: address, expected: identity, option: option,
+                                                               value: value, admission: .value(admitted)) else { return .dropped }
+                return .executed(moved.outcome)
             }
-            parameterGesture = LibraryParameterGesture(plan, epoch: epoch)
+            parameterGesture = LibraryParameterGesture(plan, epoch: epoch, discardEpoch: admitted)
         }
         guard let gesture = parameterGesture else { return .executed(.superseded) }
         let previous = gesture.latest
         gesture.latest = value
-        do { return try await applyLive(owner, gesture, value, epoch: epoch) }
+        do { return try await applyLive(owner, gesture, value, epoch: epoch, discardEpoch: admitted) }
         catch { gesture.latest = previous; throw error }    // A-E1: a failed apply changes nothing
     }
+    /// A sample's own ordered flush (its gesture's commit). It never refuses; a reset makes the sample stale instead.
+    private func flushForSample(_ owner: SoundLibrarySession, _ admitted: LibraryDiscardEpoch) async throws -> LibrarySliderResult {
+        let outcome = try await commitParameter(owner, refuse: false)
+        guard admitted == discardEpoch else { return .dropped }
+        return .executed(outcome ?? .superseded)
+    }
     private func applyLive(_ owner: SoundLibrarySession, _ gesture: LibraryParameterGesture, _ value: LibraryPosition,
-                           epoch: UInt64) async throws -> LibrarySliderResult {
+                           epoch: UInt64, discardEpoch admitted: LibraryDiscardEpoch) async throws -> LibrarySliderResult {
         let started = ProcessInfo.processInfo.systemUptime
         try applyFailureForTesting?()
         guard let delta = try gesture.plan.evaluate(value) else {
-            let outcome = try await commitParameter(owner) ?? .superseded
+            let outcome = try await flushForSample(owner, admitted)
             invalidate(.mutation)
-            return .executed(outcome)
+            return outcome
         }
         // A real barrier after admission: the barrier's own flush commits `latest`; this sample is not delivered live.
         guard epoch == admission.barrierEpoch else { return .fenced(.noChange) }
         guard let context = positionContext, let candidate = presentation?.applying(delta) else {
             // The presentation is behind the live state (a refresh is pending): write the admitted value in order.
-            return .executed(try await commitParameter(owner) ?? .superseded)
+            return try await flushForSample(owner, admitted)
         }
         var menuBehind = false
         let delivered = try gesture.plan.lease.ifValid {
@@ -360,7 +433,7 @@ final class LibraryListeningCoordinator {
         } ?? false
         // An admitted value always reaches the live state: a lease that lapsed or a menu that is behind
         // never drops it (A-G2). The menu catches up through a refresh.
-        guard delivered else { return .executed(try await commitParameter(owner) ?? .superseded) }
+        guard delivered else { return try await flushForSample(owner, admitted) }
         if menuBehind { requestRefresh(mode: .positions) }
         perfParameterEvaluated?(ProcessInfo.processInfo.systemUptime - started, value)
         return .live
@@ -392,6 +465,7 @@ final class LibraryListeningCoordinator {
          menuMove: MenuMove? = nil,
          positions: @escaping (LibraryMenuDelta, MenuPositionContext) -> Bool = { _, _ in true }) {
         moveOverride = move; menuMoveOverride = menuMove; publishPositions = positions
+        refusedSample = Task { .executed(.superseded) }; refusedMove = Task { .superseded }
         self.editRead = editRead
         self.publish = publish; self.admit = admit; self.apply = apply; self.read = read
     }
@@ -400,7 +474,7 @@ final class LibraryListeningCoordinator {
         guard let session else { throw LibraryConsumerLifecycleError.notReady }
         invalidate(.realBarrier)    // A-SEM: opening an edit can change what a card position means
         await joinLive()
-        try await commitParameter(session)
+        try await commitParameter(session, refuse: true)    // A-E2: refused after a thrown flush
         return try await session.beginEdit(target, admission: RenderAssignmentMapper.admitParts)
     }
     func start(persistence: any LibraryPersistence, limits: LibraryLimits,
@@ -542,7 +616,7 @@ final class LibraryListeningCoordinator {
     }
     /// Only the mutation + cheap status read are ordered. Neither disk nor the full projection is on this tail.
     func enqueueMutation<Value: Sendable>(allowDuringDrain: Bool = false, statusAfterOperation: Bool = true,
-        preservingSliderEligibility: Bool = false, realBarrier: Bool = false,
+        preservingSliderEligibility: Bool = false, realBarrier: Bool = false, flushRefuses: Bool = true,
         _ operation: @escaping @MainActor @Sendable (SoundLibrarySession) async throws -> Value) throws -> Task<Value, Error> {
         guard lifecycle != .closed, lifecycle != .draining || allowDuringDrain else {
             throw LibraryConsumerLifecycleError.unavailable(lifecycle)
@@ -566,7 +640,7 @@ final class LibraryListeningCoordinator {
             await previous?.value
             let result: Value
             do {
-                if !preservingSliderEligibility { try await self.commitParameter(session) }
+                if !preservingSliderEligibility { try await self.commitParameter(session, refuse: flushRefuses) }
                 result = try await operation(session)
             }
             catch { fenceReads(); throw error }
@@ -582,9 +656,10 @@ final class LibraryListeningCoordinator {
         fenceReads()
         restrict(live)
     }
+    /// Power and compare. A-E2: they proceed after a failed flush (an OFF must take effect, B1).
     private func scheduleLive(allowDuringDrain: Bool = false,
         _ operation: @escaping @Sendable (SoundLibrarySession) async throws -> LibraryLiveMutation) throws -> Task<LibraryLiveMutation, Error> {
-        try enqueueMutation(allowDuringDrain: allowDuringDrain, operation)
+        try enqueueMutation(allowDuringDrain: allowDuringDrain, flushRefuses: false, operation)
     }
     func publishEditor(_ state: LibraryEditorState) { emit(.editor(state)) }
     func editorAcknowledged(_ command: UUID) { emit(.editorMutation(command)) }
@@ -639,7 +714,7 @@ final class LibraryListeningCoordinator {
         do {
             await joinLive()
             guard lifecycle != .closed, let session else { throw LibraryConsumerLifecycleError.notReady }
-            try await commitParameter(session)
+            try await commitParameter(session, refuse: false)    // A-E2: a read proceeds and sees the earlier value
             let result = try await (editRead(session, handle), session.saveCoverage())
             await finishEditorRead(session)
             return result
@@ -654,7 +729,7 @@ final class LibraryListeningCoordinator {
         do {
             await joinLive()
             guard lifecycle == .running, let session else { throw LibraryConsumerLifecycleError.unavailable(lifecycle) }
-            try await commitParameter(session)
+            try await commitParameter(session, refuse: false)
             let version = generation
             let result = try await operation(session)
             await finishEditorRead(session)
@@ -711,6 +786,9 @@ final class LibraryListeningCoordinator {
         sliderEligibilityBarriers -= 1
         sliderEligibility = []
         fenceReads()
+        // A pending activation whose read landed while a barrier was up only restricted playback; the last barrier asks
+        // for it once. A read still in flight was just fenced, and its own re-ask shares this request.
+        if sliderEligibilityBarriers == 0, activationPending, lifecycle == .running { requestRefresh(mode: .activation) }
     }
     /// M5: which playback publications are real barriers, decided here and not in App wiring.
     /// `.sourceOrFormat` (a source or output format change, or a lane set that needs a full delivery) is a real
@@ -724,8 +802,8 @@ final class LibraryListeningCoordinator {
         }
         Task { @MainActor in
             await joinLive()
-            do { if let session { try await commitParameter(session) } }
-            catch { emit(.readFailure(String(describing: error))) }
+            // A-E2: a lane or format change goes ahead; a failed flush was reported where it failed, not as a read failure.
+            if let session { _ = try? await commitParameter(session, refuse: false) }
             requestRefresh(mode: .positions)
         }
     }
@@ -733,8 +811,24 @@ final class LibraryListeningCoordinator {
         sliderBatch?.accepting = false
         sliderBatch = nil
     }
+    /// A-E2: the gate at every sink that writes a control's value. A commit is compared as it stands: it is already serial
+    /// on the commit chain. Any other value write first settles any pending gesture and commit, then is compared. The
+    /// write follows with no await in between, and nothing can move the epoch before it lands: only a failed commit moves
+    /// it, commits run one at a time, and a new commit needs a gesture, which only the batch loop creates, on the live tail
+    /// this write holds (every value write runs inside an `enqueueMutation` operation).
+    private func admitsWrite(_ admission: LibraryWriteAdmission, _ session: SoundLibrarySession) async -> Bool {
+        switch admission {
+        case .commit(let admitted): return admitted == discardEpoch
+        case .value(let admitted):
+            _ = try? await commitParameter(session, refuse: false)
+            return admitted == discardEpoch
+        }
+    }
+    /// Returns nil, writing nothing, when `admission` finds the value stale (A-E2).
     private func executeMove(_ session: SoundLibrarySession, address: LibraryControlAddress, binding: LibraryBinding,
-                             option: LibraryOptionGesture?, position: LibraryPosition) async throws -> LibraryLiveMutation {
+                             option: LibraryOptionGesture?, position: LibraryPosition,
+                             admission: LibraryWriteAdmission) async throws -> LibraryLiveMutation? {
+        guard await admitsWrite(admission, session) else { return nil }
         if let moveOverride { return try await moveOverride(session, address, binding, option, position) }
         if perfMoveExecuted != nil {
             let measured = try await session.measuredMove(address, expected: binding, optionGesture: option, to: position)
@@ -755,54 +849,66 @@ final class LibraryListeningCoordinator {
                           optionGesture: LibraryOptionGesture? = nil, menuIdentity: LibraryMenuIdentity? = nil, expectedEpoch: UInt64? = nil, gestureIdentity: UUID? = nil) throws -> Task<LibrarySliderResult, Error> {
         guard lifecycle == .running else { throw LibraryConsumerLifecycleError.unavailable(lifecycle) }
         guard session != nil else { throw LibraryConsumerLifecycleError.notReady }
+        // A-E2: a refused value write does nothing. The session recognises this one shared task and stops there.
         guard admits(gestureIdentity.map { .dragMove($0, card: expectedEpoch) } ?? .step(card: expectedEpoch)) else {
-            return Task { .executed(.superseded) }
+            return refusedSample
         }
-        if let menuIdentity, presentation?.identity(for: expected) != menuIdentity {
-            return Task { .executed(.superseded) }
-        }
+        if let menuIdentity, presentation?.identity(for: expected) != menuIdentity { return refusedSample }
+        let admitted = discardEpoch    // A-E2: the sample's epoch, fixed at admission
         guard sliderCanCoalesce(address, expected: expected, optionGesture: optionGesture) else {
-            let ordered: Task<LibraryLiveMutation, Error>
-            if let menuIdentity {
-                ordered = try enqueueMutation { session in
-                    try await self.executeMenuOrdered(session, address: address, expected: menuIdentity,
-                        option: optionGesture, value: value).outcome
+            // The ordered route, with or without a menu identity. Its flush never refuses it; a reset makes it stale at its
+            // sink instead, and then it does nothing more: no write and no status read (`restrict`).
+            let ordered = try enqueueMutation(statusAfterOperation: false, flushRefuses: false) { session -> LibrarySliderResult in
+                let outcome: LibraryLiveMutation
+                if let menuIdentity {
+                    guard let moved = try await self.executeMenuOrdered(session, address: address, expected: menuIdentity,
+                        option: optionGesture, value: value, admission: .value(admitted)) else { return .dropped }
+                    outcome = moved.outcome
+                } else {
+                    guard let moved = try await self.executeMove(session, address: address, binding: expected,
+                        option: optionGesture, position: value, admission: .value(admitted)) else { return .dropped }
+                    outcome = moved
                 }
-            } else {
-                ordered = try submitMove(address, expected: expected, to: value, optionGesture: optionGesture)
+                try await self.mutationStatus(session)
+                return .executed(outcome)
             }
-            return Task { .executed(try await ordered.value) }
+            return Task { try await ordered.value }
         }
-        let request = LibrarySliderRequest(value)
-        if let batch = sliderBatch, batch.matches(expected, address, optionGesture, identity: menuIdentity) {
+        let request = LibrarySliderRequest(value, discardEpoch: admitted)
+        if let batch = sliderBatch, batch.matches(expected, address, optionGesture, identity: menuIdentity, discardEpoch: admitted) {
             liveSequence += 1; fenceReads()
             if batch.pending != nil { perfSliderCoalesced?() }
             batch.replace(request)
             perfSliderQueueChanged?(batch.inFlight ? 1 : 0, 1)
         } else {
-            let batch = LibrarySliderBatch(binding: expected, address: address, option: optionGesture, identity: menuIdentity, request: request)
+            let batch = LibrarySliderBatch(binding: expected, address: address, option: optionGesture, identity: menuIdentity,
+                                           request: request, discardEpoch: admitted)
             // enqueueMutation seals the previous segment before installing this one's tail.
             let epoch = admission.barrierEpoch
             let identity = menuIdentity ?? presentation?.identity(for: expected)
             _ = try enqueueMutation(statusAfterOperation: false, preservingSliderEligibility: true) { session in
                 defer { if self.sliderBatch === batch { self.sliderBatch = nil } }
                 while let next = batch.take() {
+                    // A-E2: a sample admitted before a reset is discarded, never applied or written.
+                    guard next.discardEpoch == self.discardEpoch else { next.finish(.success(.dropped)); continue }
                     batch.inFlight = true
                     self.perfSliderQueueChanged?(1, batch.pending == nil ? 0 : 1)
                     do {
                         let result: LibrarySliderResult
                         if let identity, self.moveOverride == nil, self.admission.isDragging || self.parameterGesture != nil {
                             result = try await self.evaluateParameter(session, address: batch.address, identity: identity,
-                                option: batch.option, value: next.position, epoch: epoch)
+                                option: batch.option, value: next.position, epoch: epoch, discardEpoch: next.discardEpoch)
                         } else if let identity, self.moveOverride == nil {
-                            let value = try await self.executeMenuOrdered(session, address: batch.address,
-                                expected: identity, option: batch.option, value: next.position)
-                            result = .executed(value.outcome)
+                            if let value = try await self.executeMenuOrdered(session, address: batch.address, expected: identity,
+                                option: batch.option, value: next.position, admission: .value(next.discardEpoch)) {
+                                result = .executed(value.outcome)
+                            } else { result = .dropped }
                         } else {
-                            let value = try await self.executeMove(session, address: batch.address, binding: batch.binding,
-                                                                  option: batch.option, position: next.position)
-                            try await self.mutationStatus(session)
-                            result = .executed(value)
+                            if let value = try await self.executeMove(session, address: batch.address, binding: batch.binding,
+                                option: batch.option, position: next.position, admission: .value(next.discardEpoch)) {
+                                try await self.mutationStatus(session)
+                                result = .executed(value)
+                            } else { result = .dropped }
                         }
                         next.finish(.success(result))
                     } catch { next.finish(.failure(error)) }
@@ -815,14 +921,24 @@ final class LibraryListeningCoordinator {
         }
         return Task { try await request.value }
     }
+    /// `gestureIdentity`: the session's binding-only fallback for a drag sample, admitted as that drag's sample. A-E2: the
+    /// value is stamped with the epoch where it is admitted, before any flush it causes, and does nothing if refused or
+    /// found stale at its sink.
     func submitMove(_ address: LibraryControlAddress, expected: LibraryBinding, to value: LibraryPosition,
-                    optionGesture: LibraryOptionGesture? = nil) throws -> Task<LibraryLiveMutation, Error> {
-        try scheduleLive { session in
-            try await self.executeMove(session, address: address, binding: expected, option: optionGesture, position: value)
+                    optionGesture: LibraryOptionGesture? = nil, gestureIdentity: UUID? = nil) throws -> Task<LibraryLiveMutation, Error> {
+        if let gestureIdentity, !admits(.dragMove(gestureIdentity, card: nil)) { return refusedMove }
+        let admitted = discardEpoch
+        return try enqueueMutation(flushRefuses: false) { session in
+            guard let moved = try await self.executeMove(session, address: address, binding: expected, option: optionGesture,
+                                                         position: value, admission: .value(admitted)) else { throw LibraryFlushRefusal() }
+            return moved
         }
     }
+    /// Returns nil, writing nothing, when `admission` finds the value stale (A-E2).
     private func executeMenuOrdered(_ session: SoundLibrarySession, address: LibraryControlAddress,
-                                    expected: LibraryMenuIdentity, option: LibraryOptionGesture?, value: LibraryPosition) async throws -> LibraryMenuMoveResult {
+                                    expected: LibraryMenuIdentity, option: LibraryOptionGesture?, value: LibraryPosition,
+                                    admission: LibraryWriteAdmission) async throws -> LibraryMenuMoveResult? {
+        guard await admitsWrite(admission, session) else { return nil }
         if let override = menuMoveOverride { return try await override(session, address, expected, option, value) }
         if perfMoveExecuted != nil {
             let measured = try await session.measuredMenuMove(address, expected: expected, optionGesture: option, to: value)
@@ -834,10 +950,15 @@ final class LibraryListeningCoordinator {
     func submitMenuMove(_ address: LibraryControlAddress, expected: LibraryMenuIdentity, to value: LibraryPosition,
                         optionGesture: LibraryOptionGesture?, expectedEpoch: UInt64?, gestureIdentity: UUID? = nil) throws -> Task<LibraryLiveMutation, Error> {
         guard admits(gestureIdentity.map { .dragMove($0, card: expectedEpoch) } ?? .click(card: expectedEpoch)) else {
-            return Task { .superseded }
+            return refusedMove    // A-E2: a refused value write is inert
         }
-        return try scheduleLive { session in
-            try await self.executeMenuOrdered(session, address: address, expected: expected, option: optionGesture, value: value).outcome
+        // A-E2: a choice pick or a drag sample is stamped where it is admitted, before any flush it causes. If that flush
+        // fails, the reset makes it stale at its sink and it is refused silently.
+        let admitted = discardEpoch
+        return try enqueueMutation(flushRefuses: false) { session in
+            guard let moved = try await self.executeMenuOrdered(session, address: address, expected: expected, option: optionGesture,
+                                                                value: value, admission: .value(admitted)) else { throw LibraryFlushRefusal() }
+            return moved.outcome
         }
     }
     func submitEnabled(_ enabled: Bool, expected: LibraryBinding? = nil) throws -> Task<LibraryLiveMutation, Error> {
@@ -871,7 +992,11 @@ final class LibraryListeningCoordinator {
         }
     }
     func move(_ address: LibraryControlAddress, expected: LibraryBinding, to value: LibraryPosition) async throws -> LibraryLiveMutation {
-        let task = try scheduleLive { try await $0.move(address, expected: expected, to: value) }
+        let admitted = discardEpoch    // A-E2: a value write, stamped where it is admitted
+        let task = try enqueueMutation(flushRefuses: false) { session -> LibraryLiveMutation in
+            guard await self.admitsWrite(.value(admitted), session) else { throw LibraryFlushRefusal() }
+            return try await session.move(address, expected: expected, to: value)
+        }
         return try await completeLive(task)
     }
     func setEnabled(_ enabled: Bool, expected: LibraryBinding) async throws -> LibraryLiveMutation {
@@ -941,7 +1066,7 @@ final class LibraryListeningCoordinator {
         invalidate(.mutation)
         await joinLive()
         do {
-            if let session { try await commitParameter(session) }
+            if let session { try await commitParameter(session, refuse: false) }
             if structuralActive != nil {
                 emit(.reconciliation(.inFlight(try await session?.liveState().pendingCommit)))
             } else { emit(.reconciliation(try await reconcileOwner())) }
@@ -980,9 +1105,13 @@ final class LibraryListeningCoordinator {
             let outcome: LibraryConsumerCommandOutcome
             var creation: LibraryCreationResult?
             var publication: LibraryUpdateResult?
+            var flushRefused = false
             do {
                 guard let session else { throw LibraryError.invalidArchive }
-                try await commitParameter(session)
+                // A-E2: a structural command whose flush threw is refused whole; a save (or drag end) still saves what was
+                // committed, which is the last value whose commit succeeded.
+                do { try await commitParameter(session, refuse: barrier) }
+                catch let refusal as LibraryFlushRefusal { flushRefused = true; throw refusal }
                 emit(.reconciliation(try await reconcileOwner()))
                 let state = try await session.liveState()
                 if state.unresolved || state.writing { outcome = .blocked(state.pendingCommit) }
@@ -1002,7 +1131,8 @@ final class LibraryListeningCoordinator {
                     }
                 }
             } catch { outcome = .failed(String(describing: error)) }
-            let result = LibraryConsumerCommandResult(command: id, outcome: outcome, creation: creation, publication: publication)
+            let result = LibraryConsumerCommandResult(command: id, outcome: outcome, creation: creation, publication: publication,
+                                                      flushRefused: flushRefused)
             await editor.receivePublication(result)
             emit(.command(result))
             editor.requestDisplay()
@@ -1132,7 +1262,7 @@ final class LibraryListeningCoordinator {
         guard lifecycle != .closed else { return .closed }
         guard let session else { return .startupUnavailable(startupStatus) }
         do {
-            try await commitParameter(session)
+            try await commitParameter(session, refuse: false)    // A-E2: drain is a save; it saves the committed values
             emit(.reconciliation(try await reconcileOwner()))
             let state = try await session.liveState()
             if state.unresolved { return .unresolved(state.pendingCommit, "readback remains unresolved") }

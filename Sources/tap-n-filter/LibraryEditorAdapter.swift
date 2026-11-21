@@ -146,7 +146,6 @@ final class LibraryEditorAdapter {
         let task: Task<LibraryEditorOutcome, Error>
         do {
             task = try coordinator.enqueueMutation(realBarrier: opensEdit) { [self] session in
-                defer { queued -= 1 }
                 do {
                     let result = try await operation(session)
                     sequence += 1
@@ -165,7 +164,6 @@ final class LibraryEditorAdapter {
                     coordinator.requestRefresh()
                     return result
                 } catch {
-                    if reporting { reportReservations.remove(command) }
                     if let error = error as? LibraryError, error == .staleEdit || error == .staleBinding {
                         selected?.invalidReason = String(describing: error)
                         if let gesture { selected?.stoppedGesture = gesture }
@@ -178,9 +176,15 @@ final class LibraryEditorAdapter {
             }
         } catch { queued -= 1; reportReservations.remove(command); throw error }
         publish(context, edit: context?.snapshot)
+        // The admission count and report reservation are released from the task's result, so a command refused before its
+        // operation ran (A-E2: the drag's flush threw) releases them too.
         let completion = Task {
+            defer { queued -= 1 }
             do { return try await task.value }
-            catch { return LibraryEditorOutcome.failure(LibraryEditorFailure(error)) }
+            catch {
+                if reporting { reportReservations.remove(command) }
+                return LibraryEditorOutcome.failure(LibraryEditorFailure(error))
+            }
         }
         return LibraryEditorReceipt(command: command, gesture: gesture, epoch: selected?.epoch,
             handle: handle, sequence: admittedSequence, completion: completion)
@@ -455,7 +459,8 @@ final class LibraryEditorAdapter {
             selected.plannedGesture = nil
             queued += 1; sequence += 1
             do {
-                _ = try coordinator.enqueueMutation { [self] session in
+                // Drain is a save: it proceeds after a failed flush (A-E2), so its operation, and this count, always run.
+                _ = try coordinator.enqueueMutation(flushRefuses: false) { [self] session in
                     defer { queued -= 1 }
                     do {
                         if selected.activeGesture != nil {

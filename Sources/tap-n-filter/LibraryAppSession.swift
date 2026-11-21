@@ -48,8 +48,14 @@ final class LibraryAppSession {
     private var actionInFlight: EverydayMenuAction?
     /// Reads `actionInFlight` only while M1 is armed (R2-4); unarmed it is a constant nil and nothing is loaded.
     private var armedAction: EverydayMenuAction? { admissionDecided == nil ? nil : actionInFlight }
-    /// M3: the coordinator's quiescence plus the issued gesture save.
-    func quiescent() async { _ = await gestureSave?.value; await coordinator.quiescent() }
+    /// M3: the coordinator's quiescence plus the issued gesture save, including one issued while waiting (A-E2's end save).
+    func quiescent() async {
+        while true {
+            let epoch = saveEpoch
+            _ = await gestureSave?.value; await coordinator.quiescent()
+            if epoch == saveEpoch { return }
+        }
+    }
     func perfRefresh(_ menu: EverydayMenu, apps: [SourceAppInfo]) {
         guard let presentation, let menuData else { return }
         menu.update(data: menuData, positionContext: coordinator.positionContext, pendingApps: [], apps: apps, comparing: presentation.compareOriginal,
@@ -67,6 +73,7 @@ final class LibraryAppSession {
         let owner = LibraryListeningCoordinator(
             publish: { [weak self] in self?.receive($0) }, read: read, editRead: editRead, move: move,
             menuMove: menuMove, positions: { [weak self] in self?.receivePositions($0, context: $1) ?? false })
+        owner.dragCommitFailed = { [weak self] problem in self?.dragCommitFailed(problem) }
         return owner
     }()
 
@@ -112,7 +119,7 @@ final class LibraryAppSession {
         case .command(let result):
             switch result.outcome {
             case .accepted: saveProblem = nil
-            default: saveProblem = "The change could not be saved. \(result.outcome)"
+            default: if !result.flushRefused { saveProblem = "The change could not be saved. \(result.outcome)" }
             }
         case .reconciliation(let result):
             if case .accepted = result { saveProblem = nil }
@@ -208,7 +215,8 @@ final class LibraryAppSession {
                 live(positionOnly: true) { try $0.submitMenuMove(address, expected: identity, to: position,
                     optionGesture: option, expectedEpoch: deliveryEpoch, gestureIdentity: gestureIdentity) }
             } else {
-                live(positionOnly: true) { try $0.submitMove(address, expected: binding, to: position, optionGesture: option) }
+                live(positionOnly: true) { try $0.submitMove(address, expected: binding, to: position, optionGesture: option,
+                                                             gestureIdentity: gestureIdentity) }
             }
             return
         }
@@ -216,11 +224,12 @@ final class LibraryAppSession {
         do {
             let task = try coordinator.submitSliderMove(address, expected: binding, to: position,
                 optionGesture: option, menuIdentity: identity, expectedEpoch: deliveryEpoch, gestureIdentity: gestureIdentity)
+            if task == coordinator.refusedSample { return }    // A-E2: a refused value write does nothing
             let epoch = saveEpoch
             Task {
                 do {
                     switch try await task.value {
-                    case .coalesced: break
+                    case .coalesced, .dropped: break    // A-E2: a stale value write does nothing
                     case .live: applyDidSucceed()
                     case .delivered(let result), .fenced(let result):
                         perfMutationCompleted?(result)
@@ -232,7 +241,8 @@ final class LibraryAppSession {
                         coordinator.requestRefresh(mode: .positions)
                         if !gesturing && epoch == saveEpoch { scheduleSave() }
                     }
-                } catch { perfMutationFailed?(); record(error, action: action) }
+                } catch is LibraryFlushRefusal {}
+                catch { perfMutationFailed?(); record(error, action: action) }
             }
         } catch { perfMutationFailed?(); record(error, action: action) }
     }
@@ -241,6 +251,7 @@ final class LibraryAppSession {
         let received = armedAction
         do {
             let task = try action(coordinator)
+            if task == coordinator.refusedMove { return }    // A-E2: a refused value write does nothing
             let epoch = saveEpoch
             Task {
                 do {
@@ -250,6 +261,7 @@ final class LibraryAppSession {
                     coordinator.requestRefresh(mode: positionOnly ? .positions : .activation)
                     if save && !gesturing && epoch == saveEpoch { scheduleSave() }
                 }
+                catch is LibraryFlushRefusal {}    // A-E2: a stale value write does nothing
                 catch { perfMutationFailed?(); record(error, action: received) }
             }
         } catch { perfMutationFailed?(); record(error, action: received) }
@@ -261,6 +273,14 @@ final class LibraryAppSession {
         if let action { admissionDecided?(action, .failed) }
         coordinator.invalidate(.failedApply)
         if gesturing { gesturing = false; _ = flushSave() }
+    }
+    /// A-E2: a drag's ordered commit threw (`problem`) or came back superseded (nil), and the coordinator discarded every
+    /// uncommitted value write. Show the problem once with the A-E1 text (none when superseded); an open gesture ends
+    /// with its one save, as at end (A-G4).
+    private func dragCommitFailed(_ problem: Error?) {
+        guard coordinator.lifecycle != .closed else { return }
+        if let problem { applyProblem = "The change could not be saved. \(problem)"; changed() }
+        if gesturing { gesturing = false; gestureSave = flushSave() }
     }
     /// A live command succeeded: an earlier apply problem no longer describes the menu.
     func applyDidSucceed() {
