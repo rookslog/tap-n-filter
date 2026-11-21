@@ -132,6 +132,9 @@ public final class PlaybackController {
   private var removeLaunchListener: (@MainActor () -> Void)?
   /// Installed only while at least one lane is waiting.
   private var removeListListener: (@MainActor () -> Void)?
+  /// The number of the current list-listener registration; a handler from a retired one does nothing.
+  private var listRegistration: UInt64 = 0
+  private var currentListRegistration: UInt64?
   private var cancelListFold: (@MainActor () -> Void)?
   /// Attempts made to start a waiting lane by any wake-up (check seam).
   private(set) var wakeAttemptsForTesting = 0
@@ -362,6 +365,7 @@ public final class PlaybackController {
     removeLaunchListener = nil
     removeListListener?()
     removeListListener = nil
+    currentListRegistration = nil
     cancelFold()
     for lane in lanes.values { lane.cancelBurst() }
     for (id, lane) in lanes {
@@ -664,13 +668,19 @@ public final class PlaybackController {
     guard let wake else { return }
     if anyLaneWaiting {
       if removeListListener == nil {
-        removeListListener = wake.listenForProcessListChanges { [weak self] in self?.processListChanged() }
+        listRegistration += 1
+        let registration = listRegistration
+        currentListRegistration = registration
+        removeListListener = wake.listenForProcessListChanges { [weak self] in
+          self?.processListChanged(registration: registration)
+        }
         // Subscribe, then look once: the audio process may have appeared between the failed read and now.
         attemptAllWaiting()
       }
     } else {
       removeListListener?()
       removeListListener = nil
+      currentListRegistration = nil
       cancelFold()
     }
   }
@@ -682,7 +692,8 @@ public final class PlaybackController {
   }
 
   /// One attempt per change, with changes inside the fold window folded into one.
-  private func processListChanged() {
+  private func processListChanged(registration: UInt64) {
+    guard registration == currentListRegistration, removeListListener != nil else { return }
     guard !quitting, anyLaneWaiting, let wake else { return }
     // A change during an attempt is remembered for that lane and does not join a fold.
     for lane in lanes.values where lane.state == .starting && lane.wakeStart { lane.wakePending = true }
