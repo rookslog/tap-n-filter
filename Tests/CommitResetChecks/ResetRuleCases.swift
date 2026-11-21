@@ -134,23 +134,65 @@ enum ResetRules {
     }
 
     /// Samples on another slider under the same drag, queued behind a flush whose commit throws.
+    ///
+    /// All three are sent in one main-actor turn, before the batch task runs. The first creates the batch with itself
+    /// pending; each later one replaces the pending request, which completes as coalesced and is never written. The batch
+    /// task then takes only the last sample: its flush commits G (the fault throws), the reset moves the epoch, and the
+    /// sample is dropped as stale after that await. So the product's count is two coalesced, one dropped: one stale drop
+    /// and one superseded completion (coalesced requests report nothing to the session's measurement callback).
     @MainActor static func queuedSamplesAfterAThrownCommit() async throws {
         var e = Expect("queued-samples-after-a-thrown-commit")
-        let s = try await ResetScene()
-        s.armCommit(.throwIt)
-        let completed = s.observer.completed.count, debounces = s.observer.debounces
-        s.d.sample(s.d.gestureG, on: "Volume"); s.d.sample(s.d.gestureG, on: "Volume"); s.d.sample(s.d.gestureG, on: "Volume")
-        await s.d.settle()
-        e.that(s.fault.fired == 1 && s.observer.thrownResets == 1, "the commit did not throw once (fired \(s.fault.fired))")
-        e.that(s.observer.staleDrops >= 2, "only \(s.observer.staleDrops) queued samples were dropped as stale")
-        await s.unchanged(s.volume, s.startVolume, "Volume", into: &e)
-        await s.unchanged(s.dragged, s.startDragged, "dragged slider", into: &e)
-        let refused = s.observer.completed.dropFirst(completed).filter { $0 == .superseded }.count
-        e.that(refused >= 2, "dropped samples reported \(refused) superseded completions")
-        e.that(s.observer.debounces == debounces, "a dropped sample armed a debounced save")
-        e.that(s.observer.problemAppearances == 1, "the problem appeared \(s.observer.problemAppearances) times")
-        e.that(s.playbackMatchesDocument, "playback does not hold the document")
-        s.close()
+        // Through the session, as the menu sends them: what the session does with each outcome.
+        do {
+            let s = try await ResetScene()
+            s.armCommit(.throwIt)
+            let completed = s.observer.completed.count, debounces = s.observer.debounces, live = s.observer.liveSamples
+            s.d.sample(s.d.gestureG, on: "Volume"); s.d.sample(s.d.gestureG, on: "Volume"); s.d.sample(s.d.gestureG, on: "Volume")
+            await s.d.settle()
+            e.that(s.fault.fired == 1 && s.observer.thrownResets == 1, "session: the commit did not throw once (fired \(s.fault.fired))")
+            e.that(s.observer.staleDrops == 1, "session: \(s.observer.staleDrops) stale drops, expected 1 (two samples coalesced, one dropped)")
+            let after = Array(s.observer.completed.dropFirst(completed))
+            e.that(after == [.superseded], "session: the measurement callback saw \(after), expected one superseded")
+            e.that(s.observer.liveSamples == live, "session: a queued sample was delivered live")
+            await s.unchanged(s.volume, s.startVolume, "session: Volume", into: &e)
+            await s.unchanged(s.dragged, s.startDragged, "session: dragged slider", into: &e)
+            e.that(s.observer.debounces == debounces, "session: a queued sample armed a debounced save")
+            e.that(s.observer.problemAppearances == 1, "session: the problem appeared \(s.observer.problemAppearances) times")
+            e.that(s.playbackMatchesDocument, "session: playback does not hold the document")
+            s.close()
+        }
+        // Straight to the coordinator, keeping each sample's own task: every queued sample is accounted for by outcome.
+        do {
+            let s = try await ResetScene()
+            s.armCommit(.throwIt)
+            let live = s.observer.liveSamples
+            guard let card = s.f.shownCard, let identity = card.menuIdentity, let epoch = card.menuEpoch, let gesture = s.d.gestureG else {
+                throw ResetError(description: "direct: the card has no menu identity or the drag has no identity")
+            }
+            let coordinator = s.f.app.coordinator
+            var tasks: [Task<LibrarySliderResult, Error>] = []
+            for _ in 0..<3 {
+                tasks.append(try coordinator.submitSliderMove(s.volume, expected: s.binding, to: s.d.nextValue(),
+                    menuIdentity: identity, expectedEpoch: epoch, gestureIdentity: gesture))
+            }
+            var outcomes: [String] = []
+            for task in tasks {
+                switch await task.result {
+                case .success(.coalesced): outcomes.append("coalesced")
+                case .success(.dropped): outcomes.append("dropped")
+                case .success(let other): outcomes.append("other(\(other))")
+                case .failure(let error): outcomes.append("threw(\(error))")
+                }
+            }
+            await s.d.settle()
+            e.that(s.fault.fired == 1 && s.observer.thrownResets == 1, "direct: the commit did not throw once (fired \(s.fault.fired))")
+            e.that(outcomes == ["coalesced", "coalesced", "dropped"], "direct: the queued samples ended \(outcomes)")
+            e.that(s.observer.staleDrops == 1, "direct: \(s.observer.staleDrops) stale drops, expected 1")
+            e.that(s.observer.liveSamples == live, "direct: a queued sample was delivered live")
+            await s.unchanged(s.volume, s.startVolume, "direct: Volume", into: &e)
+            e.that(s.playbackMatchesDocument, "direct: playback does not hold the document")
+            s.close()
+        }
         try e.done()
     }
 
