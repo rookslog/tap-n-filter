@@ -94,3 +94,50 @@ jobs:
         env:
           RUN_INTEGRATION_TESTS: "1"
         run: swift test -c debug --filter CaptureIntegrationTests
+
+  # Diagnostic, on one branch only and never a required check: each job applies one
+  # deliberate fault from Tests/Mutants/mutants.json and shows whether the
+  # problem-clearing cases turn red; the control job runs them on the unchanged tree.
+  problem-clear-mutant-list:
+    name: Problem-clear mutants (list)
+    if: github.head_ref == 'diag/problem-clear-mutants'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      names: ${{ steps.list.outputs.names }}
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Check every mutant applies to this tree
+        run: python3 Tests/Mutants/apply.py --check
+
+      - name: List mutants
+        id: list
+        run: echo "names=$(python3 Tests/Mutants/run.py --list)" >> "$GITHUB_OUTPUT"
+
+  problem-clear-mutants:
+    name: Problem-clear mutant ${{ matrix.mutant }}
+    needs: problem-clear-mutant-list
+    if: github.head_ref == 'diag/problem-clear-mutants'
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    strategy:
+      fail-fast: false
+      matrix:
+        mutant: ${{ fromJSON(needs.problem-clear-mutant-list.outputs.names) }}
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Apply, build and run the problem-clearing cases
+        timeout-minutes: 55
+        run: python3 Tests/Mutants/run.py "${{ matrix.mutant }}"

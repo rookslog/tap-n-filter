@@ -1,0 +1,277 @@
+{
+  "about": "Deliberate one-place faults for the problem-clearing cases in Tests/DirectDragAppChecks/ProblemClearCases.swift. Each entry replaces 'old' (which must occur exactly once in 'file') with 'new'; 'red' lists the case ids that must then print UNIT-A FAIL. Applied only by Tests/Mutants/apply.py on the diagnostic CI job, never committed applied.",
+  "mutants": [
+    {
+      "name": "accepted-command-keeps-save",
+      "why": "an accepted command result no longer clears a save problem",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "            case .accepted: saveProblem = nil",
+      "new": "            case .accepted: break",
+      "red": ["S1b", "S2b", "S4b", "S5b", "S6c", "S7b", "S7d"]
+    },
+    {
+      "name": "accepted-reconciliation-keeps-save",
+      "why": "an accepted reconciliation no longer clears a save problem",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "            if case .accepted = result { saveProblem = nil }",
+      "new": "            if case .accepted = result { }",
+      "red": ["S3b", "S4c", "S5c", "S8b", "S9b"]
+    },
+    {
+      "name": "any-reconciliation-clears-save",
+      "why": "every reconciliation clears a save problem, accepted or not",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "            if case .accepted = result { saveProblem = nil }",
+      "new": "            saveProblem = nil; _ = result",
+      "red": ["S6a", "S6b"]
+    },
+    {
+      "name": "failed-command-sets-no-save-problem",
+      "why": "a command result that is not accepted no longer sets a save problem",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "            default: saveProblem = \"The change could not be saved. \\(result.outcome)\"",
+      "new": "            default: break",
+      "red": ["S1a", "S2a", "S3a", "S4a", "S5a", "S7a", "S7c", "S8a", "S9a"]
+    },
+    {
+      "name": "first-save-problem-kept",
+      "why": "a second failed save keeps the first text instead of the latest",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "            default: saveProblem = \"The change could not be saved. \\(result.outcome)\"",
+      "new": "            default: saveProblem = saveProblem ?? \"The change could not be saved. \\(result.outcome)\"",
+      "red": ["S2a"]
+    },
+    {
+      "name": "live-command-success-keeps-apply",
+      "why": "a successful power, compare or position-only move no longer clears an apply problem",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "                    perfMutationCompleted?(result)\n                    applyDidSucceed()\n                    coordinator.requestRefresh(mode: positionOnly ? .positions : .activation)",
+      "new": "                    perfMutationCompleted?(result)\n                    coordinator.requestRefresh(mode: positionOnly ? .positions : .activation)",
+      "red": ["P1b", "P1c", "P3", "P6"]
+    },
+    {
+      "name": "save-free-command-keeps-apply",
+      "why": "a live command with no save behind it (compare) no longer clears an apply problem",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "                    applyDidSucceed()\n                    coordinator.requestRefresh(mode: positionOnly ? .positions : .activation)",
+      "new": "                    if save { applyDidSucceed() }\n                    coordinator.requestRefresh(mode: positionOnly ? .positions : .activation)",
+      "red": ["P3"]
+    },
+    {
+      "name": "superseded-keeps-apply",
+      "why": "a live command answered superseded no longer counts as completing",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "                    applyDidSucceed()\n                    coordinator.requestRefresh(mode: positionOnly ? .positions : .activation)",
+      "new": "                    if case .superseded = result {} else { applyDidSucceed() }\n                    coordinator.requestRefresh(mode: positionOnly ? .positions : .activation)",
+      "red": ["P6"]
+    },
+    {
+      "name": "executed-slider-keeps-apply",
+      "why": "an executed slider move no longer clears an apply problem",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "                        perfMutationCompleted?(result)\n                        applyDidSucceed()\n                        coordinator.requestRefresh(mode: .positions)",
+      "new": "                        perfMutationCompleted?(result)\n                        coordinator.requestRefresh(mode: .positions)",
+      "red": ["P2"]
+    },
+    {
+      "name": "live-slider-keeps-apply",
+      "why": "a drag sample delivered on the live path no longer clears an apply problem",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "                    case .live: applyDidSucceed()",
+      "new": "                    case .live: break",
+      "red": ["P7b"]
+    },
+    {
+      "name": "live-slider-requests-refresh",
+      "why": "the live-path arm asks for a menu refresh mid-drag",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "                    case .live: applyDidSucceed()",
+      "new": "                    case .live: applyDidSucceed(); coordinator.requestRefresh(mode: .positions)",
+      "red": ["P7c"]
+    },
+    {
+      "name": "coalesced-slider-clears-apply",
+      "why": "a coalesced drag sample, which was never applied, clears an apply problem",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "                    case .coalesced: break",
+      "new": "                    case .coalesced: applyDidSucceed()",
+      "red": ["P8b"]
+    },
+    {
+      "name": "live-path-unavailable",
+      "why": "no slider is ever eligible for the live path, so drags take the ordered path",
+      "file": "Sources/tap-n-filter/LibraryListeningCoordinator.swift",
+      "old": "lifecycle == .running && sliderEligibilityBarriers == 0 && sliderEligibility.contains(",
+      "new": "lifecycle == .running && sliderEligibilityBarriers == 0 && false && sliderEligibility.contains(",
+      "red": ["P7a", "P7b", "P7c", "P8a", "P8b"]
+    },
+    {
+      "name": "live-success-clears-save",
+      "why": "a successful live command also clears the save problem",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "    func applyDidSucceed() {\n        guard applyProblem != nil else { return }",
+      "new": "    func applyDidSucceed() {\n        saveProblem = nil\n        guard applyProblem != nil else { return }",
+      "red": ["S10", "O2b"]
+    },
+    {
+      "name": "apply-clear-not-notified",
+      "why": "clearing an apply problem after a live success does not tell the menu",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "    func applyDidSucceed() {\n        guard applyProblem != nil else { return }\n        applyProblem = nil; changed()",
+      "new": "    func applyDidSucceed() {\n        guard applyProblem != nil else { return }\n        applyProblem = nil",
+      "red": ["P7b"]
+    },
+    {
+      "name": "apply-failure-writes-save-slot",
+      "why": "a thrown live command is recorded as a save problem",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "        applyProblem = \"The change could not be saved. \\(error)\"; changed()",
+      "new": "        saveProblem = \"The change could not be saved. \\(error)\"; changed()",
+      "red": ["P1b", "P4a", "D1a"]
+    },
+    {
+      "name": "first-apply-problem-kept",
+      "why": "a second failed apply keeps the first text instead of the latest",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "        applyProblem = \"The change could not be saved. \\(error)\"; changed()",
+      "new": "        applyProblem = applyProblem ?? \"The change could not be saved. \\(error)\"; changed()",
+      "red": ["P5"]
+    },
+    {
+      "name": "accepted-command-clears-apply",
+      "why": "an accepted command result also clears the apply problem",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "            case .accepted: saveProblem = nil",
+      "new": "            case .accepted: saveProblem = nil; applyProblem = nil",
+      "red": ["P4a", "P4b", "D4b", "O1d"]
+    },
+    {
+      "name": "accepted-reconciliation-clears-apply",
+      "why": "an accepted reconciliation also clears the apply problem",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "            if case .accepted = result { saveProblem = nil }",
+      "new": "            if case .accepted = result { saveProblem = nil; applyProblem = nil }",
+      "red": ["P4b"]
+    },
+    {
+      "name": "dismissal-clears-nothing",
+      "why": "dismissing the alert that showed the apply problem leaves it",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "        guard let shown = shownApplyProblem, applyProblem == shown else { return }\n        applyProblem = nil; changed()",
+      "new": "        guard let shown = shownApplyProblem, applyProblem == shown else { return }\n        _ = shown",
+      "red": ["D1a", "D1b"]
+    },
+    {
+      "name": "dismissal-not-notified",
+      "why": "the dismissal clears the apply problem without telling the menu",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "        guard let shown = shownApplyProblem, applyProblem == shown else { return }\n        applyProblem = nil; changed()",
+      "new": "        guard let shown = shownApplyProblem, applyProblem == shown else { return }\n        applyProblem = nil",
+      "red": ["D1b"]
+    },
+    {
+      "name": "dismissal-clears-save",
+      "why": "dismissing the alert also clears a save problem",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "    func problemDismissed() {\n        defer { shownApplyProblem = nil }",
+      "new": "    func problemDismissed() {\n        saveProblem = nil\n        defer { shownApplyProblem = nil }",
+      "red": ["D2", "D4a"]
+    },
+    {
+      "name": "dismissal-clears-read",
+      "why": "dismissing the alert also clears a read problem",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "    func problemDismissed() {\n        defer { shownApplyProblem = nil }",
+      "new": "    func problemDismissed() {\n        readProblem = nil\n        defer { shownApplyProblem = nil }",
+      "red": ["D3"]
+    },
+    {
+      "name": "dismissal-clears-hidden-apply",
+      "why": "an apply problem hidden behind a save problem counts as shown",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "        shownApplyProblem = readProblem == nil && startupEditorProblem == nil && saveProblem == nil ? applyProblem : nil",
+      "new": "        shownApplyProblem = applyProblem",
+      "red": ["D4b"]
+    },
+    {
+      "name": "apply-shown-before-save",
+      "why": "the apply problem is read before the save problem",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "    var problem: String? { readProblem ?? startupEditorProblem ?? saveProblem ?? applyProblem }",
+      "new": "    var problem: String? { readProblem ?? startupEditorProblem ?? applyProblem ?? saveProblem }",
+      "red": ["O1a", "O1c", "O2a", "D4a"]
+    },
+    {
+      "name": "read-shown-last",
+      "why": "the read problem is read last instead of first",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "    var problem: String? { readProblem ?? startupEditorProblem ?? saveProblem ?? applyProblem }",
+      "new": "    var problem: String? { startupEditorProblem ?? saveProblem ?? applyProblem ?? readProblem }",
+      "red": ["O1b"]
+    },
+    {
+      "name": "startup-writes-save-slot",
+      "why": "a refused startup is recorded as a save problem, which an accepted command clears",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "            default: startupEditorProblem = String(describing: status)",
+      "new": "            default: saveProblem = String(describing: status)",
+      "red": ["W1b"]
+    },
+    {
+      "name": "failed-start-asks-to-save",
+      "why": "quitting after a failed start shows the save alert again",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "        case .saved, .startupUnavailable: return false",
+      "new": "        case .saved: return false",
+      "red": ["Q1", "Q2"]
+    },
+    {
+      "name": "only-empty-failed-start-terminates",
+      "why": "only a failed start with no recorded status quits without the alert",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "        case .saved, .startupUnavailable: return false",
+      "new": "        case .saved, .startupUnavailable(.none): return false",
+      "red": ["Q2"]
+    },
+    {
+      "name": "saved-asks-to-save",
+      "why": "a saved session shows the save alert at quit",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "        case .saved, .startupUnavailable: return false",
+      "new": "        case .startupUnavailable: return false",
+      "red": ["Q3"]
+    },
+    {
+      "name": "every-drain-result-terminates",
+      "why": "a real save failure at quit no longer shows the alert",
+      "file": "Sources/tap-n-filter/LibraryAppSession.swift",
+      "old": "        default: return true\n        }\n    }\n    func finishDrain",
+      "new": "        default: return false\n        }\n    }\n    func finishDrain",
+      "red": ["Q4", "Q5"]
+    },
+    {
+      "name": "quit-skips-decision",
+      "why": "the quit path decides inline instead of through the drain decision",
+      "file": "Sources/tap-n-filter/App.swift",
+      "old": "        if LibraryAppSession.drainNeedsDecision(result) {",
+      "new": "        if !String(describing: result).hasPrefix(\"saved\") {",
+      "red": ["Q6a"]
+    },
+    {
+      "name": "alert-skips-present",
+      "why": "the problem alert reads the problem without recording what it showed",
+      "file": "Sources/tap-n-filter/App.swift",
+      "old": "library?.presentProblem() ?? problem",
+      "new": "library?.problem ?? problem",
+      "red": ["Q6b"]
+    },
+    {
+      "name": "alert-skips-dismissal",
+      "why": "the problem alert no longer reports its dismissal",
+      "file": "Sources/tap-n-filter/App.swift",
+      "old": "    library?.problemDismissed()\n",
+      "new": "    _ = library?.problem\n",
+      "red": ["Q6b"]
+    }
+  ]
+}

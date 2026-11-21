@@ -1,0 +1,9 @@
+import XCTest
+
+// Copied into Tests/DirectDragAppChecks/ by Tests/Mutants/run.py on the diagnostic CI job only, so the
+// problem-clearing cases run on their own and an earlier check in the same target cannot hide their result.
+final class ProblemClearMutantRun: XCTestCase {
+    func test_problem_clear_cases_only() async throws {
+        try await ProblemClearCases.run()
+    }
+}
