@@ -400,14 +400,15 @@ public final class PlaybackController {
     return PlaybackLane(factory: factory, runtime: runtime, generation: generation, slot: slot)
   }
 
-  private func start(_ assignment: ListeningRenderAssignment, lane: PlaybackLane) {
+  /// `wake`: the start is an attempt from `waiting`; the lane keeps reading as waiting while it is under way.
+  private func start(_ assignment: ListeningRenderAssignment, lane: PlaybackLane, wake: Bool = false) {
     let epoch = lane.generation.advance()
     lane.operation += 1
     let operation = lane.operation
     let token = PlanToken(intent: epoch, source: epoch, format: epoch)
     lane.token = token
     lane.bundle = assignment.bundleIdentifier
-    lane.wakeStart = false
+    lane.wakeStart = wake
     lane.wakePending = false
     lane.state = .starting
     lane.failure = nil
@@ -421,6 +422,7 @@ public final class PlaybackController {
       guard let lane else { return }
       let result = await lane.runtime.start(request)
       guard lane.operation == operation else { return }
+      let wasWake = lane.wakeStart
       lane.wakeStart = false
       let retryWake = lane.wakePending
       lane.wakePending = false
@@ -446,7 +448,8 @@ public final class PlaybackController {
       default: lane.state = .idle
       }
       self.startedForTesting?(assignment.id, String(describing: lane.state))
-      self.publishChange()
+      // An attempt from waiting that ends in waiting changed nothing a person can see: publish nothing.
+      if !(wasWake && lane.state == .waiting) { self.publishChange() }
       if retryWake, lane.state == .waiting { self.attemptWaiting(assignment.id, lane: lane) }
     }
   }
@@ -623,12 +626,9 @@ public final class PlaybackController {
 
   /// The activity of each lane, keyed by assignment id, for the menu card.
   public var laneActivities: [UUID: PlaybackLaneActivity] {
-    lanes.mapValues { lane in
-      switch lane.state {
-      case .running: .running
-      case .waiting: .waiting
-      default: .other
-      }
+    lanes.mapValues { lane -> PlaybackLaneActivity in
+      if isWaitingOrWaking(lane) { return .waiting }
+      return lane.state == .running ? .running : .other
     }
   }
 
@@ -732,8 +732,7 @@ public final class PlaybackController {
       publishChange()
       return
     }
-    start(assignment, lane: lane)
-    lane.wakeStart = true
+    start(assignment, lane: lane, wake: true)
   }
 
   private func message(_ failure: RuntimeFailure) -> String {
