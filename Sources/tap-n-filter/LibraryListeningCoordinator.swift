@@ -254,6 +254,8 @@ final class LibraryListeningCoordinator {
     /// Diagnostic trace hook. Inert unless installed; it only observes.
     var traceForTesting: ((String) -> Void)?
     private func trace(_ text: @autoclosure () -> String) { if let traceForTesting { traceForTesting(text()) } }
+    /// Diagnostic read-only view of whether an activation delivery is still owed.
+    var activationPendingForTesting: Bool { activationPending }
     /// M3: returns once no refresh, issued write, mutation or editor read is pending.
     func quiescent() async {
         while true {

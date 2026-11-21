@@ -82,6 +82,11 @@ struct S5Result {
     var noStopHeld = 0
     /// The coordinator's diagnostic trace lines, stamped in milliseconds since the sequence began.
     var traceLog: [String] = []
+    /// Refreshes that took the else branch (no delivery) while an activation was pending.
+    var elsePending = 0
+    /// Steps whose settle returned with an activation still pending; the same after the final settle.
+    var pendingAtStepEnd = 0
+    var pendingAtEnd = false
 }
 
 /// `saveDuringPowerOn` holds the activation refresh that follows the first power ON, lets the debounced
@@ -119,7 +124,10 @@ struct S5Result {
     var phase = "setup"
     func stamp() -> Int { Int(Date().timeIntervalSince(began) * 1000) }
     // The coordinator's diagnostic trace, kept per sequence and printed only for red or late sequences.
-    coordinator.traceForTesting = { line in result.traceLog.append("\(stamp())ms \(line)") }
+    coordinator.traceForTesting = { line in
+        result.traceLog.append("\(stamp())ms \(line)")
+        if line.hasPrefix("refresh #") && line.contains(" else ") && line.hasSuffix("pending=true") { result.elsePending += 1 }
+    }
     _ = await coordinator.attachPlayback { snapshot, original, mode in       // as the App attaches playback
         defer { if let e = pending.last { result.deliveryLog.append("\(e)@\(stamp())ms(\(phase))") } }
         lastDelivered = (snapshot, original, mode)
@@ -138,9 +146,13 @@ struct S5Result {
     /// controller's, unless a start or stop is or becomes held (controller quiescence waits for those). Done when
     /// two passes in a row change nothing observable. The debounce gate is not part of either quiescence.
     func settle() async {
+        // Coordinator trace activity is part of the signature: a follow-up that asks for a refresh after the
+        // coordinator looked quiet (the session's task after a change completes) makes the pass unstable.
         func signature() -> [Int] {
-            [trace.prepares, trace.outputStarts, trace.captureStops, trace.completions.count, trace.heldStarts, trace.heldStops, pending.count]
+            [trace.prepares, trace.outputStarts, trace.captureStops, trace.completions.count, trace.heldStarts, trace.heldStops, pending.count,
+             result.traceLog.count]
         }
+        defer { result.traceLog.append("\(stamp())ms settle returned (\(phase)) pending=\(coordinator.activationPendingForTesting)") }
         var stable = 0
         for _ in 0..<60 {
             let before = signature()
@@ -242,6 +254,7 @@ struct S5Result {
         }
         take(own)
         await settle()
+        if coordinator.activationPendingForTesting { result.pendingAtStepEnd += 1 }
         take(pending); pending = []
         // A power change or slider step whose delivery has not arrived by the step's end (it may arrive later).
         let arrived = result.deliveryLog.count - deliveriesBefore
@@ -258,6 +271,7 @@ struct S5Result {
     phase = "after-debounce"
     await f.debounce.setOpen(true)
     await settle()
+    result.pendingAtEnd = coordinator.activationPendingForTesting
     result.lateDebounce = pending
     take(pending); pending = []
     if let doc = try? await f.owner.snapshot(), let live = try? await f.owner.liveState() {
@@ -322,6 +336,9 @@ func s5Verdict(_ actions: [S5Action], _ r: S5Result) -> [String] {
             print("RUN #\(from + offset) [\(text)] delivered [\(r.translated.map(\.description).joined(separator: " "))] sounds \(r.observation.outputStarts) final \(r.observation.finalState) notes \(r.notes + r.observation.notes)")
         }
         noStopHeld += r.noStopHeld
+        result.elsePending += r.elsePending
+        result.pendingAtStepEnd += r.pendingAtStepEnd
+        if r.pendingAtEnd { result.pendingAtEnd += 1 }
         if !v.isEmpty || !r.lateTaken.isEmpty {
             print("ENUM-TIMES suite=S5 hold=\(hold) index=\(from + offset) deliveries=[\(r.deliveryLog.joined(separator: " "))]")
             for line in r.traceLog { print("ENUM-TRACE suite=S5 hold=\(hold) index=\(from + offset) \(line)") }

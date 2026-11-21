@@ -38,6 +38,11 @@ struct SliceResult {
     var seconds = 0.0
     /// Sequences with a delivery first taken after the final release (S5 only; observation, not a failure).
     var late = 0
+    /// S5 only, over every sequence (observation): refreshes that took the no-delivery branch with an activation
+    /// pending; step settles and final settles that returned with an activation still pending.
+    var elsePending = 0
+    var pendingAtStepEnd = 0
+    var pendingAtEnd = 0
     var redSequences: [String] = []
     /// Set when the slice could not start (for example its shared fixture could not be built).
     var setupFailure: String?
@@ -45,7 +50,7 @@ struct SliceResult {
     var clean: Bool { setupFailure == nil && red == 0 && unsupported == 0 && green == count }
     var summary: String {
         "ENUM-SUMMARY suite=\(suite) level=\(length) hold=\(hold.map { String($0) } ?? "x") from=\(from) count=\(count) total=\(total) "
-            + "green=\(green) red=\(red) unsupported=\(unsupported) result=\(clean ? "clean" : "FAIL") late=\(late) seconds=\(String(format: "%.1f", seconds))"
+            + "green=\(green) red=\(red) unsupported=\(unsupported) result=\(clean ? "clean" : "FAIL") late=\(late) else_pending=\(elsePending) pending_at_step_end=\(pendingAtStepEnd) pending_at_end=\(pendingAtEnd) seconds=\(String(format: "%.1f", seconds))"
             + (setupFailure.map { " setup=\"\($0)\"" } ?? "")
     }
 }
