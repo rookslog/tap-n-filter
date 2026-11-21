@@ -79,7 +79,7 @@ public struct LibraryParameterPlan: Sendable, Equatable {
             guard let authored = allParts.first(where: { $0.id == compiled.address.part }),
                   let profile = sound.profiles[compiled.address] else { throw LibraryError.invalidCanonical }
             let converter = try profiles.recipe(profile)
-            let domains = try profiles.descriptor(profile, type: compiled.type).parameters
+            let domains = try profiles.descriptor(profile, type: compiled.type, includingOptional: true).parameters
             let parameters = try authored.settings.sorted { $0.key.rawValue < $1.key.rawValue }.map { setting -> Parameter in
                 let target = TargetAddress(part: compiled.address, parameter: setting.key)
                 var terms: [Term] = []
@@ -123,7 +123,7 @@ public struct LibraryParameterPlan: Sendable, Equatable {
                 return Parameter(key: setting.key, base: setting.position.value, terms: terms,
                     adjustment: payload.authored.adjustment(authored.id, setting.key), native: convert)
             }
-            return Part(id: authored.id.rawValue, type: authored.type, parameters: parameters)
+            return Part(id: authored.id.rawValue, type: compiled.type, parameters: parameters)
         }
     }
 }

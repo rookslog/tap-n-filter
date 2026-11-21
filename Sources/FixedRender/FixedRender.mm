@@ -8,6 +8,8 @@
 #endif
 #include "Core.hpp"
 #include "ReverbSize.hpp"
+#include "NativeContract.hpp"
+#include "EffectCatalogNative.hpp"
 
 using namespace fixedrender;
 
@@ -36,12 +38,14 @@ struct Binding {
     uint32_t source = 0;
     bool sized = false;
     ReverbSizeBinding size{};
+    const KnobContract *contract = nullptr;
+    const TargetContract *target = nullptr;
     float nativeValue(float value) const noexcept { return sized ? size.seconds(value) : value; }
 };
 
 struct PartRuntime {
     uint32_t count = 0;
-    Binding bindings[MaxParameters]{};
+    Binding bindings[MaxBindings]{};
 };
 
 struct PlanarABL {
@@ -75,24 +79,6 @@ void connectNodes(AVAudioEngine *engine, AVAudioNode *from, AVAudioNode *to, AVA
     }
 }
 
-void configureBinding(Binding &b, uint32_t parameter, uint32_t band) {
-    switch (parameter) {
-        case FR_HP_HZ: case FR_LP_HZ: b.id = kAUNBandEQParam_Frequency + band; break;
-        case FR_WET_PERCENT: b.id = kReverbParam_DryWetMix; break;
-        case FR_PREGAIN_DB: b.id = kDistortionParam_SoftClipGain; break;
-        case FR_THRESHOLD_DB: b.id = kDynamicsProcessorParam_Threshold; break;
-        case FR_HEADROOM_DB: b.id = kDynamicsProcessorParam_HeadRoom; break;
-        case FR_EXPANSION_RATIO: b.id = kDynamicsProcessorParam_ExpansionRatio; break;
-        case FR_EXPANSION_THRESHOLD_DB: b.id = kDynamicsProcessorParam_ExpansionThreshold; break;
-        case FR_ATTACK_SECONDS: b.id = kDynamicsProcessorParam_AttackTime; break;
-        case FR_RELEASE_SECONDS: b.id = kDynamicsProcessorParam_ReleaseTime; break;
-        case FR_MAKEUP_DB: b.id = kDynamicsProcessorParam_OverallGain; break;
-        case FR_GAIN_DB:
-            b.id = kAUNBandEQParam_GlobalGain;
-            break;
-    }
-}
-
 void checkBindingContract(const Binding &b, uint32_t kind, uint32_t parameter,
                           double sampleRate, bool recordMetadata) {
     AudioUnitParameterInfo info{};
@@ -100,34 +86,10 @@ void checkBindingContract(const Binding &b, uint32_t kind, uint32_t parameter,
     check(AudioUnitGetProperty(b.unit, kAudioUnitProperty_ParameterInfo,
           b.scope, b.id, &info, &bytes), FR_NATIVE_CONTRACT);
     if (info.flags & kAudioUnitParameterFlag_CFNameRelease) CFRelease(info.cfNameString);
-    if (b.sized) {
-        ReverbSizeBinding checked;
-        if (!ReverbSizeBinding::admit(b.id, info.unit == kAudioUnitParameterUnit_Seconds,
-            info.flags & kAudioUnitParameterFlag_IsReadable, info.flags & kAudioUnitParameterFlag_IsWritable,
-            info.minValue, info.maxValue, b.size.baseline, checked))
-            throw NativeFailure{FR_NATIVE_CONTRACT, kAudioUnitErr_InvalidParameterValue};
-        return;
-    }
-    float low = 0, high = 0;
-    if (!valueBounds(parameter, sampleRate, low, high) ||
-        !(info.flags & kAudioUnitParameterFlag_IsWritable) ||
-        !range(low, info.minValue, info.maxValue) ||
-        !range(high, info.minValue, info.maxValue))
+    if (!b.contract || !b.target || !admitNativeTarget(*b.contract, *b.target, sampleRate, info.unit,
+        info.flags & kAudioUnitParameterFlag_IsReadable, info.flags & kAudioUnitParameterFlag_IsWritable,
+        info.minValue, info.maxValue) || (b.sized && !range(b.size.baseline, b.target->lower, b.target->upper)))
         throw NativeFailure{FR_NATIVE_CONTRACT, kAudioUnitErr_InvalidParameterValue};
-    bool unitOK = false;
-    switch (parameter) {
-        case FR_HP_HZ: case FR_LP_HZ: unitOK = info.unit == kAudioUnitParameterUnit_Hertz; break;
-        case FR_WET_PERCENT:
-            unitOK = info.unit == kAudioUnitParameterUnit_Percent ||
-                     ((kind == FR_REVERB || kind == FR_SIZED_REVERB) && info.unit == kAudioUnitParameterUnit_EqualPowerCrossfade);
-            break;
-        case FR_EXPANSION_RATIO: unitOK = info.unit == kAudioUnitParameterUnit_Rate; break;
-        case FR_ATTACK_SECONDS: case FR_RELEASE_SECONDS:
-            unitOK = info.unit == kAudioUnitParameterUnit_Seconds; break;
-        case FR_GAIN_DB: unitOK = info.unit == kAudioUnitParameterUnit_Decibels; break;
-        default: unitOK = info.unit == kAudioUnitParameterUnit_Decibels; break;
-    }
-    if (!unitOK) throw NativeFailure{FR_NATIVE_CONTRACT, kAudioUnitErr_InvalidParameterValue};
 #if FR_TESTING
     if (recordMetadata) {
         const uint32_t bit = 1u << parameter;
@@ -138,6 +100,8 @@ void checkBindingContract(const Binding &b, uint32_t kind, uint32_t parameter,
     }
 #else
     (void)recordMetadata;
+    (void)kind;
+    (void)parameter;
 #endif
 }
 
@@ -217,51 +181,46 @@ struct FRPrepared {
         for (uint32_t i = 0; i < s.count; ++i) {
             preparationStage = 100 + i;
             const auto &part = s.parts[i];
+            const auto *contract = effectContract(part.spec.kind);
+            if (!contract) throw NativeFailure{FR_NATIVE_CONTRACT, kAudioUnitErr_InvalidParameterValue};
             AVAudioNode *node = nil;
-            switch (part.spec.kind) {
-                case FR_DEVICE_EQ: case FR_PLACE_EQ: {
-                    auto *eq = [[[AVAudioUnitEQ alloc] initWithNumberOfBands:part.count] autorelease];
-                    for (uint32_t j = 0; j < part.count; ++j) {
+            switch (contract->factory) {
+                case Factory::Equalizer: case Factory::Gain: {
+                    auto *eq = [[[AVAudioUnitEQ alloc] initWithNumberOfBands:contract->bandCount] autorelease];
+                    for (uint32_t j = 0; j < contract->bandCount; ++j) {
                         AVAudioUnitEQFilterParameters *band = eq.bands[j];
-                        band.filterType = part.ids[j] == FR_HP_HZ ?
-                            AVAudioUnitEQFilterTypeHighPass : AVAudioUnitEQFilterTypeLowPass;
-                        band.frequency = part.values[j];
-                        band.bypass = NO;
+                        band.bypass = contract->bands[j] == 0;
+                        if (contract->bands[j]) {
+                            band.filterType = contract->bands[j] == 1 ? AVAudioUnitEQFilterTypeHighPass : AVAudioUnitEQFilterTypeLowPass;
+                            for (uint32_t k = 0; k < part.count; ++k) {
+                                const auto *knob = knobContract(*contract, part.ids[k]);
+                                if (knob && knob->targets[0].id == kAUNBandEQParam_Frequency + j) band.frequency = part.values[k];
+                            }
+                        }
                     }
-                    eq.globalGain = 0;
+                    if (contract->factory == Factory::Equalizer) eq.globalGain = 0;
                     node = eq;
                     break;
                 }
-                case FR_DEVICE_COLOUR: {
+                case Factory::Distortion: {
                     auto *colour = [[[AVAudioUnitDistortion alloc] init] autorelease];
-                    [colour loadFactoryPreset:part.spec.preset == 1 ?
-                        AVAudioUnitDistortionPresetSpeechRadioTower : AVAudioUnitDistortionPresetSpeechGoldenPi];
+                    const auto preset = nativePreset(part.spec.kind, part.spec.preset);
+                    if (preset < 0) throw NativeFailure{FR_NATIVE_CONTRACT, kAudioUnitErr_InvalidParameterValue};
+                    [colour loadFactoryPreset:AVAudioUnitDistortionPreset(preset)];
                     node = colour;
                     break;
                 }
-                case FR_REVERB: case FR_SIZED_REVERB: {
+                case Factory::Reverb: {
                     auto *reverb = [[[AVAudioUnitReverb alloc] init] autorelease];
-                    if (part.spec.kind == FR_SIZED_REVERB) {
-                        switch (part.spec.preset) {
-                            case 1: [reverb loadFactoryPreset:AVAudioUnitReverbPresetSmallRoom]; break;
-                            case 2: [reverb loadFactoryPreset:AVAudioUnitReverbPresetMediumRoom]; break;
-                            case 3: [reverb loadFactoryPreset:AVAudioUnitReverbPresetLargeRoom]; break;
-                            default: throw NativeFailure{FR_NATIVE_CONTRACT, kAudioUnitErr_InvalidParameterValue};
-                        }
-                    } else { [reverb loadFactoryPreset:AVAudioUnitReverbPreset(part.spec.preset - 1)]; }
+                    const auto preset = nativePreset(part.spec.kind, part.spec.preset);
+                    if (preset < 0) throw NativeFailure{FR_NATIVE_CONTRACT, kAudioUnitErr_InvalidParameterValue};
+                    [reverb loadFactoryPreset:AVAudioUnitReverbPreset(preset)];
                     node = reverb;
                     break;
                 }
-                case FR_DYNAMICS: {
-                    AudioComponentDescription description{kAudioUnitType_Effect,
-                        kAudioUnitSubType_DynamicsProcessor, kAudioUnitManufacturer_Apple, 0, 0};
+                case Factory::Effect: {
+                    AudioComponentDescription description{contract->componentType, contract->componentSubtype, contract->manufacturer, 0, 0};
                     node = [[[AVAudioUnitEffect alloc] initWithAudioComponentDescription:description] autorelease];
-                    break;
-                }
-                case FR_GAIN: {
-                    auto *gain = [[[AVAudioUnitEQ alloc] initWithNumberOfBands:1] autorelease];
-                    gain.bands[0].bypass = YES;
-                    node = gain;
                     break;
                 }
             }
@@ -271,41 +230,32 @@ struct FRPrepared {
             const auto unit = unitFor(node);
             preparationStage = 200 + i;
             auto &runtime = parts[i];
-            if (part.spec.kind == FR_SIZED_REVERB) {
-                AudioComponentDescription description{};
-                check(AudioComponentGetDescription(AudioComponentInstanceGetComponent(unit), &description), FR_NATIVE_CONTRACT);
-                if (description.componentType != kAudioUnitType_Effect ||
-                    description.componentSubType != kAudioUnitSubType_MatrixReverb ||
-                    description.componentManufacturer != kAudioUnitManufacturer_Apple)
-                    throw NativeFailure{FR_NATIVE_CONTRACT, kAudioUnitErr_InvalidProperty};
-            }
+            AudioComponentDescription description{};
+            check(AudioComponentGetDescription(AudioComponentInstanceGetComponent(unit), &description), FR_NATIVE_CONTRACT);
+            if (description.componentType != contract->componentType || description.componentSubType != contract->componentSubtype ||
+                description.componentManufacturer != contract->manufacturer)
+                throw NativeFailure{FR_NATIVE_CONTRACT, kAudioUnitErr_InvalidProperty};
             for (uint32_t j = 0; j < part.count; ++j) {
-                const uint32_t copies = part.ids[j] == FR_ROOM_SIZE ? 2 : 1;
-                for (uint32_t copy = 0; copy < copies; ++copy) {
+                const auto *knob = knobContract(*contract, part.ids[j]);
+                if (!knob || knob->targetCount > MaxBindings - runtime.count)
+                    throw NativeFailure{FR_NATIVE_CONTRACT, kAudioUnitErr_InvalidParameterValue};
+                for (uint32_t copy = 0; copy < knob->targetCount; ++copy) {
+                    const auto &target = knob->targets[copy];
                     auto &b = runtime.bindings[runtime.count++];
                     b.unit = unit;
                     b.source = j;
-                    if (part.ids[j] == FR_ROOM_SIZE) {
-                        b.sized = true;
-                        b.id = copy == 0 ? kReverbParam_SmallSize : kReverbParam_LargeSize;
+                    b.contract = knob;
+                    b.target = &target;
+                    b.id = target.id;
+                    b.scope = target.scope;
+                    b.element = target.element;
+                    b.sized = knob->conversion == Conversion::PresetRelativeSize;
+                    if (b.sized) {
                         float baseline = 0;
                         check(AudioUnitGetParameter(unit, b.id, b.scope, b.element, &baseline), FR_NATIVE_CONTRACT);
-                        b.size.baseline = baseline;
-                        checkBindingContract(b, part.spec.kind, part.ids[j], c.sample_rate, false);
-                        AudioUnitParameterInfo info{};
-                        UInt32 bytes = sizeof(info);
-                        check(AudioUnitGetProperty(unit, kAudioUnitProperty_ParameterInfo, b.scope, b.id, &info, &bytes), FR_NATIVE_CONTRACT);
-                        if (info.flags & kAudioUnitParameterFlag_CFNameRelease) CFRelease(info.cfNameString);
-                        if (!ReverbSizeBinding::admit(b.id, info.unit == kAudioUnitParameterUnit_Seconds,
-                            info.flags & kAudioUnitParameterFlag_IsReadable, info.flags & kAudioUnitParameterFlag_IsWritable,
-                            info.minValue, info.maxValue, baseline, b.size))
-                            throw NativeFailure{FR_NATIVE_CONTRACT, kAudioUnitErr_InvalidParameterValue};
-                    } else {
-                        configureBinding(b, part.ids[j], j);
-                        if (part.spec.kind == FR_DEVICE_COLOUR && part.ids[j] == FR_WET_PERCENT)
-                            b.id = kDistortionParam_FinalMix;
-                        checkBindingContract(b, part.spec.kind, part.ids[j], c.sample_rate, false);
+                        b.size = {b.id, target.lower, baseline, target.upper};
                     }
+                    checkBindingContract(b, part.spec.kind, part.ids[j], c.sample_rate, false);
                     const float value = b.nativeValue(part.values[j]);
                     b.ramp.current = b.ramp.target = value;
                     if (!b.sized) check(AudioUnitSetParameter(unit, b.id, b.scope, b.element, value, 0));

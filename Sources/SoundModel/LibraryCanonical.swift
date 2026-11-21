@@ -113,7 +113,9 @@ func libraryDigest(_ data: Data) -> String {
 
 extension LibraryPayload {
     func validateCanonical() throws {
-        guard (1...5).contains(canonicalVersion) else { throw LibraryError.unknownCanonicalVersion(canonicalVersion) }
+        guard (1...6).contains(canonicalVersion) else { throw LibraryError.unknownCanonicalVersion(canonicalVersion) }
+        let engine = block.needsVersion6 || usesExpandedReverbDomain
+        guard (canonicalVersion == 6) == engine, canonicalVersion < 6 || !block.hasLegacySizedReverb else { throw LibraryError.invalidCanonical }
         guard canonicalVersion >= 5 || !block.needsVersion5 else { throw LibraryError.invalidCanonical }
         try block.validateOptionControls()
         guard canonicalVersion >= 4 || !block.needsVersion4 else { throw LibraryError.invalidCanonical }

@@ -60,7 +60,7 @@ extension SoundBlock {
 }
 
 extension LibraryPayload {
-    var requiresSchema8: Bool { canonicalVersion == 5 || block.needsVersion5 }
+    var requiresSchema8: Bool { (canonicalVersion == 5 || canonicalVersion == 6) || block.needsVersion5 }
 }
 
 extension LibraryCompileContext {

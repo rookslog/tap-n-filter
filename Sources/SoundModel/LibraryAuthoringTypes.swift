@@ -202,8 +202,8 @@ struct LibraryEditContext: Sendable {
 extension LibraryPayload {
     func replacing(block: SoundBlock? = nil, presentation: [LibraryControl]? = nil,
                    fields: LibraryAuthoredFields? = nil) throws -> Self {
-        var changed = block ?? self.block
-        let version = changed.needsVersion5 || canonicalVersion == 5 ? 5 : (changed.needsVersion4 || canonicalVersion == 4 ? 4 : max(3, canonicalVersion))
+        var changed = try (block ?? self.block).unifyingAuthoredReverb()
+        let version = authoringVersion(for: changed)
         if version >= 4 { changed = try changed.promoted() }
         return Self(profile: profile, block: changed, presentation: presentation ?? self.presentation,
             canonicalVersion: version, descendantDefaults: descendantDefaults, authored: fields ?? authored)

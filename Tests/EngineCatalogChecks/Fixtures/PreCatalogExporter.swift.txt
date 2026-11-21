@@ -1,0 +1,92 @@
+// Exporter that wrote pre-catalog-engine-values.json. Kept for reproducibility; not compiled by
+// SwiftPM (it is a .txt resource) because it only builds against the tree before the effect catalog.
+//
+// To regenerate: export commit 96ab70f (`git archive 96ab70f Sources Tests/SoundModelTests/Fixtures`),
+// build its SoundModel, SessionStore and PlaybackRenderBridge (with FixedRender.mm and PlaybackDSP.cpp)
+// with -enable-testing, then compile this file together with the `WitnessRows` enum and `WitnessError`
+// copied from the end of ../Checks.swift (without the ABI 2 `checkPresence` extension), and run:
+//   exporter <empty-scratch-dir> Tests/SoundModelTests/Fixtures/everyday-v5-library.json pre-catalog-engine-values.json
+// The saved archive's IDs are random per run; the engine-value rows are deterministic.
+import Foundation
+import PlaybackDSP
+import PlaybackRenderBridge
+import SessionStore
+@testable import SoundModel
+
+extension WitnessRows {
+    // ABI 1 has no presence mask.
+    static func checkPresence(_ part: FRPart, _ values: [FRValue]) throws {}
+}
+
+@main struct OldExporter {
+    static func main() async {
+        do { try await run() } catch { print("FAIL \(error)"); exit(1) }
+    }
+
+    static func run() async throws {
+        let args = CommandLine.arguments
+        let directory = URL(fileURLWithPath: args[1], isDirectory: true)
+        let everydayFixture = URL(fileURLWithPath: args[2])
+        let output = URL(fileURLWithPath: args[3])
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let format = try RenderProcessingFormat(sampleRate: 48_000, channels: 2, maximumFrames: 512)
+        let profiles = try LibraryProfiles(), quick = try QuickMenuEveryday()
+
+        // 1. Seed and save through the pre-change store and session.
+        let source = try LibraryArchive.initial(profiles: profiles, builtins: .quickMenu)
+        let url = directory.appendingPathComponent("library.json")
+        let store = LibrarySessionFile(url: url, maximumBytes: WitnessRows.limits.maximumBytes)
+        _ = try await store.load()
+        guard await store.commit(try source.encoded()).isAccepted else { throw WitnessError(message: "seed refused") }
+        let session = try await SoundLibrarySession(persistence: store, limits: WitnessRows.limits)
+        let definition = source.revisions[0].definition.id.rawValue
+        for target in ["witness.moved", "witness.default"] { _ = try await session.select(definition, on: target) }
+        let child = quick.definition.content.optionControls[0]
+        let parentControl = quick.definition.content.controls.first { $0.id == child.parentChoice }!
+        if case .choice(let choice) = parentControl.face {
+            try await session.move(child.parentChoice.rawValue, on: "witness.moved", to: .scalar(try choice.position(of: child.option).value))
+        }
+        try await session.move(child.child.rawValue, on: "witness.moved", to: .scalar(0.73))
+        _ = try await session.checkpoint()
+        let saved = try Data(contentsOf: url)
+
+        // 2. Reopen the saved bytes and lower what the app would render.
+        let reopened = try await SoundLibrarySession(persistence: LibrarySessionFile(url: url, maximumBytes: WitnessRows.limits.maximumBytes), limits: WitnessRows.limits)
+        var app: [String: String] = [:]
+        for assignment in try await reopened.snapshot().assignments {
+            app[assignment.target] = try WitnessRows.line(assignment.parts, format: format)
+        }
+
+        // 3. Lower the saved builtin revision across its control grid.
+        let archive = try SoundLibrarySession.storedArchive(saved, limits: WitnessRows.limits)
+        let revision = archive.revisions[0]
+        let context = LibraryCompileContext(profiles: profiles, revisions: [:], limits: nil)
+        var grid: [String] = []
+        for frame in try WitnessRows.controlGrid(revision.payload.block) {
+            let sound = try CompiledSound(payload: revision.payload, root: quick.root, reference: nil, context: context, listening: UseListeningState(values: frame))
+            grid.append(try WitnessRows.line(try profiles.native(sound), format: format))
+        }
+
+        // 4. A pre-catalog document from the existing test fixtures, at its saved defaults.
+        let everydayBytes = try Data(contentsOf: everydayFixture)
+        let migratedURL = directory.appendingPathComponent("everyday-migrated.json")
+        let migratedStore = LibrarySessionFile(url: migratedURL, maximumBytes: WitnessRows.limits.maximumBytes)
+        let everydaySession = try await SoundLibrarySession(persistence: migratedStore, limits: WitnessRows.limits, migratingSchema2: everydayBytes)
+        var everyday: [String: String] = [:]
+        for assignment in try await everydaySession.snapshot().assignments {
+            everyday[assignment.target] = try WitnessRows.line(assignment.parts, format: format)
+        }
+
+        let json: [String: Any] = [
+            "about": "Written by the pre-catalog tree (FixedRender ABI 1). Engine values are mapper-lowered program parts and frame values as Float bits at 48 kHz stereo.",
+            "archiveSchema": archive.schema,
+            "builtinContentHash": revision.contentHash,
+            "savedArchiveBase64": saved.base64EncodedString(),
+            "appAssignments": app,
+            "builtinGrid": grid,
+            "everydaySchema2Assignments": everyday,
+        ]
+        try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]).write(to: output)
+        print("WROTE app=\(app.count) grid=\(grid.count) everyday=\(everyday.count) schema=\(archive.schema)")
+    }
+}

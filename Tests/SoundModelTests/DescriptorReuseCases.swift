@@ -8,6 +8,7 @@ private struct DescriptorFacts: Equatable {
     let seeds: [UInt64]
     let units: [String]
     let discrete: [Bool]
+    let minimumInputs: [UInt64]
     init(_ descriptor: LibraryPartDescriptor) {
         type = descriptor.type
         keys = descriptor.parameters.map(\.key)
@@ -20,24 +21,50 @@ private struct DescriptorFacts: Equatable {
         seeds = descriptor.parameters.map { $0.seed.bitPattern }
         units = descriptor.parameters.map(\.unit)
         discrete = descriptor.parameters.map(\.discrete)
+        minimumInputs = descriptor.parameters.map { $0.specification.minimumInput.bitPattern }
     }
 }
 
 struct DescriptorReuseCases {
-    // Frozen pre-reuse descriptor behavior is the parity oracle, not a timing test.
+    // Freeze 51137c6's numeric facts independently of the generated recipe consumers.
+    // Filters historically read seeds back through domain.value(domain.position(seed)).
     private func original(_ profiles: LibraryProfiles, _ profile: String, type: String) throws -> LibraryPartDescriptor {
         _ = try profiles.recipe(profile)
         let kinds = ["deviceEQ", "deviceColour", "placeEQ", "reverb", "dynamics", "gain"]
         guard kinds.contains(type) || (profile == LibraryProfiles.quickMenu && type == "sizedReverb") else {
             throw LibraryError.unsupportedEdit
         }
+        let frequency = ParameterDomain.logarithmic(20, 20_000)
+        let everyday: [String: [(String, ParameterDomain, Double)]] = [
+            "deviceEQ": [("highPassHz", frequency, 20), ("lowPassHz", frequency, 20_000)],
+            "deviceColour": [("wetPercent", .linear(0, 100), 0), ("preGainDb", .linear(-80, 20), 0),
+                ("factoryPreset", .linear(1, 2), 1)],
+            "placeEQ": [("lowPassHz", frequency, 20_000)],
+            "reverb": [("wetPercent", .linear(0, 100), 0), ("roomPreset", .linear(1, 3), 1)],
+            "dynamics": [("thresholdDb", .linear(-40, 20), 20), ("headroomDb", .linear(0.1, 40), 40),
+                ("expansionRatio", .linear(1, 50), 1), ("expansionThresholdDb", .linear(-120, 0), -120),
+                ("attackSeconds", .linear(0.0001, 0.2), 0.001), ("releaseSeconds", .linear(0.01, 3), 0.180),
+                ("makeupDb", .linear(-40, 40), 0)],
+            "gain": [("gainDb", .linear(-96, 6), 0)],
+        ]
+        let filters: [String: [(String, ParameterDomain, Double)]] = [
+            "deviceEQ": everyday["deviceEQ"]!,
+            "reverb": [("wetPercent", .linear(0, 100), 0), ("roomPreset", .linear(1, 3), 2)],
+            "dynamics": [("thresholdDb", .linear(-40, 20), 20), ("headroomDb", .linear(0.1, 40), 40),
+                ("expansionRatio", .linear(1, 50), 1), ("expansionThresholdDb", .linear(-120, 0), -120),
+                ("attackSeconds", .linear(0.001, 0.2), 0.080), ("releaseSeconds", .linear(0.01, 3), 0.650),
+                ("makeupDb", .linear(-40, 40), 0)],
+            "gain": [("gainDb", .linear(-24, 6), 0)],
+        ]
         let parameters: [(String, ParameterDomain, Double)]
         if type == "sizedReverb" {
             parameters = [("wetPercent", .linear(0, 100), 0), ("roomPreset", .linear(1, 3), 1), ("roomSize", .linear(0, 1), 0.5)]
-        } else if profile == LibraryProfiles.filters, ["deviceEQ", "reverb", "dynamics", "gain"].contains(type) {
-            parameters = try Filters().authoringParameters(type: type)
+        } else if profile == LibraryProfiles.filters, let original = filters[type] {
+            parameters = try original.map { key, domain, seed in
+                (key, domain, domain.value(try domain.position(seed)))
+            }
         } else {
-            parameters = try Everyday().authoringParameters(type: type)
+            parameters = everyday[type]!
         }
         return LibraryPartDescriptor(type: type, parameters: try parameters.map { key, domain, seed in
             let unit: String
@@ -46,8 +73,13 @@ struct DescriptorReuseCases {
             else if key.hasSuffix("Seconds") { unit = "s" }
             else if key.hasSuffix("Percent") { unit = "%" }
             else { unit = "" }
+            let lower: Double
+            switch domain {
+            case .linear(let value, _), .logarithmic(let value, _): lower = value
+            }
             return LibraryParameterDescriptor(key: try ParameterKey(key), domain: domain, seed: seed, unit: unit,
-                discrete: key == "factoryPreset" || key == "roomPreset")
+                discrete: key == "factoryPreset" || key == "roomPreset",
+                nativeLower: key == "attackSeconds" ? max(lower, 0.001) : lower)
         })
     }
 

@@ -35,7 +35,7 @@ FRResult pd_render(PDEntry *, const FRInput *, FROutput *, uint32_t, PDRenderRep
 void pd_stats(const PDEntry *, PDStats *);
 void pd_destroy(PDEntry *);
 
-FRResult pd_program_part(FRProgram *, uint32_t index, uint64_t key, uint32_t kind, uint32_t preset);
+FRResult pd_program_part(FRProgram *, uint32_t index, uint64_t key, uint32_t kind, uint32_t preset, uint32_t parameter_mask);
 FRResult pd_frame_value(FRFrame *, uint32_t index, uint64_t key, uint32_t parameter, float value);
 FRResult pd_input_plane(FRInput *, uint32_t channel, const float *);
 FRResult pd_output_plane(FROutput *, uint32_t channel, float *);

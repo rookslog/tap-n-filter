@@ -142,7 +142,7 @@ struct MappingEvaluation {
                 guard let profile = profiles[path] else { throw LibraryError.invalidCanonical }
                 let allowed = try context.profiles.catalog(profile) + context.profiles.authoredCatalog(profile)
                 let keys = original.settings.map(\.key)
-                guard Set(keys).count == keys.count, allowed.contains(where: { $0.type == original.type && Set($0.parameters) == Set(keys) }) else { throw LibraryError.invalidCanonical }
+                guard Set(keys).count == keys.count, allowed.contains(where: { $0.type == original.type && $0.admits(Set(keys)) }) else { throw LibraryError.invalidCanonical }
                 let address = TargetAddress(part: PartAddress(occurrence: Occurrence(root: root, path: path), part: PartID(part)), parameter: try ParameterKey(parameter))
                 guard !active || parts[address] != nil else { throw LibraryError.invalidCanonical }
             case .control:

@@ -160,9 +160,9 @@ extern "C" void pd_stats(const PDEntry *e, PDStats *s) {
     s->native_status = e->nativeStat.load(std::memory_order_relaxed);
 }
 
-extern "C" FRResult pd_program_part(FRProgram *p, uint32_t index, uint64_t key, uint32_t kind, uint32_t preset) {
+extern "C" FRResult pd_program_part(FRProgram *p, uint32_t index, uint64_t key, uint32_t kind, uint32_t preset, uint32_t parameter_mask) {
     if (!p || index >= FR_MAX_PARTS) return FR_INVALID_ARGUMENT;
-    p->parts[index] = {key, kind, preset};
+    p->parts[index] = {key, kind, preset, parameter_mask, 0};
     p->count = std::max(p->count, index + 1);
     return FR_OK;
 }

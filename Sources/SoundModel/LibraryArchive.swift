@@ -10,7 +10,7 @@ extension LibraryArchive {
         if sourceSchema == 2 && decoder.userInfo[.libraryLegacy] as? Bool != true { throw LibraryError.migrationRequired }
         if sourceSchema == 3 && decoder.userInfo[.librarySchema3] as? Bool != true { throw LibraryError.migrationRequired }
         if sourceSchema == 4 && decoder.userInfo[.librarySchema4] as? Bool != true { throw LibraryError.migrationRequired }
-        guard sourceSchema == 8 || sourceSchema == 7 || sourceSchema == 6 || sourceSchema == 5 || (sourceSchema == 4 && decoder.userInfo[.librarySchema4] as? Bool == true) || (sourceSchema == 3 && decoder.userInfo[.librarySchema3] as? Bool == true)
+        guard sourceSchema == 9 || sourceSchema == 8 || sourceSchema == 7 || sourceSchema == 6 || sourceSchema == 5 || (sourceSchema == 4 && decoder.userInfo[.librarySchema4] as? Bool == true) || (sourceSchema == 3 && decoder.userInfo[.librarySchema3] as? Bool == true)
             || (sourceSchema == 2 && decoder.userInfo[.libraryLegacy] as? Bool == true) else { throw LibraryError.unsupportedFormat }
         try LibraryWireAdmission.check(decoder, legacy: sourceSchema == 2, metadata: sourceSchema >= 4, authoring: sourceSchema >= 5)
         format = try c.decode(String.self, forKey: .format)
@@ -152,20 +152,25 @@ extension LibraryArchive {
     }
 
     func validated(profiles: LibraryProfiles, limits: LibraryLimits) throws -> (DocumentContent, LibraryMetadata) {
-        guard format == "tnf.library", (schema == 5 || schema == 6 || schema == 7 || schema == 8) else { throw LibraryError.unsupportedFormat }
+        guard format == "tnf.library", (schema == 5 || schema == 6 || schema == 7 || schema == 8 || schema == 9) else { throw LibraryError.unsupportedFormat }
         let v5 = revisions.contains { $0.payload.requiresSchema8 } || uses.contains { $0.draft?.requiresSchema8 == true } || workspaces.contains { $0.payload.requiresSchema8 }
-        guard schema == 8 || !v5 else { throw LibraryError.unsupportedFormat }
+        let v6 = revisions.contains { $0.payload.requiresSchema9 } || uses.contains { $0.draft?.requiresSchema9 == true } || workspaces.contains { $0.payload.requiresSchema9 }
+        guard (schema == 9) == v6 else { throw LibraryError.unsupportedFormat }
+        guard schema >= 8 || !v5 else { throw LibraryError.unsupportedFormat }
         if schema == 5 {
             guard !revisions.contains(where: { $0.canonicalVersion == 4 }),
                   !uses.contains(where: { ($0.draft?.canonicalVersion ?? 0) == 4 || $0.positions.contains { $0.dormant || !$0.adjustments.isEmpty } }),
                   !workspaces.contains(where: { $0.payload.canonicalVersion == 4 || $0.positions.contains { $0.dormant || !$0.adjustments.isEmpty } }) else { throw LibraryError.unsupportedFormat }
         }
         let hasIntent = uses.contains { !($0.optionRemovals ?? []).isEmpty } || workspaces.contains { !($0.optionRemovals ?? []).isEmpty }
-        guard schema == 8 || (schema == 7) == hasIntent else { throw LibraryError.unsupportedFormat }
+        guard schema >= 8 || (schema == 7) == hasIntent else { throw LibraryError.unsupportedFormat }
         guard revisions.count <= limits.maximumRevisions else { throw LibraryError.limitExceeded }
         guard Set(revisions.map { $0.definition.version }).count == revisions.count,
               Set(heads.map(\.definition)).count == heads.count,
               Set(heads.map(\.definition)) == Set(revisions.map { $0.definition.id }) else { throw LibraryError.invalidArchive }
+        for record in revisions {
+            guard record.contentHash == (try record.payload.contentHash) else { throw LibraryError.invalidArchive }
+        }
         let metadata = LibraryMetadata(revisions: revisions, heads: heads, owned: uses, provenance: provenance, workspaces: workspaces)
         let context = try metadata.context(profiles: profiles, limits: limits)
         for head in heads {
@@ -180,7 +185,6 @@ extension LibraryArchive {
             guard record.origin == "builtin" || record.origin == "custom" else { throw LibraryError.invalidArchive }
             _ = try CompiledSound(payload: record.payload, root: RootUseID(), reference: record.definition.reference,
                                   context: context, listening: UseListeningState(positions: [:]))
-            guard record.contentHash == (try record.payload.contentHash) else { throw LibraryError.invalidArchive }
             content.definitions.append(record.definition)
         }
         guard Set(workspaces.map(\.definition)).count == workspaces.count else { throw LibraryError.invalidArchive }
@@ -264,7 +268,8 @@ extension LibraryMetadata {
             ($0.draft?.canonicalVersion ?? 0) == 4 || $0.positions.contains { $0.dormant || !$0.adjustments.isEmpty }
         } || workspaces.contains { $0.payload.canonicalVersion == 4 || $0.positions.contains { $0.dormant || !$0.adjustments.isEmpty } }
         let hasIntent = records.contains { !($0.optionRemovals ?? []).isEmpty } || workspaces.contains { !($0.optionRemovals ?? []).isEmpty }
-        return LibraryArchive(format: "tnf.library", schema: v5 ? 8 : (hasIntent ? 7 : (v4 ? 6 : 5)), commit: token, provenance: provenance,
+        let v6 = revisions.contains { $0.payload.requiresSchema9 } || records.contains { $0.draft?.requiresSchema9 == true } || workspaces.contains { $0.payload.requiresSchema9 }
+        return LibraryArchive(format: "tnf.library", schema: v6 ? 9 : (v5 ? 8 : (hasIntent ? 7 : (v4 ? 6 : 5))), commit: token, provenance: provenance,
             revisions: revisions, heads: heads, uses: records, assignments: content.assignments, enabled: enabled, workspaces: workspaces)
     }
 }

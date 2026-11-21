@@ -2,6 +2,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include "include/FixedRender.h"
+#include "EffectCatalog.hpp"
 
 namespace fixedrender {
 
@@ -11,10 +13,14 @@ struct ReverbSizeBinding {
 
     static bool admit(uint32_t parameter, bool seconds, bool readable, bool writable,
                       float minimum, float maximum, float current, ReverbSizeBinding &out) noexcept {
-        if ((parameter != 2 && parameter != 3) || !seconds || !readable || !writable ||
+        const auto *effect = effectContract(FR_REVERB);
+        const auto *knob = effect ? knobContract(*effect, FR_ROOM_SIZE) : nullptr;
+        const TargetContract *target = nullptr;
+        if (knob) for (uint32_t i = 0; i < knob->targetCount; ++i)
+            if (knob->targets[i].id == parameter) target = &knob->targets[i];
+        if (!target || !seconds || !readable || !writable ||
             !std::isfinite(minimum) || !std::isfinite(maximum) || !std::isfinite(current)) return false;
-        const float lower = parameter == 2 ? 0.0001f : 0.005f;
-        const float upper = parameter == 2 ? 0.05f : 0.15f;
+        const float lower = target->lower, upper = target->upper;
         if (minimum > lower || maximum < upper || current < lower || current > upper) return false;
         out = {parameter, lower, current, upper};
         return true;

@@ -89,8 +89,9 @@ extension LibraryPayload {
             return item
         }
         guard changed != block || display != presentation || defaults != descendantDefaults else { return self }
+        changed = try changed.unifyingAuthoredReverb()
         return LibraryPayload(profile: profile, block: changed, presentation: display,
-            canonicalVersion: changed.needsVersion5 ? 5 : (changed.needsVersion4 ? max(4, canonicalVersion) : max(3, canonicalVersion)), descendantDefaults: defaults, authored: authored)
+            canonicalVersion: authoringVersion(for: changed), descendantDefaults: defaults, authored: authored)
     }
 }
 

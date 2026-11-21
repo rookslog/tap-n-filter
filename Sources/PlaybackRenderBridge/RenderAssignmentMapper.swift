@@ -1,4 +1,5 @@
 import Foundation
+import EffectCatalog
 import PlaybackDSP
 import SoundModel
 
@@ -54,6 +55,7 @@ public struct NativeRenderPart: Equatable, Sendable {
     public let key: UInt64
     public let kind: UInt32
     public let preset: UInt32
+    public let parameterMask: UInt32
 }
 
 public struct CutoffAdaptation: Equatable, Sendable {
@@ -110,51 +112,6 @@ public struct RenderAssignmentMapper {
         _ = try mapper.map(parts, format: format, token: token)
     }
 
-    private struct Parameter {
-        let name: String
-        let id: UInt32
-        let range: ClosedRange<Double>
-        init(_ name: String, _ id: FRParameter, _ range: ClosedRange<Double>) {
-            self.name = name; self.id = id.rawValue; self.range = range
-        }
-    }
-
-    private struct Kind {
-        let id: FRPartKind
-        let parameters: [Parameter]
-        let preset: String?
-        let presets: ClosedRange<Double>
-    }
-
-    private func kind(_ name: String) throws -> Kind {
-        switch name {
-        case "deviceEQ": return Kind(id: FR_DEVICE_EQ, parameters: [
-            Parameter("highPassHz", FR_HP_HZ, 20...20_000),
-            Parameter("lowPassHz", FR_LP_HZ, 20...20_000)], preset: nil, presets: 0...0)
-        case "deviceColour": return Kind(id: FR_DEVICE_COLOUR, parameters: [
-            Parameter("wetPercent", FR_WET_PERCENT, 0...100),
-            Parameter("preGainDb", FR_PREGAIN_DB, -80...20)], preset: "factoryPreset", presets: 1...2)
-        case "placeEQ": return Kind(id: FR_PLACE_EQ, parameters: [
-            Parameter("lowPassHz", FR_LP_HZ, 20...20_000)], preset: nil, presets: 0...0)
-        case "reverb": return Kind(id: FR_REVERB, parameters: [
-            Parameter("wetPercent", FR_WET_PERCENT, 0...100)], preset: "roomPreset", presets: 1...3)
-        case "sizedReverb": return Kind(id: FR_SIZED_REVERB, parameters: [
-            Parameter("wetPercent", FR_WET_PERCENT, 0...100),
-            Parameter("roomSize", FR_ROOM_SIZE, 0...1)], preset: "roomPreset", presets: 1...3)
-        case "dynamics": return Kind(id: FR_DYNAMICS, parameters: [
-            Parameter("thresholdDb", FR_THRESHOLD_DB, -40...20),
-            Parameter("headroomDb", FR_HEADROOM_DB, 0.1...40),
-            Parameter("expansionRatio", FR_EXPANSION_RATIO, 1...50),
-            Parameter("expansionThresholdDb", FR_EXPANSION_THRESHOLD_DB, -120...0),
-            Parameter("attackSeconds", FR_ATTACK_SECONDS, 0.001...0.2),
-            Parameter("releaseSeconds", FR_RELEASE_SECONDS, 0.01...3),
-            Parameter("makeupDb", FR_MAKEUP_DB, -40...40)], preset: nil, presets: 0...0)
-        case "gain": return Kind(id: FR_GAIN, parameters: [
-            Parameter("gainDb", FR_GAIN_DB, -96...6)], preset: nil, presets: 0...0)
-        default: throw RenderBridgeError.invalidSnapshot("unsupported part type \(name)")
-        }
-    }
-
     private mutating func map(_ parts: [ListeningRenderPart], format: RenderProcessingFormat,
                               token: FRToken) throws -> LoweredRenderState {
         guard parts.count <= Int(FR_MAX_PARTS) else { throw RenderBridgeError.invalidSnapshot("part capacity") }
@@ -167,42 +124,48 @@ public struct RenderAssignmentMapper {
             guard occurrences.insert(occurrence).inserted else {
                 throw RenderBridgeError.invalidSnapshot("duplicate occurrence")
             }
-            let spec = try kind(part.type)
+            guard let spec = EffectCatalog.effect(part.type) else {
+                throw RenderBridgeError.invalidSnapshot("unsupported part type \(part.type)")
+            }
             var values: [String: Double] = [:]
             for parameter in part.parameters {
                 guard parameter.value.isFinite, values.updateValue(parameter.value, forKey: parameter.key) == nil else {
                     throw RenderBridgeError.invalidSnapshot("duplicate or nonfinite parameter \(parameter.key)")
                 }
             }
-            var expected = Set(spec.parameters.map(\.name))
-            if let preset = spec.preset { expected.insert(preset) }
-            guard Set(values.keys) == expected else {
+            var required = Set(spec.parameters.filter { !$0.optional }.map(\.key))
+            var allowed = Set(spec.parameters.map(\.key))
+            if let preset = spec.presetKey { required.insert(preset); allowed.insert(preset) }
+            guard required.isSubset(of: Set(values.keys)), Set(values.keys).isSubset(of: allowed) else {
                 throw RenderBridgeError.invalidSnapshot("missing or extra parameter for \(part.type)")
             }
             let preset: UInt32
-            if let name = spec.preset, let value = values[name] {
-                guard spec.presets.contains(value), value.rounded(.towardZero) == value else {
+            if let name = spec.presetKey, let value = values[name] {
+                guard value >= 0, value <= Double(UInt32.max), value.rounded(.towardZero) == value,
+                      spec.presets.contains(UInt32(value)) else {
                     throw RenderBridgeError.invalidSnapshot("unsupported preset \(name)")
                 }
                 preset = UInt32(value)
             } else { preset = 0 }
+            let parameters = spec.parameters.filter { values[$0.key] != nil }
+            let mask = parameters.reduce(UInt32(0)) { $0 | (1 << $1.id) }
             let key: UInt64
             if let known = keys[occurrence] { key = known }
             else {
                 guard nextKey < UInt64.max else { throw RenderBridgeError.exhaustedGeneration }
                 key = nextKey; nextKey += 1; keys[occurrence] = key
             }
-            signature.append(NativeRenderPart(key: key, kind: spec.id.rawValue, preset: preset))
-            _ = pd_program_part(&program, UInt32(index), key, spec.id.rawValue, preset)
-            for parameter in spec.parameters {
-                guard let raw = values[parameter.name], parameter.range.contains(raw) else {
-                    throw RenderBridgeError.invalidSnapshot("out-of-range parameter \(parameter.name)")
+            signature.append(NativeRenderPart(key: key, kind: spec.kind, preset: preset, parameterMask: mask))
+            _ = pd_program_part(&program, UInt32(index), key, spec.kind, preset, mask)
+            for parameter in parameters {
+                guard let raw = values[parameter.key], (parameter.lower...parameter.upper).contains(raw) else {
+                    throw RenderBridgeError.invalidSnapshot("out-of-range parameter \(parameter.key)")
                 }
                 let lowered: Double
-                if parameter.id == FR_HP_HZ.rawValue || parameter.id == FR_LP_HZ.rawValue {
-                    lowered = min(raw, min(20_000, 0.49 * format.sampleRate))
+                if parameter.cutoff {
+                    lowered = min(raw, min(parameter.upper, 0.49 * format.sampleRate))
                     if lowered != raw {
-                        adaptations.append(CutoffAdaptation(occurrence: occurrence, parameter: parameter.name,
+                        adaptations.append(CutoffAdaptation(occurrence: occurrence, parameter: parameter.key,
                                                             authoredHz: raw, loweredHz: lowered))
                     }
                 } else { lowered = raw }

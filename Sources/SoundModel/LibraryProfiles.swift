@@ -1,7 +1,9 @@
 import Foundation
+import EffectCatalog
 
 struct LibraryProfiles: Sendable {
     static let everyday = "tnf.native.everyday.v1"
+    static let expandedReverb = "tnf.native.expanded-reverb.v1"
     static let quickMenu = "tnf.native.quick-menu.v1"
     static let filters = "tnf.native.filters.v1"
     static let legacyEveryday = "tnf.native.everyday-legacy.v1"
@@ -12,7 +14,7 @@ struct LibraryProfiles: Sendable {
 
     func recipe(_ profile: String) throws -> any BuiltinSound {
         switch profile {
-        case Self.everyday, Self.legacyEveryday: return recipes.all[0]
+        case Self.everyday, Self.legacyEveryday, Self.expandedReverb: return recipes.all[0]
         case Self.filters: return recipes.all[1]
         case Self.quickMenu: return quickMenuRecipe
         default: throw LibraryError.unknownProfile(profile)
@@ -35,15 +37,17 @@ struct LibraryProfiles: Sendable {
     }
     func catalog(_ profile: String) throws -> [PartDescriptor] {
         let recipe = try recipe(profile)
-        let types = Set(recipe.definition.content.pieces.compactMap { piece -> String? in
+        var types = Set(recipe.definition.content.pieces.compactMap { piece -> String? in
             if case .part(let part) = piece { return part.type }; return nil
         })
-        let catalog = profile == Self.quickMenu ? recipes.catalog + [PartDescriptor(type: "sizedReverb", parameters: try ["wetPercent", "roomPreset", "roomSize"].map(ParameterKey.init))] : recipes.catalog
-        return catalog.filter { types.contains($0.type) }.map { descriptor in
+        if types.contains("sizedReverb") { types.insert("reverb") }
+        let alias = try descriptor(Self.quickMenu, type: "sizedReverb")
+        let catalog = profile == Self.quickMenu ? recipes.catalog + [PartDescriptor(type: alias.type, parameters: alias.parameters.map(\.key))] : recipes.catalog
+        return try catalog.filter { types.contains($0.type) }.map { descriptor in
             PartDescriptor(type: descriptor.type, parameters: descriptor.parameters.filter {
                 profile != Self.legacyEveryday || descriptor.type != "deviceColour"
                     || $0.rawValue != "factoryPreset"
-            })
+            }, optionalParameters: try EffectCatalog.effect(descriptor.type)?.parameters.filter(\.optional).map { try ParameterKey($0.key) } ?? [])
         }
     }
     func presentation(for definition: BlockDefinition) throws -> [LibraryControl] {
@@ -119,8 +123,9 @@ struct LibraryProfiles: Sendable {
             let converter = try recipe(profile)
             let parameters = try sound.targets.filter { $0.key.part == part.address }.map { target, position in
                 let value: Double
-                if sound.authoredParts.contains(part.address) {
-                    guard let parameter = try descriptor(profile, type: part.type).parameters.first(where: { $0.key == target.parameter }) else { throw SoundModelError.invalidReference }
+                if sound.authoredParts.contains(part.address) || profile == Self.expandedReverb ||
+                    EffectCatalog.effect(part.type)?.parameters.first(where: { $0.key == target.parameter.rawValue })?.optional == true {
+                    guard let parameter = try descriptor(profile, type: part.type, includingOptional: true).parameters.first(where: { $0.key == target.parameter }) else { throw SoundModelError.invalidReference }
                     value = parameter.domain.value(position)
                 } else { value = try converter.nativeValue(type: part.type, parameter: target.parameter, position: position) }
                 return ListeningParameter(key: target.parameter.rawValue, value: value)
