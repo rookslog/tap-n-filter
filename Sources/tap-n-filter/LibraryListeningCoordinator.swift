@@ -251,6 +251,11 @@ final class LibraryListeningCoordinator {
     /// M2: awaited before a read's result is published, tagged by what asked for it. Inert unless installed.
     enum PublicationKind: Sendable { case menuRefresh, editorCompletion, menuOpen }
     var beforePublication: (@Sendable (PublicationKind) async -> Void)?
+    /// Diagnostic trace hook. Inert unless installed; it only observes.
+    var traceForTesting: ((String) -> Void)?
+    private func trace(_ text: @autoclosure () -> String) { if let traceForTesting { traceForTesting(text()) } }
+    /// Diagnostic read-only view of whether an activation delivery is still owed.
+    var activationPendingForTesting: Bool { activationPending }
     /// M3: returns once no refresh, issued write, mutation or editor read is pending.
     func quiescent() async {
         while true {
@@ -465,15 +470,15 @@ final class LibraryListeningCoordinator {
     /// Read initiation order fences completions: a read begun before this call is discarded when it lands (A-K2).
     private func fenceReads() { generation += 1 }
     private func deliver(_ snapshot: ListeningRenderSnapshot, compare: Bool, mode: LibraryDeliveryMode) {
-        guard lifecycle != .closed, let apply else { return }
+        guard lifecycle != .closed, let apply else { trace("deliver \(mode) no consumer"); return }
         switch mode {
-        case .positions: guard applied?.snapshot != snapshot || applied?.compare != compare else { return }
+        case .positions: guard applied?.snapshot != snapshot || applied?.compare != compare else { trace("deliver positions repeat"); return }
         // An activation is a repeat only when it equals both the last activation and what playback holds now:
         // a positions delivery in between may have moved playback away from it (activation A, positions B, activation A).
         case .activation:
-            guard activated?.snapshot != snapshot || activated?.compare != compare
-                || applied?.snapshot != snapshot || applied?.compare != compare else { return }
+            guard activated?.snapshot != snapshot || activated?.compare != compare else { trace("deliver activation repeat"); return }
         }
+        trace("deliver \(mode) power=\(snapshot.isEnabled)")
         applied = (snapshot, compare)
         if mode == .activation { activated = (snapshot, compare) }
         // B-A4, B-R4: the controller withdraws restart authorization when a positions delivery turns power or an app
@@ -498,18 +503,22 @@ final class LibraryListeningCoordinator {
     /// Read initiation order fences completions; command completions always request a new read.
     @discardableResult
     func refresh(mode: LibraryDeliveryMode = .activation, kind: PublicationKind = .menuRefresh) async -> Bool {
-        guard lifecycle == .running, let session else { return false }
+        guard lifecycle == .running, let session else { trace("refresh not running"); return false }
         refreshesInFlight += 1; defer { refreshesInFlight -= 1 }    // R2-3: a direct refresh (menu open) is pending work too
         fenceReads(); let requested = generation
         readOrder &+= 1; let order = readOrder
         let delivery = activationPending ? LibraryDeliveryMode.activation : mode
+        trace("refresh #\(order) start mode=\(mode) delivery=\(delivery) pending=\(activationPending) barriers=\(sliderEligibilityBarriers)")
         lastRefreshFenced = false
         func fenced() -> Bool { if requested != generation { lastRefreshFenced = true; return true }; return false }
         do {
             fullReadAttempts &+= 1
             let snapshot = try await read(session)
-            guard !fenced() else { return false }
-            if let gate = beforePublication { await gate(kind); guard !fenced() else { return false } }
+            guard !fenced() else { trace("refresh #\(order) fenced after read pending=\(activationPending)"); return false }
+            if let gate = beforePublication {
+                await gate(kind)
+                guard !fenced() else { trace("refresh #\(order) fenced after gate pending=\(activationPending)"); return false }
+            }
             let transport = ListeningRenderSnapshot(menu: snapshot)
             let failure: String?
             do { try admit(transport); failure = nil }
@@ -517,9 +526,11 @@ final class LibraryListeningCoordinator {
             if failure == nil && sliderEligibilityBarriers == 0 {
                 deliver(transport, compare: snapshot.compareOriginal, mode: delivery)
                 if delivery == .activation { activationPending = false }
+                trace("refresh #\(order) delivered \(delivery) pending=\(activationPending)")
             } else {
+                trace("refresh #\(order) else failure=\(failure ?? "none") barriers=\(sliderEligibilityBarriers) pending=\(activationPending)")
                 let live = try await session.liveState()
-                guard !fenced() else { return false }
+                guard !fenced() else { trace("refresh #\(order) fenced after live state pending=\(activationPending)"); return false }
                 restrict(live)
             }
             presentation = snapshot
@@ -529,12 +540,14 @@ final class LibraryListeningCoordinator {
             installSliderEligibility(snapshot, admitted: failure == nil)
             emit(.state(LibraryConsumerPublication(generation: requested, presentation: snapshot, positionContext: context,
                 menu: MenuLibraryProjection(snapshot), admissionFailure: failure)))
+            trace("refresh #\(order) published pending=\(activationPending)")
             return true
         } catch {
-            guard !fenced() else { return false }
+            trace("refresh #\(order) threw \(error) pending=\(activationPending)")
+            guard !fenced() else { trace("refresh #\(order) fenced after throw"); return false }
             sliderEligibility = []
             if let live = try? await session.liveState(), requested == generation { restrict(live) }
-            guard !fenced() else { return false }
+            guard !fenced() else { trace("refresh #\(order) fenced after throw live state"); return false }
             newestEffectiveRead = max(newestEffectiveRead, order)
             emit(.readFailure(String(describing: error)))
             return false
@@ -663,6 +676,7 @@ final class LibraryListeningCoordinator {
     }
     func cancelEditorPreview(_ preview: LibraryUpdatePreview) async { await session?.cancelUpdateLibrary(preview) }
     func requestRefresh(mode: LibraryDeliveryMode = .activation) {
+        trace("requestRefresh mode=\(mode) running=\(refreshTask != nil) pending=\(activationPending)")
         refreshWanted = true
         if mode == .activation { refreshMode = .activation; activationPending = true }
         guard refreshTask == nil else { return }
@@ -711,6 +725,7 @@ final class LibraryListeningCoordinator {
         sliderEligibilityBarriers -= 1
         sliderEligibility = []
         fenceReads()
+        trace("barrier end barriers=\(sliderEligibilityBarriers) pending=\(activationPending)")
     }
     /// M5: which playback publications are real barriers, decided here and not in App wiring.
     /// `.sourceOrFormat` (a source or output format change, or a lane set that needs a full delivery) is a real

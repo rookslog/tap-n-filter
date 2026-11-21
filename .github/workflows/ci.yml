@@ -94,3 +94,58 @@ jobs:
         env:
           RUN_INTEGRATION_TESTS: "1"
         run: swift test -c debug --filter CaptureIntegrationTests
+
+  # Diagnostic, this branch only: the long menu enumerations (Tests/RebuildEnumerations), sharded so each
+  # job fits its timeout. A shard passes only when every spec in it prints a clean ENUM-SUMMARY line with
+  # the pinned enumeration size; a missing line (crash, hang, skip or timeout) fails it.
+  enumerations:
+    name: Enumerations ${{ matrix.shard.name }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 50
+    if: github.head_ref == 'diag/menu-enumerations'
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-26]
+        shard:
+          - { name: "self-check with a known old fault", specs: "S5 4 0 0 436" }
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Build tests
+        run: swift build -c debug --build-tests
+
+      - name: Run shard
+        shell: bash
+        env:
+          TNF_ENUM: ${{ matrix.shard.specs }}
+        run: |
+          set -o pipefail
+          status=0
+          swift test -c debug --skip-build --filter RebuildEnumerationTests 2>&1 | tee enumerations.log || status=$?
+          grep -E 'ENUM-(SUMMARY|RED|NOTE)' enumerations.log | tee -a "$GITHUB_STEP_SUMMARY" || true
+          IFS=';' read -ra specs <<< "$TNF_ENUM"
+          for spec in "${specs[@]}"; do
+            read -r suite level hold from count <<< "$spec"
+            case "$suite $level" in
+              "S1 5") total=1997 ;;
+              "S2 4") total=1685 ;;
+              "S3 4") total=10170 ;;
+              "S4 5") total=6763 ;;
+              "S5 5") total=2218 ;;
+              *) echo "::error::no pinned total for $suite $level"; status=1; continue ;;
+            esac
+            want="ENUM-SUMMARY suite=$suite level=$level hold=$hold from=$from count=$count total=$total green=$count red=0 unsupported=0 result=clean "
+            if ! grep -qF "$want" enumerations.log; then
+              echo "::error::missing or not clean: $want"; status=1
+            fi
+          done
+          exit $status
