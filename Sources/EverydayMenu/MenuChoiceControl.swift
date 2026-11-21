@@ -35,6 +35,11 @@ final class MenuSegmentedControl: NSSegmentedControl {
 
     required init?(coder: NSCoder) { nil }
 
+    /// The control takes the column the row gives it; word segments never ask for more width than that.
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: super.intrinsicContentSize.height)
+    }
+
     func configure(options: [MenuSoundOption], selected: UUID?, hints: [UUID: String],
                    activate: @escaping (MenuSoundOption) -> Void) {
         activation.update(options, callback: activate)

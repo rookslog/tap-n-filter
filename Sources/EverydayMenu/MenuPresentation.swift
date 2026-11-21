@@ -353,6 +353,9 @@ extension BuiltinBlock {
     var tint: Color {
         switch self {
         case .everyday: Color(red: 0x30 / 255.0, green: 0xB0 / 255.0, blue: 0xC7 / 255.0)
+        case .bigSpace: Color(nsColor: .systemIndigo)
+        case .oldRecording: Color(nsColor: .systemBrown)
+        case .underwater: Color(nsColor: .systemMint)
         case .filters: Color(red: 0x0A / 255.0, green: 0x84 / 255.0, blue: 0xFF / 255.0)
         }
     }
@@ -361,6 +364,9 @@ extension BuiltinBlock {
         switch self {
         case .everyday: "cup.and.saucer.fill"
         case .filters: "slider.horizontal.3"
+        case .bigSpace: "building.columns"
+        case .oldRecording: "hourglass"
+        case .underwater: "water.waves"
         }
     }
 }
@@ -376,7 +382,10 @@ func controlSymbol(_ control: UUID) -> String? {
     case (2, 16): return "chevron.left.to.line"
     case (2, 17): return "chevron.right.to.line"
     case (2, 18): return "water.waves"
-    case (1, 19), (2, 19): return "speaker.wave.2"
+    case (3, 16): return "building.columns"
+    case (4, 16): return "hourglass"
+    case (5, 16): return "water.waves"
+    case (1, 19), (2, 19), (3, 19), (4, 19), (5, 19): return "speaker.wave.2"
     case (2, 20): return "square.resize"
     case (2, 21): return "rectangle.compress.vertical"
     default: return nil
@@ -385,7 +394,15 @@ func controlSymbol(_ control: UUID) -> String? {
 
 func optionSymbol(_ option: UUID) -> String? {
     let id = option.uuid
-    guard id.0 == 0x54, id.1 == 0x4E, id.2 == 0x46, id.3 == 1 else { return nil }
+    guard id.0 == 0x54, id.1 == 0x4E, id.2 == 0x46 else { return nil }
+    if id.3 == 3 {
+        switch id.15 {
+        case 64: return "music.note.house"
+        case 65: return "bell"
+        default: return nil
+        }
+    }
+    guard id.3 == 1 else { return nil }
     switch id.15 {
     case 64: return "figure.stand"
     case 65: return "door.left.hand.closed"

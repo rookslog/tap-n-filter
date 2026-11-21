@@ -588,10 +588,7 @@ extension SoundDocument {
             next = try mappingMove(transient, key: key, value: canonical)
         }
         let record = metadata.revisions.first { $0.definition.reference == transient.base }
-        let shipped = record.map {
-            ($0.payload.profile == LibraryProfiles.quickMenu && $0.definition.reference == state.profiles.quickMenuRecipe.definition.reference)
-                || ($0.payload.profile == LibraryProfiles.filters && $0.definition.reference == state.profiles.recipes.filters.definition.reference)
-        } ?? false
+        let shipped = record.map(state.profiles.isCurrentMenuBuiltin) ?? false
         let owned = metadata.owned.first { $0.use.id == binding.root }
         let eligible = menuIdentity != nil && state.pending == nil && state.uncertain == nil
             && shipped && record?.origin == "builtin" && owned?.draft == nil && state.drafts[.use(binding.root)] == nil

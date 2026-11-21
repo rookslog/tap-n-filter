@@ -41,7 +41,7 @@ extension LibraryProfiles {
         _ = try recipe(profile)
         let legacySize = type == "sizedReverb" && profile == Self.quickMenu
         guard let effect = EffectCatalog.effect(legacySize ? "reverb" : type) else { throw LibraryError.unsupportedEdit }
-        let domainName = legacySize ? "quickMenu.v1" : profile == Self.expandedReverb ? "unified.v1" :
+        let domainName = legacySize ? "quickMenu.v1" : (profile == Self.expandedReverb || Self.newSoundProfiles.contains(profile)) ? "unified.v1" :
             profile == Self.filters ? "filters.v1" : "everyday.v1"
         guard var parameters = effect.profiles[domainName] ?? effect.profiles["everyday.v1"] else { throw LibraryError.unsupportedEdit }
         if includingOptional && !legacySize, let extra = effect.profiles["quickMenu.v1"] {

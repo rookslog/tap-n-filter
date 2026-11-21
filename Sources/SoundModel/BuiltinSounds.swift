@@ -1,7 +1,7 @@
 import Foundation
 
 public enum BuiltinBlock: String, CaseIterable, Sendable {
-    case everyday, filters
+    case everyday, filters, bigSpace, oldRecording, underwater
 }
 
 public enum ListeningControlPlacement: Equatable, Sendable, Codable { case primary, more }
@@ -63,13 +63,28 @@ enum BuiltinMigrationError: Error {
 struct BuiltinSounds: Sendable {
     let everyday: Everyday
     let filters: Filters
+    let bigSpace: BigSpace
+    let oldRecording: OldRecording
+    let underwater: Underwater
+    /// Everyday and Filters: the roster of the standard library and the pre-library session.
     let all: [any BuiltinSound]
+    /// `all` plus the three newer sounds; only the Quick Menu library seeds and recognises these.
+    let withMenuSounds: [any BuiltinSound]
     let catalog: [PartDescriptor]
     init() throws {
         everyday = try Everyday()
         filters = try Filters()
+        bigSpace = try BigSpace()
+        oldRecording = try OldRecording()
+        underwater = try Underwater()
         all = [everyday, filters]
-        catalog = everyday.catalog
+        withMenuSounds = [everyday, filters, bigSpace, oldRecording, underwater]
+        catalog = try everyday.catalog.map { descriptor in
+            guard descriptor.type == "reverb" else { return descriptor }
+            let size = try ParameterKey("roomSize")
+            return PartDescriptor(type: descriptor.type, parameters: descriptor.parameters,
+                                  optionalParameters: [size])
+        }
     }
 
     static func highCutMigration(from old: BlockDefinition, to current: BlockDefinition) throws
@@ -109,7 +124,7 @@ struct BuiltinSounds: Sendable {
         return (controlID, log(endpoint / 20_000) / log(100.0 / 20_000))
     }
     func recipe(id: DefinitionID) throws -> any BuiltinSound {
-        guard let value = all.first(where: { $0.definition.id == id }) else {
+        guard let value = withMenuSounds.first(where: { $0.definition.id == id }) else {
             throw DocumentError.unknownDefinition(id)
         }
         return value

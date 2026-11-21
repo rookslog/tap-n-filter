@@ -58,7 +58,7 @@ extension OptionControlChecks {
             throw OptionCheckFailure.failed("fresh Quick Menu admission")
         }
         let initial = try await session.snapshot()
-        try check(initial.definitions.map(\.name) == ["Everyday", "Filters"] && !initial.isEnabled, "QM-01a fresh roster and master OFF")
+        try check(initial.definitions.map(\.name) == ["Everyday", "Filters", "Big space", "Old recording", "Underwater"] && !initial.isEnabled, "QM-01a fresh roster and master OFF")
         let standard = try LibraryArchive.initial(profiles: profiles)
         let quickArchive = try LibraryArchive.initial(profiles: profiles, builtins: .quickMenu)
         try check(standard.revisions[1] == quickArchive.revisions[1], "Filters immutable revision and native profile unchanged")

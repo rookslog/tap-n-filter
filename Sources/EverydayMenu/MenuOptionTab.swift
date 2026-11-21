@@ -23,7 +23,7 @@ struct MenuOptionTab: View {
                     }.background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(.quaternary.opacity(0.75)))
                 }
             }
-        }.frame(height: tab.netHeight + 6).padding(.top, -6)
+        }.frame(height: tab.netHeight + tab.stackedHeight + 6).padding(.top, -6)
     }
 }
 
@@ -43,20 +43,38 @@ struct MenuOptionControlRow: View {
     var position: Double { rowPosition.value }
     var readout: String { (try? control.readout?.text(at: position)) ?? "\(Int((position * 100).rounded()))%" }
 
-    var body: some View {
+    private func label(_ symbol: String?) -> some View {
         HStack(spacing: 10) {
-            if let symbol = optionSymbol(tab.option.id) {
+            if let symbol {
                 Image(systemName: symbol).font(.system(size: 11, weight: .medium))
                     .foregroundStyle(assignment.block.tint)
             }
             Text(control.title).font(.system(size: 12)).foregroundStyle(.primary.opacity(0.88))
                 .lineLimit(1).fixedSize()
-            MenuTrack(value: position, label: "\(control.title), \(tab.option.title)", spoken: readout,
-                keyboardInput: state.keyboardInput, start: { state.beginMovement(control, on: assignment) }) { state.adjust(control, on: assignment, to: $0) }
-                .background(MenuAnchor("control-\(assignment.id)-\(control.id)"))
-            Text(readout).font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
-                .frame(width: 34, alignment: .trailing)
-        }.padding(.horizontal, 10).frame(height: index == 0 ? 30 : 26)
+        }
+    }
+    private var track: some View {
+        MenuTrack(value: position, label: "\(control.title), \(tab.option.title)", spoken: readout,
+            keyboardInput: state.keyboardInput, start: { state.beginMovement(control, on: assignment) }) { state.adjust(control, on: assignment, to: $0) }
+            .background(MenuAnchor("control-\(assignment.id)-\(control.id)"))
+    }
+    private var readoutText: some View {
+        Text(readout).font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
+            .frame(width: 34, alignment: .trailing)
+    }
+
+    var body: some View {
+        let base: CGFloat = index == 0 ? 30 : 26
+        // Both come from the per-option, per-title cache: nothing is measured or looked up per drag update.
+        let entry = tab.labelEntry(control)
+        if entry.stacks {
+            VStack(alignment: .leading, spacing: 2) {
+                label(entry.symbol)
+                HStack(spacing: 10) { track; readoutText }
+            }.padding(.horizontal, 10).frame(height: base + MenuSoundOptionTab.stackedExtra)
+        } else {
+            HStack(spacing: 10) { label(entry.symbol); track; readoutText }.padding(.horizontal, 10).frame(height: base)
+        }
     }
 }
 

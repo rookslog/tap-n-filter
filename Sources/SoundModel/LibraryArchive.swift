@@ -43,15 +43,15 @@ extension LibraryArchive {
         try c.encode(workspaces, forKey: .workspaces)
     }
     static func initial(profiles: LibraryProfiles, builtins: LibraryBuiltinSet = .standard) throws -> Self {
-        let recipes: [any BuiltinSound] = builtins == .quickMenu ? [profiles.quickMenuRecipe, profiles.recipes.all[1]] : profiles.recipes.all
+        let recipes: [any BuiltinSound] = builtins == .quickMenu ? [profiles.quickMenuRecipe] + profiles.recipes.withMenuSounds.dropFirst() : profiles.recipes.all
         let revisions = try recipes.map { recipe in
             let payload = LibraryPayload(profile: try profiles.profile(for: recipe.definition),
                 block: recipe.definition.content, presentation: try profiles.presentation(for: recipe.definition),
-                canonicalVersion: recipe.definition.content.needsVersion5 ? 5 : 1)
+                canonicalVersion: recipe.definition.content.needsVersion6 ? 6 : recipe.definition.content.needsVersion5 ? 5 : recipe.definition.content.needsVersion4 ? 4 : 1)
             return try LibraryRevision(definition: recipe.definition, origin: "builtin",
                                    payload: payload, contentHash: payload.contentHash)
         }
-        return Self(format: "tnf.library", schema: revisions.contains { $0.payload.requiresSchema8 } ? 8 : 5, commit: UUID(), provenance: "fresh",
+        return Self(format: "tnf.library", schema: revisions.contains { $0.payload.requiresSchema9 } ? 9 : revisions.contains { $0.payload.requiresSchema8 } ? 8 : 5, commit: UUID(), provenance: "fresh",
             revisions: revisions,
             heads: revisions.map { LibraryDefinitionRecord($0) },
             uses: [], assignments: [], enabled: false)
@@ -176,7 +176,7 @@ extension LibraryArchive {
         for head in heads {
             _ = try metadata.head(head.definition); try libraryName(head.name)
             let records = revisions.filter { $0.definition.id == head.definition }
-            let builtin = profiles.recipes.all.contains { $0.definition.id == head.definition }
+            let builtin = profiles.recipes.withMenuSounds.contains { $0.definition.id == head.definition }
             guard head.origin == (builtin ? "builtin" : "custom"), records.allSatisfy({ $0.origin == head.origin }) else { throw LibraryError.invalidArchive }
         }
         var content = DocumentContent()
