@@ -25,6 +25,9 @@ let package = Package(
     targets: [
         .target(name: "NativeTestSupport", path: "Tests/NativeTestSupport"),
         .executableTarget(name: "tnf-output-check", dependencies: ["PlaybackOutput", "Capture", "OutputGate", "PlaybackRenderBridge", "SoundModel"], path: "Tests/PlaybackOutputChecks"),
+        // Diagnostic only, run by .github/workflows/eq-stress.yml: separates the
+        // explanations for a one-off EQNode read-back failure on a hosted runner.
+        .executableTarget(name: "tnf-eq-stress-probe", dependencies: ["Effects"], path: "Tests/EQStressProbe"),
         .target(name: "PlaybackDSP", dependencies: ["FixedRender"], publicHeadersPath: "include", cxxSettings: [.unsafeFlags(["-std=c++20"])]),
         .target(name: "PlaybackRenderBridge", dependencies: ["SoundModel", "PlaybackDSP"], swiftSettings: [.unsafeFlags(["-swift-version", "6"])]),
         .target(name: "PlaybackOutput", dependencies: ["Capture", "OutputGate", "PlaybackDSP", "PlaybackRenderBridge", "PlaybackLifecycle", "PlaybackRuntime", "PlaybackRuntimeCaptureAdapters", "SoundModel", "FixedRender"], linkerSettings: [.linkedFramework("Accelerate")]),
