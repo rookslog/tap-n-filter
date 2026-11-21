@@ -47,8 +47,8 @@ struct PlaybackStopResumePolicy {
         let enabled: Bool
     }
     private struct Scope: Equatable {
-        let enabled: Bool
-        let bindings: [UUID: Binding]
+        var enabled: Bool
+        var bindings: [UUID: Binding]
         init(_ snapshot: ListeningRenderSnapshot) {
             enabled = snapshot.isEnabled
             bindings = Dictionary(uniqueKeysWithValues: snapshot.assignments.map {
@@ -61,6 +61,22 @@ struct PlaybackStopResumePolicy {
     mutating func activate(_ snapshot: ListeningRenderSnapshot) {
         activation &+= 1
         scope = Scope(snapshot)
+    }
+    /// B-A4, B-R4: a positions-only delivery can take authorization away (power OFF, an app switched off) and
+    /// never grants it (B-T3). Only an activation grants, so a later power-ON delivered as positions cannot
+    /// revive a restart an OFF cancelled.
+    mutating func withdraw(_ snapshot: ListeningRenderSnapshot) {
+        guard var current = scope else { return }
+        if !snapshot.isEnabled { scope = nil; return }
+        for assignment in snapshot.assignments where !assignment.isEnabled {
+            current.bindings[assignment.id] = Binding(bundle: assignment.bundleIdentifier, enabled: false)
+        }
+        scope = current
+    }
+    /// B-F10: whether the latest activation authorized this assignment to run.
+    func isAuthorized(_ assignment: ListeningRenderAssignment, desired: ListeningRenderSnapshot) -> Bool {
+        desired.isEnabled && scope?.enabled == true && assignment.isEnabled
+            && scope?.bindings[assignment.id] == Binding(bundle: assignment.bundleIdentifier, enabled: true)
     }
     func stopping(assignment: UUID, includesCurrentActivation: Bool) -> Stop {
         Stop(assignment: assignment, activation: activation, includesCurrentActivation: includesCurrentActivation)

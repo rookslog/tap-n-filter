@@ -131,6 +131,7 @@ struct PR39RaceCases {
         for variant in ["off", "restart", "parameters"] where selected == "all" || selected == "5-" + variant {
             for phase in 0..<3 { try await starting(variant, phase: phase) }
         }
+        for value in ["slider", "compare"] where selected == "all" || selected == "6-activation-" + value { try await activationAfterPositions(value) }
         if failures > 0 { throw RaceError.setup("\(failures) race assertions") }
     }
     @MainActor private static func choiceTwice() async throws {
@@ -346,10 +347,10 @@ extension PR39RaceCases {
             _ = try await f.app.coordinator.submitMove(f.slider.address, expected: f.card.binding!, to: .scalar(0.9)).value
             await f.app.coordinator.refresh(mode: .positions)
         } else {
+            // The OFF activation may be delivered after the positions OFF (RATIFICATION Addendum 3: only a
+            // repeat of the last activation is dropped). What matters is below: the lane never sounds.
             _ = try await f.app.coordinator.submitEnabled(false).value
-            let offDeliveries = deliveries
             await f.app.coordinator.refresh()
-            check(deliveries == offDeliveries, "5-\(variant)/\(phase) identical OFF activation deduplicated by real coordinator")
             if variant == "restart" { _ = try await f.app.coordinator.submitEnabled(true).value; await f.app.coordinator.refresh() }
         }
         await trace.gate.release()
@@ -368,5 +369,47 @@ extension PR39RaceCases {
             }
         }
         await controller.shutdown(); await f.close()
+    }
+}
+
+extension PR39RaceCases {
+    /// Activation A, then positions B, then activation A again. The second A returns to the last activation's
+    /// snapshot, but playback holds B, so it must be delivered. A true repeat (A twice, nothing between) is not.
+    /// Everything is switched on first: a positions delivery that turns anything off already clears the last
+    /// activation, which would hide the order under test.
+    @MainActor fileprivate static func activationAfterPositions(_ value: String) async throws {
+        let f = try await RaceFixture(attachConsumer: false), coordinator = f.app.coordinator
+        var last: (snapshot: ListeningRenderSnapshot, original: Bool, mode: LibraryDeliveryMode)?
+        var deliveries = 0
+        _ = await coordinator.attachPlayback { snapshot, original, mode in last = (snapshot, original, mode); deliveries += 1 }
+        _ = try await coordinator.submitEnabled(true).value
+        for assignment in try await f.owner.snapshot().assignments where !assignment.isEnabled {
+            try await f.owner.setEnabled(true, on: assignment.target)
+        }
+        await coordinator.refresh()
+        let baselineOn = last.map { $0.snapshot.isEnabled && $0.snapshot.assignments.allSatisfy(\.isEnabled) } ?? false
+        check(last?.mode == .activation && baselineOn, "6-activation-\(value) baseline is an activation with everything on")
+        let slider = f.slider, binding = f.card.binding!, earlier = slider.position
+        if value == "slider" {
+            _ = try await f.owner.move(slider.address, expected: binding, to: .scalar(earlier < 0.5 ? 0.9 : 0.1))
+        } else {
+            await f.owner.compareOriginal(true)
+        }
+        await coordinator.refresh(mode: .positions)
+        check(last?.mode == .positions, "6-activation-\(value) B reaches playback through a positions delivery")
+        if value == "slider" {
+            _ = try await f.owner.move(slider.address, expected: binding, to: .scalar(earlier))
+        } else {
+            await f.owner.compareOriginal(false)
+        }
+        await coordinator.refresh()
+        let document = ListeningRenderSnapshot(library: try await f.owner.snapshot())
+        let compare = try await f.owner.liveState().compareOriginal
+        check(last?.snapshot == document && last?.original == compare,
+              "6-activation-\(value) after activation A, positions B, activation A, playback holds the document")
+        let before = deliveries
+        await coordinator.refresh()
+        check(deliveries == before, "6-activation-\(value) a repeated identical activation is not delivered again")
+        await f.close()
     }
 }
